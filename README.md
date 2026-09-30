@@ -101,6 +101,10 @@ uv run alembic check
 PostgreSQL 测试使用专用空数据库：设置 `NIUCAI_TEST_DATABASE_URL` 后运行 pytest。
 **测试会清空该测试数据库中 Kernel 表，请勿指向生产数据库。** CI 覆盖 SQLite / PostgreSQL 两种配置。
 
+## CI
+
+GitHub Actions 自动检查 main push / PR，并支持手动触发：Python 检查、SQLite / PostgreSQL 测试和迁移、Docker 构建与 API 启动检查。无需模型密钥或设备。详情见 [CI 配置](docs/ci.md)。
+
 ## V1 边界
 
 - 单用户 API Bearer Token 认证；REST 与 WebSocket 均认证。Username / Password / TOTP 登录界面尚未实现。

@@ -1,11 +1,56 @@
-name: Kernel
-on: [push, pull_request]
+name: Kernel CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kernel-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  tests:
+  lint:
+    name: Python checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/kernel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.18"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: services/kernel/uv.lock
+      - name: Install locked dependencies
+        run: uv sync --frozen --extra harness --extra browser
+      - name: Lint
+        run: uv run --no-sync ruff check src tests migrations
+      - name: Formatting
+        run: uv run --no-sync ruff format --check src tests migrations
+
+  tests:
+    name: Tests (${{ matrix.database }})
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
+      fail-fast: false
       matrix:
-        database: [sqlite, postgres]
+        include:
+          - database: sqlite
+            database_url: sqlite:///./niucai.db
+          - database: postgres
+            database_url: postgresql+psycopg://niucai:ci-only-password@localhost:5432/niucai
+    env:
+      NIUCAI_DATABASE_URL: ${{ matrix.database_url }}
     services:
       postgres:
         image: pgvector/pgvector:pg17
@@ -25,19 +70,110 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.12.18"
-      - run: uv sync --frozen --extra harness --extra browser
-      - run: uv run ruff check src tests migrations
-      - run: uv run ruff format --check src tests migrations
-      - if: matrix.database == 'sqlite'
-        run: uv run --extra harness --extra browser pytest -q
-      - if: matrix.database == 'postgres'
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: services/kernel/uv.lock
+      - name: Install locked dependencies
+        run: uv sync --frozen --extra harness --extra browser
+      - name: Migrate a fresh database
+        run: uv run --no-sync alembic upgrade head
+      - name: SQLite tests
+        if: matrix.database == 'sqlite'
+        run: uv run --no-sync pytest -q --junitxml=reports/tests.xml
+      - name: PostgreSQL tests, including row locks
+        if: matrix.database == 'postgres'
         env:
-          NIUCAI_TEST_DATABASE_URL: postgresql+psycopg://niucai:ci-only-password@localhost:5432/niucai
-        run: uv run --extra harness --extra browser pytest -q
-      - run: uv run alembic upgrade head && uv run alembic check
-      - run: uv run alembic downgrade base && uv run alembic upgrade head
+          NIUCAI_TEST_DATABASE_URL: ${{ matrix.database_url }}
+        run: uv run --no-sync pytest -q --junitxml=reports/tests.xml
+      - name: Check migration matches models
+        run: uv run --no-sync alembic check
+      - name: Verify downgrade and upgrade
+        run: |
+          uv run --no-sync alembic downgrade base
+          uv run --no-sync alembic upgrade head
+          uv run --no-sync alembic check
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-${{ matrix.database }}
+          path: services/kernel/reports/tests.xml
+          if-no-files-found: warn
+          retention-days: 14
+
   image:
+    name: Container build and smoke test
+    needs: lint
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t niucai-kernel:ci services/kernel
+      - name: Build kernel image
+        run: docker build -t niucai-kernel:ci services/kernel
+      - name: Verify migrations inside image
+        run: docker run --rm niucai-kernel:ci uv run --no-sync alembic upgrade head
+      - name: Start API without external credentials
+        run: |
+          docker run -d --name niucai-ci \
+            -p 127.0.0.1:8080:8080 \
+            -e NIUCAI_API_TOKEN=ci-only-token-000000000000000000000000 \
+            -e NIUCAI_AUTO_CREATE_SCHEMA=true \
+            niucai-kernel:ci
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/healthz; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs niucai-ci
+          exit 1
+      - name: Check authentication and task creation
+        run: |
+          python - <<'PY'
+          import json
+          import urllib.error
+          import urllib.request
+
+          base = "http://127.0.0.1:8080"
+          try:
+              urllib.request.urlopen(base + "/api/tasks")
+          except urllib.error.HTTPError as exc:
+              assert exc.code == 401, exc.code
+          else:
+              raise AssertionError("unauthenticated API access was accepted")
+
+          headers = {"Authorization": "Bearer ci-only-token-000000000000000000000000",
+                     "Content-Type": "application/json"}
+          request = urllib.request.Request(base + "/api/tasks", headers=headers,
+                     data=json.dumps({"title": "CI smoke", "goal": "Verify API persistence"}).encode())
+          with urllib.request.urlopen(request) as response:
+              assert response.status == 201
+              task = json.load(response)
+              assert task["status"] == "PENDING"
+          request = urllib.request.Request(base + "/api/tasks/" + task["id"], headers=headers)
+          with urllib.request.urlopen(request) as response:
+              assert json.load(response)["id"] == task["id"]
+          PY
+      - name: Container logs
+        if: always()
+        run: docker logs niucai-ci || true
+      - name: Cleanup
+        if: always()
+        run: docker rm -f niucai-ci || true
+
+  ci:
+    name: CI passed
+    if: always()
+    needs: [lint, tests, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require all jobs to pass
+        env:
+          LINT_RESULT: ${{ needs.lint.result }}
+          TEST_RESULT: ${{ needs.tests.result }}
+          IMAGE_RESULT: ${{ needs.image.result }}
+        run: |
+          test "$LINT_RESULT" = success
+          test "$TEST_RESULT" = success
+          test "$IMAGE_RESULT" = success
