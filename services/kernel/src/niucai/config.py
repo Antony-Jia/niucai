@@ -24,3 +24,10 @@ class Settings(BaseSettings):
     action_timeout: float = 30
     allow_shell: bool = False
     auto_create_schema: bool = False
+
+    cookie_secure: bool = True
+    computer_web_url: str = "/computer/vnc.html"
+    computer_web_id: str = ""
+    computer_web_upstream: str = ""
+    computer_web_user: str = ""
+    computer_web_password: SecretStr = SecretStr("")

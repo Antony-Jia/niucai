@@ -2,8 +2,8 @@
 
 用户定义 Kernel，模型提出决策，Kernel 拥有状态与执行权。
 
-本仓库实现 **V1 Kernel + Windows Desktop**。远程设备尚未配置时，可以先开发、测试和部署控制平面；
-默认关闭设备动作，不虚构 Computer 在线状态。Windows Desktop 已提供；Mobile、云端 KasmVNC 镜像与 Android 是后续阶段。
+本仓库实现 **V1 Kernel + Windows Desktop + Android PWA**。远程设备尚未配置时，可以先开发、测试和部署控制平面；
+默认关闭设备动作，不虚构 Computer 在线状态。Windows Desktop 与 Android 手机 PWA 已提供；云端 KasmVNC 镜像与 Android Device Node 是后续阶段。
 
 ## 已实现
 
@@ -26,6 +26,7 @@
 
 ```text
 apps/desktop/      Windows 优先的 Tauri 2 + React 客户端
+apps/web/          Android 优先的 React PWA 手机控制端
 services/kernel/
   src/niucai/
     domain/        类型化协议
@@ -127,3 +128,7 @@ GitHub Actions 自动检查 main push / PR，并支持手动触发：Python 检�
 `apps/desktop` 是 Tauri 2 + React + TypeScript 客户端，包含 Dashboard、Chat、Tasks、Computer、Files、Memory、Settings。支持 Kernel 连接、Windows 系统凭据保存、持久会话、任务管理、审批、接管/交还与产物下载。
 
 安装与开发步骤见 [Windows Desktop 文档](docs/desktop-windows.md)。Windows x64 的 NSIS/MSI 安装包由 [Desktop CI](../../actions/workflows/desktop.yml) 构建。配置真实云端电脑之前，可使用明确标记的示例模式查看界面。
+
+## Android 手机控制端
+
+已加入 `apps/web` React PWA，复用 Windows 的任务、对话、审批和记忆页面；支持主屏幕安装、会话恢复、实时事件、接管/交还云端电脑。详见 [移动端部署与验收](docs/mobile.md)。真实桌面触控需在 Computer Runtime 配好后联调；后台推送和 Android Device Node 留待后续阶段。

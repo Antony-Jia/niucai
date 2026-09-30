@@ -1,4 +1,18 @@
 {$NIUCAI_DOMAIN} {
     encode zstd gzip
-    reverse_proxy api:8080
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+    }
+    @kernel path /api/* /computer/* /websockify
+    handle @kernel {
+        header Cache-Control no-store
+        reverse_proxy api:8080
+    }
+    handle {
+        header {
+            Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' wss:; frame-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+        }
+        reverse_proxy web:80
+    }
 }

@@ -55,6 +55,11 @@ services:
     depends_on:
       api:
         condition: service_healthy
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
   caddy:
     image: caddy:2
     profiles: [public]
@@ -67,6 +72,8 @@ services:
       - caddy_config:/config
     depends_on:
       api:
+        condition: service_healthy
+      web:
         condition: service_healthy
     restart: unless-stopped
 volumes:

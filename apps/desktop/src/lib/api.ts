@@ -13,6 +13,17 @@ import type {
 } from "./types";
 import { demoRequest, resetDemo } from "./demo";
 
+export interface BrowserBridge {
+  request<T>(path: string, method?: string, body?: unknown): Promise<T>;
+  loadProfile(): Promise<Profile>;
+  connect(input: ConnectionInput): Promise<Profile>;
+  disconnect(): Promise<void>;
+  downloadArtifact(id: string): Promise<string | null>;
+}
+let browserBridge: BrowserBridge | undefined;
+export function configureBrowser(bridge: BrowserBridge) {
+  browserBridge = bridge;
+}
 let demo = false;
 export const native = () => isTauri();
 export const isDemo = () => demo;
@@ -27,11 +38,13 @@ export async function request<T>(
   body?: unknown,
 ): Promise<T> {
   if (demo) return demoRequest(path, method, body) as Promise<T>;
+  if (browserBridge) return browserBridge.request<T>(path, method, body);
   if (!native())
     throw new Error("请使用 Windows 桌面客户端连接 Kernel，或先体验示例。");
   return invoke<T>("api_request", { path, method, body: body ?? null });
 }
 export async function loadProfile(): Promise<Profile> {
+  if (browserBridge) return browserBridge.loadProfile();
   if (!native())
     return {
       base_url: "",
@@ -43,10 +56,12 @@ export async function loadProfile(): Promise<Profile> {
   return invoke("load_profile");
 }
 export async function connect(input: ConnectionInput): Promise<Profile> {
+  if (browserBridge) return browserBridge.connect(input);
   if (!native()) throw new Error("连接真实服务器需要桌面客户端。");
   return invoke("connect_kernel", { input });
 }
 export async function disconnect() {
+  if (browserBridge) await browserBridge.disconnect();
   if (native()) await invoke("disconnect_kernel");
   demo = false;
 }
@@ -102,5 +117,6 @@ export async function toggleComputerFullscreen() {
 }
 export async function downloadArtifact(id: string) {
   if (demo) throw new Error("示例文件不提供实际下载。");
+  if (browserBridge) return browserBridge.downloadArtifact(id);
   return invoke<string | null>("download_artifact", { artifactId: id });
 }

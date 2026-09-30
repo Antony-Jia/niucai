@@ -17,6 +17,14 @@ class Base(DeclarativeBase):
     pass
 
 
+class BrowserSession(Base):
+    __tablename__ = "browser_sessions"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    key_fingerprint: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)

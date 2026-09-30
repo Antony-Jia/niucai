@@ -3,7 +3,7 @@ import secrets
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select, text
@@ -56,12 +56,27 @@ def create_app(settings=None, db=None, chat_gateway=None):
     app = FastAPI(title="niucai Kernel", version="0.1.0", lifespan=lifespan)
     app.state.db = db
 
-    def authenticated(authorization: str = Header(default="")):
+    from niucai.api.sessions import SessionAuth
+
+    sessions = SessionAuth(db, settings)
+
+    def authenticated(request: Request, authorization: str = Header(default="")):
         expected = settings.api_token.get_secret_value()
-        if not expected or not secrets.compare_digest(authorization, f"Bearer {expected}"):
-            raise HTTPException(401, "valid bearer token required", headers={"WWW-Authenticate": "Bearer"})
+        if expected and secrets.compare_digest(authorization, f"Bearer {expected}"):
+            return
+        if sessions.valid(request.cookies.get(sessions.cookie)):
+            if request.method not in {"GET", "HEAD", "OPTIONS"}:
+                sessions.check_origin(request)
+            return
+        raise HTTPException(
+            401, "valid bearer token or browser session required", headers={"WWW-Authenticate": "Bearer"}
+        )
 
     auth = [Depends(authenticated)]
+    app.include_router(sessions.router(auth))
+    from niucai.api.computer_proxy import computer_proxy
+
+    app.include_router(computer_proxy(db, settings, sessions, auth))
     from niucai.api.chat import chat_router
 
     app.include_router(chat_router(db, settings, auth, chat_gateway))
@@ -244,18 +259,28 @@ def create_app(settings=None, db=None, chat_gateway=None):
             # First-frame authentication avoids leaking tokens in URL/proxy logs.
             message = await asyncio.wait_for(socket.receive_json(), timeout=5)
             token = settings.api_token.get_secret_value()
-            if (
-                not token
-                or not isinstance(message.get("token"), str)
-                or not secrets.compare_digest(token, message["token"])
-            ):
-                await socket.close(code=1008)
-                return
+            bearer = (
+                token
+                and isinstance(message.get("token"), str)
+                and secrets.compare_digest(token, message["token"])
+            )
+            session_id = socket.cookies.get(sessions.cookie)
+            if not bearer:
+                try:
+                    sessions.check_origin(socket)
+                    if not sessions.valid(session_id):
+                        raise ValueError("invalid browser session")
+                except (HTTPException, ValueError):
+                    await socket.close(code=1008)
+                    return
             cursor = int(message.get("after", 0))
             if cursor < 0:
                 raise ValueError("invalid cursor")
             await socket.send_json({"type": "connected", "after": cursor})
             while True:
+                if not bearer and not await asyncio.to_thread(sessions.valid, session_id):
+                    await socket.close(code=1008)
+                    return
                 rows = await asyncio.to_thread(events_after, cursor)
                 for event in rows:
                     event["created_at"] = event["created_at"].isoformat() + "Z"

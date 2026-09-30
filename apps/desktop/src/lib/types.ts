@@ -84,6 +84,7 @@ export interface Message {
   created_at: string;
 }
 export interface Profile {
+  computer_id?: string;
   base_url: string;
   computer_url: string;
   remember_token: boolean;
