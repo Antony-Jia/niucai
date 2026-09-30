@@ -1,0 +1,43 @@
+name: Kernel
+on: [push, pull_request]
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        database: [sqlite, postgres]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: niucai
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: niucai
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U niucai"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    defaults:
+      run:
+        working-directory: services/kernel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.18"
+      - run: uv sync --frozen --extra harness --extra browser
+      - run: uv run ruff check src tests migrations
+      - run: uv run ruff format --check src tests migrations
+      - if: matrix.database == 'sqlite'
+        run: uv run --extra harness --extra browser pytest -q
+      - if: matrix.database == 'postgres'
+        env:
+          NIUCAI_TEST_DATABASE_URL: postgresql+psycopg://niucai:ci-only-password@localhost:5432/niucai
+        run: uv run --extra harness --extra browser pytest -q
+      - run: uv run alembic upgrade head && uv run alembic check
+      - run: uv run alembic downgrade base && uv run alembic upgrade head
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t niucai-kernel:ci services/kernel

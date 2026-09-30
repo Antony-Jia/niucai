@@ -1,0 +1,65 @@
+# V1 API
+
+除 `/healthz` 与 API schema 页面外，REST 使用 `Authorization: Bearer <NIUCAI_API_TOKEN>`。
+Token 必须至少 32 字符。当前为单用户，不实现多租户。
+
+| Method | Path | 行为 |
+|---|---|---|
+| POST | /api/tasks | 创建独立任务 |
+| GET | /api/tasks | 列表，limit/offset |
+| GET | /api/tasks/{id} | 查询完整持久状态 |
+| POST | /api/tasks/{id}/pause | 暂停并撤销 run token |
+| POST | /api/tasks/{id}/resume | 恢复 PAUSED / WAITING_HUMAN |
+| POST | /api/tasks/{id}/retry | FAILED 重试 |
+| POST | /api/tasks/{id}/cancel | 取消 |
+| GET | /api/tasks/{id}/actions | 动作列表与结果 |
+| GET | /api/tasks/{id}/artifacts | Artifact 元数据 |
+| GET | /api/context/{id} | 当前 Context Package |
+| POST | /api/computers | 注册 Computer（初始 OFFLINE） |
+| GET | /api/computers | Computer 列表 |
+| GET | /api/computers/{id} | 设备与控制权 |
+| POST | /api/computers/{id}/take-control | HUMAN 接管 |
+| POST | /api/computers/{id}/hand-back | AGENT 交还 |
+| POST | /api/computers/{id}/pause | Computer PAUSED |
+| POST | /api/computers/{id}/resume | 从 PAUSED 恢复 AGENT |
+| GET | /api/agents | Agent 定义 |
+| GET | /api/approvals | 按 status 查询（默认 PENDING） |
+| POST | /api/approvals/{id}/approve | 批准，body `{"note":""}` |
+| POST | /api/approvals/{id}/deny | 拒绝，body `{"note":""}` |
+| POST | /api/actions/{id}/reconcile | 人工确认 UNKNOWN 动作结果 |
+| POST | /api/memories | 创建 episodic / semantic Memory |
+| GET | /api/memories | Memory 列表 |
+| GET | /api/artifacts/{id}/content | 认证 Artifact 下载 |
+| GET | /api/events?after=0 | 持久事件回放 |
+| WS | /api/events | 首帧认证、事件流与续传 |
+
+创建任务：
+
+```json
+{"title":"浏览示例网站","goal":"打开 https://example.com 并总结页面内容","agent_id":"main","computer_id":"registered-uuid"}
+```
+
+纯推理任务可以省略 computer_id；真实 Browser 动作需要注册的 Linux Computer。
+动作只能由持有效租约的 Worker 在内部提出，没有公开的任意动作执行 endpoint。
+
+UNKNOWN 确认：
+
+```json
+{"outcome":"SUCCEEDED"}
+```
+
+可选结果为 SUCCEEDED / FAILED，确认后任务仍等待人工 `resume`。
+不能确定是否已发生副作用时，不要确认成功或自动重试。
+
+WebSocket 在连接后 5 秒内发送：
+
+```json
+{"token":"same-api-token","after":123}
+```
+
+服务返回 connected，然后按 Event.id 顺序发送。
+保存最后处理的 id 并用 after 重连；heartbeat 是传输信号，不是持久 Event。
+无效认证关闭 code=1008，Token 不放在 URL。
+
+审批通知、聊天 UI、Username/Password/TOTP 登录、设备 WSS 注册均为后续模块。
+V1 不把 Chat 消息自动转成 Task。
