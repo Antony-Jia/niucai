@@ -58,6 +58,7 @@ export function Chat() {
           <aside className="panel conversations">
             <button
               className="full-width"
+              disabled={send.isPending}
               onClick={() => {
                 setConversation(undefined);
                 setTaskGoal("");
@@ -72,6 +73,7 @@ export function Chat() {
                   c.id === conversation ? "conversation active" : "conversation"
                 }
                 key={c.id}
+                disabled={send.isPending}
                 onClick={() => {
                   setConversation(c.id);
                   setTaskGoal("");
@@ -105,6 +107,11 @@ export function Chat() {
                     <small>{time(m.created_at)}</small>
                   </div>
                   <p className="preserve">{m.content}</p>
+                  {m.status === "PENDING" && (
+                    <span className="badge waiting_human">
+                      回复未完成；若服务器曾重启，请新建会话继续
+                    </span>
+                  )}
                   {m.status === "FAILED" && (
                     <span className="badge failed">模型暂不可用</span>
                   )}

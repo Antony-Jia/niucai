@@ -34,5 +34,10 @@
 ## 交付范围
 
 此次交付为 V1 Kernel 可运行核心，以及后续远程 Computer 适配接口。
-Desktop Tauri、Mobile PWA、Android Companion、复杂 RAG、embedding、完整用户登录体系
+Mobile PWA、Android Companion、复杂 RAG、embedding、完整用户登录体系
 及 Remote Desktop 镜像尚未开发。
+
+
+## Windows Desktop
+
+七个页面、原生凭据存储、聊天持久化、任务与审批管理、控制权切换、产物下载与 Windows 安装包 CI 已实现。详见 [Windows 文档](desktop-windows.md)。真实 KasmVNC 与云端设备的中文输入、剪贴板及重启恢复等待设备配置后联调。

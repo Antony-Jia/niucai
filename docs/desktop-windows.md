@@ -48,7 +48,7 @@ Chat 没有操作工具，也不会自动创建 Task。模型不可用时消息�
 
 ## Windows 源码开发
 
-安装 Node.js 22、Rust stable（MSVC 工具链）、Visual Studio Build Tools 的 Desktop development with C++ 和 Windows SDK，以及 WebView2。
+安装 Node.js 22、Rust（项目固定 1.98.1，MSVC 工具链）、Visual Studio Build Tools 的 Desktop development with C++ 和 Windows SDK，以及 WebView2。
 
 ```powershell
 cd apps/desktop
@@ -64,6 +64,6 @@ npm run desktop:build -- --bundles nsis,msi -- --locked
 
 ## CI 与验证范围
 
-Desktop CI 使用 Ubuntu 验证 TypeScript、React 工作流测试与前端构建，使用 Windows 2022 验证 Rust 原生测试，并构建 NSIS/MSI。Kernel CI 同时检查新增会话迁移、SQLite/PostgreSQL 持久化与容器。
+Desktop CI 使用 Ubuntu 验证 TypeScript、React 工作流测试与前端构建，使用 Windows 2022 验证 Rust 原生测试，构建 NSIS/MSI 并检查应用能否启动。Kernel CI 同时检查新增会话迁移、SQLite/PostgreSQL 持久化与容器。
 
 UI 测试使用示例数据，Kernel 聊天测试使用可控模型替身；这些不代表真实 OpenRouter 或远程桌面已经联调。服务器准备好后，需验证真实接管/交还、中文输入、剪贴板、下载及客户端重启恢复。

@@ -2,19 +2,20 @@ name: Desktop CI
 on:
   push:
     branches: [main]
-    paths: ['apps/desktop/**', '.github/workflows/desktop.yml']
+    paths: ['apps/desktop/**', 'services/kernel/src/niucai/api/**', '.github/workflows/desktop.yml']
   pull_request:
-    paths: ['apps/desktop/**', '.github/workflows/desktop.yml']
+    paths: ['apps/desktop/**', 'services/kernel/src/niucai/api/**', '.github/workflows/desktop.yml']
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
   group: desktop-${{ github.ref }}
-  cancel-in-progress: true
+  # Let an active native build finish so installers and compiler cache survive.
+  cancel-in-progress: false
 jobs:
   frontend:
     name: Desktop interface
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
       run:
@@ -57,6 +58,7 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: '1.98.1'
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
@@ -69,6 +71,13 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
       - name: Build NSIS and MSI installers
         run: npm run desktop:build -- --bundles nsis,msi -- --locked
+      - name: Verify native application starts
+        shell: pwsh
+        run: |
+          $client = Start-Process -FilePath ./src-tauri/target/release/niucai-desktop.exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($client.HasExited) { throw "Desktop exited during startup: $($client.ExitCode)" }
+          Stop-Process -Id $client.Id
       - uses: actions/upload-artifact@v4
         with:
           name: niucai-windows-x64

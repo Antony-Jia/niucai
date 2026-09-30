@@ -1,7 +1,7 @@
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::time::Duration;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
 
@@ -101,6 +101,17 @@ fn publish(app: &tauri::AppHandle, value: Value, after: &mut u64) {
     if let Some(id) = value["id"].as_u64() {
         if id > *after {
             *after = id;
+            if value["type"] == "computer.control_changed" && value["data"]["control"] != "HUMAN" {
+                let target = app
+                    .state::<super::KernelState>()
+                    .remote_computer
+                    .lock()
+                    .unwrap()
+                    .clone();
+                if target.as_deref() == value["data"]["computer_id"].as_str() {
+                    let _ = super::close_remote(app);
+                }
+            }
             let _ = app.emit_to("main", "kernel-event", value);
         }
     }

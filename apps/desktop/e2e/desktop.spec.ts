@@ -7,6 +7,7 @@ test("desktop demo renders all seven pages and takes control", async ({
   await page.goto("/");
   await page.getByRole("button", { name: "体验示例", exact: true }).click();
   await expect(page.getByText("调研 Agent Harness 的最新进展")).toBeVisible();
+  await expect(page.locator(".timeline-item")).toHaveCount(2);
   await page.screenshot({ path: "test-results/dashboard.png", fullPage: true });
   for (const name of [
     "Tasks",

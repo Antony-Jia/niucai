@@ -31,6 +31,7 @@ struct ConnectionInput {
 struct KernelState {
     connection: Mutex<Option<Credentials>>,
     events: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    remote_computer: Mutex<Option<String>>,
 }
 fn profile_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let directory = app
@@ -245,6 +246,9 @@ async fn open_computer(
     }
     let remote = validate_url(&c.computer_url)?;
     if let Some(window) = app.get_webview_window("computer") {
+        if state.remote_computer.lock().unwrap().as_deref() != Some(computer_id.as_str()) {
+            return Err("请先关闭现有远程窗口，再切换电脑".into());
+        }
         window.set_focus().map_err(|_| "无法聚焦桌面窗口")?;
         return Ok(());
     }
@@ -256,14 +260,33 @@ async fn open_computer(
         .min_inner_size(640.0, 480.0)
         .build()
         .map_err(|_| "无法创建远程桌面窗口")?;
-    Ok(())
+    *state.remote_computer.lock().unwrap() = Some(computer_id.clone());
+    // Check again after asynchronous WebView creation; ownership may have changed.
+    match transport::request(
+        &c,
+        &format!("/api/computers/{computer_id}"),
+        "GET",
+        Value::Null,
+    )
+    .await
+    {
+        Ok(current) if current["control"] == "HUMAN" => Ok(()),
+        _ => {
+            close_remote(&app)?;
+            Err("控制权已变化或无法确认，请重新接管".into())
+        }
+    }
 }
 #[tauri::command]
 fn close_computer(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
     trusted(&window)?;
+    close_remote(&app)
+}
+fn close_remote(app: &tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("computer") {
         window.close().map_err(|_| "无法关闭桌面窗口")?;
     }
+    *app.state::<KernelState>().remote_computer.lock().unwrap() = None;
     Ok(())
 }
 #[tauri::command]

@@ -17,6 +17,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import {
   api,
+  closeComputer,
   connect,
   disconnect,
   isDemo,
@@ -62,12 +63,15 @@ function StateProvider({ children }: { children: ReactNode }) {
   const [notice, notify] = useState("");
   const cache = useQueryClient();
   const disconnectFrom = useCallback(async () => {
-    await disconnect();
-    cache.clear();
-    setConnected(false);
-    setDemoState(false);
-    setStream("未连接");
-    setProfile((p) => (p ? { ...p, has_token: false } : null));
+    try {
+      await disconnect();
+    } finally {
+      cache.clear();
+      setConnected(false);
+      setDemoState(false);
+      setStream("未连接");
+      setProfile((p) => (p ? { ...p, has_token: false } : null));
+    }
   }, [cache]);
   const connectTo = useCallback(
     async (input: ConnectionInput) => {
@@ -83,13 +87,18 @@ function StateProvider({ children }: { children: ReactNode }) {
     [cache],
   );
   function explore() {
-    setDemo(true);
-    cache.clear();
-    setDemoState(true);
-    setConnected(true);
-    setStream("示例");
-    setPage("dashboard");
+    void closeComputer()
+      .then(() => {
+        setDemo(true);
+        cache.clear();
+        setDemoState(true);
+        setConnected(true);
+        setStream("示例");
+        setPage("dashboard");
+      })
+      .catch((e) => notify(String(e)));
   }
+
   useEffect(() => {
     let active = true;
     loadProfile()
@@ -154,7 +163,7 @@ function StateProvider({ children }: { children: ReactNode }) {
         return;
       }
       unlisteners.push(streamOff);
-      const recent = await api.events();
+      const recent = await api.events().catch(() => []);
       if (stopped) return;
       cache.setQueryData(["events"], recent);
       await invoke("start_events", { after: recent[0]?.id || 0 });

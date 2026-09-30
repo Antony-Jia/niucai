@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { ArrowRight, Circle, LoaderCircle, X } from "lucide-react";
 import { useApp } from "../lib/state";
 import type { TaskStatus } from "../lib/types";
@@ -121,9 +121,47 @@ export function Modal({
   onClose: () => void;
   children: ReactNode;
 }) {
+  const dialog = useRef<HTMLElement>(null);
+  const dismiss = useRef(onClose);
+  dismiss.current = onClose;
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    const focusable = () =>
+      Array.from(
+        dialog.current?.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]',
+        ) || [],
+      );
+    focusable()[0]?.focus();
+    function key(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        dismiss.current();
+      }
+      if (event.key === "Tab") {
+        const list = focusable(),
+          first = list[0],
+          last = list[list.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last?.focus();
+        }
+        if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first?.focus();
+        }
+      }
+    }
+    document.addEventListener("keydown", key);
+    return () => {
+      document.removeEventListener("keydown", key);
+      previous?.focus();
+    };
+  }, []);
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <section
+        ref={dialog}
         className="modal"
         role="dialog"
         aria-modal="true"

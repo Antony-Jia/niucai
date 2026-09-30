@@ -61,5 +61,18 @@ WebSocket 在连接后 5 秒内发送：
 保存最后处理的 id 并用 after 重连；heartbeat 是传输信号，不是持久 Event。
 无效认证关闭 code=1008，Token 不放在 URL。
 
-审批通知、聊天 UI、Username/Password/TOTP 登录、设备 WSS 注册均为后续模块。
+系统级通知、Username/Password/TOTP 登录、设备 WSS 注册均为后续模块。
 V1 不把 Chat 消息自动转成 Task。
+
+
+## Desktop 会话与文件
+
+- `POST /api/chat`：`{"content":"你好","conversation_id":null}`，返回 conversation 和这一轮两条 messages。executor 通过统一 Model Gateway 回复，Chat 无工具、无任务状态副作用。模型失败会保存 FAILED 回复；同会话已有 PENDING 回复时返回 409。
+- `GET /api/conversations?limit=100`：最近会话。
+- `GET /api/conversations/{id}/messages?limit=200`：最近消息，按时间正序。
+- `GET /api/artifacts?limit=200`：最近产物元数据。
+- `GET /api/artifacts/{id}`：单个产物元数据。
+- `GET /api/artifacts/{id}/content`：受 workspace 边界限制的认证下载。
+- `GET /api/events/recent?limit=100`：最新事件，ID 降序；Desktop 从首项 ID 启动事件续传。
+
+以上 REST 路由统一要求 Bearer Token。

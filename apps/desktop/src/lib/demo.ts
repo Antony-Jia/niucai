@@ -192,7 +192,7 @@ export async function demoRequest(
         created_at: stamp,
       },
     ] as Artifact[];
-  if (route === "/api/events")
+  if (route === "/api/events/recent")
     return [
       {
         id: 1,

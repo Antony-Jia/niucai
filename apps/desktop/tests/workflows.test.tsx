@@ -67,3 +67,28 @@ describe("Desktop workflows", () => {
     await screen.findByRole("button", { name: "接管电脑" });
   });
 });
+
+it("keeps chat separate from tasks until the user explicitly creates one", async () => {
+  await explore();
+  nav("Chat");
+  fireEvent.change(screen.getByLabelText("聊天内容"), {
+    target: { value: "帮我整理 Windows 接入清单" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+  await screen.findByText("帮我整理 Windows 接入清单", { selector: "p" });
+  expect((await request<unknown[]>("/api/tasks")).length).toBe(3);
+  fireEvent.click(screen.getByRole("button", { name: "交给 Agent 执行" }));
+  await screen.findByText("任务已创建");
+  expect((await request<unknown[]>("/api/tasks")).length).toBe(4);
+});
+
+it("removes a denied approval from the waiting queue", async () => {
+  await explore();
+  fireEvent.click(await screen.findByRole("button", { name: "拒绝" }));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: "拒绝" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(await request("/api/approvals")).toEqual([]);
+});
