@@ -177,7 +177,7 @@ function StateProvider({ children }: { children: ReactNode }) {
       if (timer) clearTimeout(timer);
       void invoke("stop_events");
     };
-  }, [connected, demo, cache]);
+  }, [connected, demo, cache, profile]);
   return (
     <Context.Provider
       value={{
