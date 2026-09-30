@@ -31,7 +31,7 @@ from niucai.storage.db import (
 from niucai.worker import Worker
 
 
-def create_app(settings=None, db=None):
+def create_app(settings=None, db=None, chat_gateway=None):
     settings = settings or Settings()
     db = db or Database(settings.database_url)
     tasks = TaskManager(db, settings)
@@ -62,6 +62,9 @@ def create_app(settings=None, db=None):
             raise HTTPException(401, "valid bearer token required", headers={"WWW-Authenticate": "Bearer"})
 
     auth = [Depends(authenticated)]
+    from niucai.api.chat import chat_router
+
+    app.include_router(chat_router(db, settings, auth, chat_gateway))
 
     @app.exception_handler(Missing)
     async def not_found(_, exc):
@@ -195,6 +198,19 @@ def create_app(settings=None, db=None):
             require(s, Task, task_id)
             return [as_dict(a) for a in s.scalars(select(Artifact).where(Artifact.task_id == task_id))]
 
+    @app.get("/api/artifacts", dependencies=auth)
+    def all_artifacts(limit: int = Query(50, ge=1, le=200)):
+        with db.sessions() as s:
+            return [
+                as_dict(a)
+                for a in s.scalars(select(Artifact).order_by(Artifact.created_at.desc()).limit(limit))
+            ]
+
+    @app.get("/api/artifacts/{artifact_id}", dependencies=auth)
+    def artifact_metadata(artifact_id: str):
+        with db.sessions() as s:
+            return as_dict(require(s, Artifact, artifact_id))
+
     @app.get("/api/artifacts/{artifact_id}/content", dependencies=auth)
     def artifact_content(artifact_id: str):
         with db.sessions() as s:
@@ -215,6 +231,11 @@ def create_app(settings=None, db=None):
     @app.get("/api/events", dependencies=auth)
     def list_events(after: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200)):
         return events_after(after, limit)
+
+    @app.get("/api/events/recent", dependencies=auth)
+    def recent_events(limit: int = Query(100, ge=1, le=200)):
+        with db.sessions() as s:
+            return [as_dict(e) for e in s.scalars(select(Event).order_by(Event.id.desc()).limit(limit))]
 
     @app.websocket("/api/events")
     async def events(socket: WebSocket):

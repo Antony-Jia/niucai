@@ -10,3 +10,10 @@ workspace/
 *.egg-info/
 .DS_Store
 reports/
+
+node_modules/
+dist/
+target/
+*.tsbuildinfo
+playwright-report/
+test-results/

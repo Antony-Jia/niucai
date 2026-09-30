@@ -1,0 +1,220 @@
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  type ReactNode,
+} from "react";
+import {
+  QueryClient,
+  QueryClientProvider,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import {
+  api,
+  connect,
+  disconnect,
+  isDemo,
+  loadProfile,
+  native,
+  setDemo,
+} from "./api";
+import type { ConnectionInput, KernelEvent, Page, Profile } from "./types";
+
+interface State {
+  page: Page;
+  setPage: (page: Page) => void;
+  connected: boolean;
+  demo: boolean;
+  profile: Profile | null;
+  stream: string;
+  notice: string;
+  notify: (message: string) => void;
+  connectTo: (input: ConnectionInput) => Promise<void>;
+  disconnectFrom: () => Promise<void>;
+  explore: () => void;
+}
+const Context = createContext<State | null>(null);
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { retry: 1, staleTime: 3000, refetchOnWindowFocus: true },
+    mutations: { retry: false },
+  },
+});
+export function Provider({ children }: { children: ReactNode }) {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <StateProvider>{children}</StateProvider>
+    </QueryClientProvider>
+  );
+}
+function StateProvider({ children }: { children: ReactNode }) {
+  const [page, setPage] = useState<Page>("dashboard");
+  const [connected, setConnected] = useState(false);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [demo, setDemoState] = useState(false);
+  const [stream, setStream] = useState("未连接");
+  const [notice, notify] = useState("");
+  const cache = useQueryClient();
+  const disconnectFrom = useCallback(async () => {
+    await disconnect();
+    cache.clear();
+    setConnected(false);
+    setDemoState(false);
+    setStream("未连接");
+    setProfile((p) => (p ? { ...p, has_token: false } : null));
+  }, [cache]);
+  const connectTo = useCallback(
+    async (input: ConnectionInput) => {
+      const p = await connect(input);
+      setDemo(false);
+      cache.clear();
+      setProfile(p);
+      setDemoState(false);
+      setConnected(true);
+      setStream("连接中");
+      notify("已连接 Kernel");
+    },
+    [cache],
+  );
+  function explore() {
+    setDemo(true);
+    cache.clear();
+    setDemoState(true);
+    setConnected(true);
+    setStream("示例");
+    setPage("dashboard");
+  }
+  useEffect(() => {
+    let active = true;
+    loadProfile()
+      .then(async (p) => {
+        if (!active) return;
+        setProfile(p);
+        if (p.has_token) {
+          try {
+            await api.tasks();
+            if (active) {
+              setConnected(true);
+              setStream("连接中");
+            }
+          } catch {
+            if (active)
+              notify("已保存连接，服务器暂不可用。请在设置中重新连接。");
+          }
+        }
+      })
+      .catch((e) => notify(String(e)));
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (!connected || demo || !native()) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unlisteners: (() => void)[] = [];
+    async function start() {
+      const eventOff = await listen<KernelEvent>(
+        "kernel-event",
+        ({ payload }) => {
+          cache.setQueryData<KernelEvent[]>(["events"], (old) =>
+            [payload, ...(old || []).filter((e) => e.id !== payload.id)]
+              .sort((a, b) => b.id - a.id)
+              .slice(0, 100),
+          );
+          if (!timer)
+            timer = setTimeout(() => {
+              timer = undefined;
+              void cache.invalidateQueries({
+                predicate: (q) => q.queryKey[0] !== "events",
+              });
+            }, 250);
+        },
+      );
+      if (stopped) {
+        eventOff();
+        return;
+      }
+      unlisteners.push(eventOff);
+      const streamOff = await listen<string>("kernel-stream", ({ payload }) => {
+        setStream(payload);
+        if (payload === "认证失效") {
+          setConnected(false);
+          notify("连接凭据已失效，请重新连接。");
+        }
+      });
+      if (stopped) {
+        streamOff();
+        return;
+      }
+      unlisteners.push(streamOff);
+      const recent = await api.events();
+      if (stopped) return;
+      cache.setQueryData(["events"], recent);
+      await invoke("start_events", { after: recent[0]?.id || 0 });
+    }
+    void start().catch(() => {
+      if (!stopped) setStream("轮询同步");
+    });
+    return () => {
+      stopped = true;
+      unlisteners.forEach((off) => off());
+      if (timer) clearTimeout(timer);
+      void invoke("stop_events");
+    };
+  }, [connected, demo, cache]);
+  return (
+    <Context.Provider
+      value={{
+        page,
+        setPage,
+        connected,
+        demo,
+        profile,
+        stream,
+        notice,
+        notify,
+        connectTo,
+        disconnectFrom,
+        explore,
+      }}
+    >
+      {children}
+    </Context.Provider>
+  );
+}
+export function useApp() {
+  const value = useContext(Context);
+  if (!value) throw new Error("Provider missing");
+  return value;
+}
+export function useData<T>(key: unknown[], fn: () => Promise<T>) {
+  const { connected } = useApp();
+  return useQuery({
+    queryKey: key,
+    queryFn: fn,
+    enabled: connected,
+    refetchInterval: isDemo() ? false : 15000,
+  });
+}
+export function useCommand<T, V>(
+  fn: (variables: V) => Promise<T>,
+  success?: string,
+) {
+  const cache = useQueryClient();
+  const { notify } = useApp();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      void cache.invalidateQueries();
+      if (success) notify(success);
+    },
+    onError: (e: Error) => notify(e.message || String(e)),
+  });
+}

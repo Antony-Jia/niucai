@@ -2,8 +2,8 @@
 
 用户定义 Kernel，模型提出决策，Kernel 拥有状态与执行权。
 
-本仓库实现 **V1 Kernel**。远程设备尚未配置时，可以先开发、测试和部署控制平面；
-默认关闭设备动作，不虚构 Computer 在线状态。Desktop、Mobile、KasmVNC 与 Android 是后续阶段。
+本仓库实现 **V1 Kernel + Windows Desktop**。远程设备尚未配置时，可以先开发、测试和部署控制平面；
+默认关闭设备动作，不虚构 Computer 在线状态。Windows Desktop 已提供；Mobile、云端 KasmVNC 镜像与 Android 是后续阶段。
 
 ## 已实现
 
@@ -25,6 +25,7 @@
 ## 项目结构
 
 ```text
+apps/desktop/      Windows 优先的 Tauri 2 + React 客户端
 services/kernel/
   src/niucai/
     domain/        类型化协议
@@ -120,3 +121,9 @@ GitHub Actions 自动检查 main push / PR，并支持手动触发：Python 检�
 - OpenTelemetry 已有模型与动作 span；默认不发送到外部服务，后续可配置 exporter。
 
 详见 [架构](docs/architecture.md)、[API](docs/api.md)、[验收与已知限制](docs/acceptance.md)。
+
+## Windows Desktop
+
+`apps/desktop` 是 Tauri 2 + React + TypeScript 客户端，包含 Dashboard、Chat、Tasks、Computer、Files、Memory、Settings。支持 Kernel 连接、Windows 系统凭据保存、持久会话、任务管理、审批、接管/交还与产物下载。
+
+安装与开发步骤见 [Windows Desktop 文档](docs/desktop-windows.md)。Windows x64 的 NSIS/MSI 安装包由 [Desktop CI](../../actions/workflows/desktop.yml) 构建。配置真实云端电脑之前，可使用明确标记的示例模式查看界面。
