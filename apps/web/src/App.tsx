@@ -140,6 +140,7 @@ export function MobileApp() {
         {nav.map(({ page: p, label, Icon }) => (
           <button
             key={p}
+            aria-label={label}
             aria-current={
               (approvalsPage ? p === "approvals" : p === page)
                 ? "page"

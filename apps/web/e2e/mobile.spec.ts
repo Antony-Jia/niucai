@@ -83,7 +83,9 @@ test("real cookie session, task lifecycle, chat and logout", async ({
   await page
     .getByLabel("目标", { exact: true })
     .fill("手机创建任务，关页后状态保持");
-  await page.getByRole("button", { name: "创建任务", exact: true }).click();
+  await page
+    .getByRole("button", { name: "交给 Agent 执行", exact: true })
+    .click();
   await expect(page.locator(".task-detail h3")).toHaveText(name);
   await page
     .locator(".task-detail")
@@ -130,25 +132,26 @@ test("real cookie session, task lifecycle, chat and logout", async ({
 test("approval decisions persist in Kernel", async ({ page }, info) => {
   await login(page);
   // Independent approvals for each viewport; fixtures are created through the live API test database.
-  const ids = ["approve-fixture", "deny-fixture"];
+  const ids = [`${info.project.name}-approve`, `${info.project.name}-deny`];
   await nav(page, "审批");
   for (const [i, id] of ids.entries()) {
-    const pending = await page.request.get("/api/approvals");
-    const rows = await pending.json();
-    if (rows.some((r: { id: string }) => r.id === id)) {
-      const card = page
-        .locator(".approval-card")
-        .filter({ hasText: id + ".txt" });
-      await card
-        .getByRole("button", {
-          name: i === 0 ? "批准执行" : "拒绝",
-          exact: true,
-        })
-        .click();
-      await expect(card).toHaveCount(0);
-    }
+    const pending = await (await page.request.get("/api/approvals")).json();
+    const row = pending.find((r: { id: string }) => r.id === id);
+    expect(row).toBeTruthy();
+    const card = page
+      .locator(".approval-card")
+      .filter({ hasText: id + ".txt" });
+    await card
+      .getByRole("button", { name: i === 0 ? "批准执行" : "拒绝", exact: true })
+      .click();
+    await expect(card).toHaveCount(0);
+    const actions = await (
+      await page.request.get(`/api/tasks/${row.action.task_id}/actions`)
+    ).json();
+    expect(actions.find((a: { id: string }) => a.id === id).status).toBe(
+      i === 0 ? "APPROVED" : "DENIED",
+    );
   }
-  await expect(page.getByText("暂时没有待确认的动作")).toBeVisible();
   await page.screenshot({
     path: `test-results/${info.project.name}-approvals.png`,
     fullPage: true,

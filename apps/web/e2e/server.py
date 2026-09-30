@@ -4,12 +4,16 @@ from niucai.api.app import create_app
 from niucai.config import Settings
 from niucai.control.tasks import TaskManager
 from niucai.domain.schemas import TaskCreate
-from niucai.storage.db import Action, Agent, Approval, Computer, Database
+from niucai.storage.db import Action, Agent, Approval, Base, Computer, Database
 
 settings = Settings()
+if settings.database_url != "sqlite:///./e2e.db":
+    raise RuntimeError("mobile fixture requires the dedicated e2e.db")
 db = Database(settings.database_url)
 db.create_schema()
 with db.sessions.begin() as s:
+    for table in reversed(Base.metadata.sorted_tables):
+        s.execute(table.delete())
     if not s.get(Agent, "main"):
         s.add(Agent(id="main", name="Main", definition={}))
     if not s.get(Computer, "ci-computer"):
@@ -17,7 +21,11 @@ with db.sessions.begin() as s:
 manager = TaskManager(db, settings)
 task = manager.create(TaskCreate(title="待审批报告", goal="Write report"))
 with db.sessions.begin() as s:
-    for name in ("approve-fixture", "deny-fixture"):
+    for name in [
+        f"{project}-{decision}"
+        for project in ("android-pixel", "android-small", "android-landscape")
+        for decision in ("approve", "deny")
+    ]:
         if not s.get(Action, name):
             action = Action(
                 id=name,
