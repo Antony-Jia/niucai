@@ -232,7 +232,9 @@ button:disabled {
 .toast {
   left: 16px;
   right: 16px;
-  bottom: calc(86px + env(safe-area-inset-bottom));
+  top: calc(78px + env(safe-area-inset-top));
+  bottom: auto;
+  pointer-events: none;
   max-width: 700px;
   margin: auto;
   z-index: 90;
@@ -306,4 +308,11 @@ button:disabled {
   .mobile-content .metrics {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
+}
+
+.toast button {
+  pointer-events: auto;
+}
+.toast span {
+  overflow-wrap: anywhere;
 }

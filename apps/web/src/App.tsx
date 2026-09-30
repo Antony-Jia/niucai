@@ -62,6 +62,11 @@ export function MobileApp() {
       window.visualViewport?.removeEventListener("resize", resize);
     };
   }, []);
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => notify(""), 6000);
+    return () => clearTimeout(timer);
+  }, [notice, notify]);
   const previousApprovals = useRef<Set<string> | null>(null);
   useEffect(() => {
     if (!approvals.data) return;
