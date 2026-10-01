@@ -18,7 +18,7 @@ dependencies = [
     "websockets>=15,<17",
 ]
 [project.optional-dependencies]
-harness = ["deepagents>=0.4,<1", "langgraph>=1,<2", "langchain-core>=1,<2"]
+harness = ["deepagents>=0.7.20,<1", "langgraph>=1.2,<2", "langchain>=1.4,<2", "langchain-core>=1,<2", "langgraph-checkpoint>=4,<5"]
 browser = ["playwright>=1.50,<2"]
 [dependency-groups]
 dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11,<1"]

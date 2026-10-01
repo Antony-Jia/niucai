@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, create_engine
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, LargeBinary, String, Text, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -15,6 +15,30 @@ def uid():
 
 class Base(DeclarativeBase):
     pass
+
+
+class HarnessCheckpoint(Base):
+    __tablename__ = "harness_checkpoints"
+    thread_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    namespace: Mapped[str] = mapped_column(String(1000), primary_key=True)
+    checkpoint_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    parent_id: Mapped[str | None] = mapped_column(String(100))
+    payload_type: Mapped[str] = mapped_column(String(30))
+    payload: Mapped[bytes] = mapped_column(LargeBinary)
+    metadata_type: Mapped[str] = mapped_column(String(30))
+    metadata_payload: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+class HarnessWrite(Base):
+    __tablename__ = "harness_writes"
+    thread_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    namespace: Mapped[str] = mapped_column(String(1000), primary_key=True)
+    checkpoint_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    idx: Mapped[int] = mapped_column(Integer, primary_key=True)
+    channel: Mapped[str] = mapped_column(String(200))
+    payload_type: Mapped[str] = mapped_column(String(30))
+    payload: Mapped[bytes] = mapped_column(LargeBinary)
 
 
 class BrowserSession(Base):

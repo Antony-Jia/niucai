@@ -110,8 +110,8 @@ GitHub Actions 自动检查 main push / PR，并支持手动触发：Python 检�
 ## V1 边界
 
 - 单用户 API Bearer Token 认证；REST 与 WebSocket 均认证。Username / Password / TOTP 登录界面尚未实现。
-- DeepAgents 是每轮独立的提案 Harness，LangGraph 的执行过程不作为 Kernel 的权威状态；
-  持久化的是 Kernel 的计划、提案、动作与任务检查点，尚未提供完整 Harness 内部暂停续跑。
+- DeepAgents 保持持续推理会话；LangGraph 检查点、工具反馈与子图中断持久化到数据库。
+  Kernel 拥有 Task、权限、审批、动作日志和接管状态；会话通过受控工具访问真实电脑。
 - browser / vision 等角色可配置；当前主流程使用 planner + executor，不承诺自动复杂路由。
 - Memory 使用 PostgreSQL 记录与词项相关性筛选；pgvector 基础镜像已选定，但 embedding 与向量检索未启用。
 - Browser V1 支持 navigate / DOM snapshot / click / fill / scroll / screenshot；

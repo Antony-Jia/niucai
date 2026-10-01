@@ -45,6 +45,17 @@ class Worker:
         token = task.run_token
         heartbeat = asyncio.create_task(self.heartbeat(task.id, token))
         try:
+            if hasattr(self.runtime, "run"):
+                outcome = await self.runtime.run(self, task)
+                with self.db.sessions() as s:
+                    current = require(s, Task, task.id)
+                self.tasks.update(
+                    task.id,
+                    token,
+                    status=outcome["status"],
+                    checkpoint={**current.checkpoint, **outcome["checkpoint"]},
+                )
+                return
             for _ in range(self.settings.max_steps + 1):
                 with self.db.sessions() as s:
                     task = require(s, Task, task.id)
@@ -105,11 +116,13 @@ class Worker:
         except Exception as exc:
             log.exception("task %s failed", task.id)
             try:
+                with self.db.sessions() as s:
+                    current = require(s, Task, task.id)
                 self.tasks.update(
                     task.id,
                     token,
                     status="FAILED",
-                    checkpoint={**task.checkpoint, "error": type(exc).__name__, "detail": str(exc)[:500]},
+                    checkpoint={**current.checkpoint, "error": type(exc).__name__, "detail": str(exc)[:500]},
                 )
             except Conflict:
                 pass

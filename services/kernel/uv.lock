@@ -1045,8 +1045,10 @@ browser = [
 ]
 harness = [
     { name = "deepagents" },
+    { name = "langchain" },
     { name = "langchain-core" },
     { name = "langgraph" },
+    { name = "langgraph-checkpoint" },
 ]
 
 [package.dev-dependencies]
@@ -1059,11 +1061,13 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.15,<2" },
-    { name = "deepagents", marker = "extra == 'harness'", specifier = ">=0.4,<1" },
+    { name = "deepagents", marker = "extra == 'harness'", specifier = ">=0.7.20,<1" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "langchain", marker = "extra == 'harness'", specifier = ">=1.4,<2" },
     { name = "langchain-core", marker = "extra == 'harness'", specifier = ">=1,<2" },
-    { name = "langgraph", marker = "extra == 'harness'", specifier = ">=1,<2" },
+    { name = "langgraph", marker = "extra == 'harness'", specifier = ">=1.2,<2" },
+    { name = "langgraph-checkpoint", marker = "extra == 'harness'", specifier = ">=4,<5" },
     { name = "opentelemetry-api", specifier = ">=1.30,<2" },
     { name = "opentelemetry-sdk", specifier = ">=1.30,<2" },
     { name = "pgvector", specifier = ">=0.3,<1" },

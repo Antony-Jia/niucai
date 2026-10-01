@@ -41,3 +41,19 @@ Mobile PWA、Android Companion、复杂 RAG、embedding、完整用户登录体�
 ## Windows Desktop
 
 七个页面、原生凭据存储、聊天持久化、任务与审批管理、控制权切换、产物下载与 Windows 安装包 CI 已实现。详见 [Windows 文档](desktop-windows.md)。真实 KasmVNC 与云端设备的中文输入、剪贴板及重启恢复等待设备配置后联调。
+
+## 持续 Agent 会话验证
+
+使用真实 DeepAgents / LangGraph、脚本化 Model Gateway 和假电脑执行器验证：
+
+- 失败反馈进入同一推理会话，模型观察并调整下一步。
+- 审批同意 / 拒绝在重建数据库引擎和运行时后继续，不重提动作。
+- 未决审批不能被 resume 绕过，UNKNOWN 不能被 resume 自动重试。
+- 模型调用期间人工接管，迟到结果不执行；交还后恢复图。
+- 动作预算 interrupt 后恢复原工具调用。
+- 子 Agent 工具审批保持子图检查点。
+- 动作提交后、工具结果保存前崩溃，不重复执行或计数。
+- 最终回答保存后崩溃，恢复不重复模型调用。
+- 撤销租约的旧 Worker 无法写图检查点。
+
+以上测试由 Kernel CI 在 SQLite 和 PostgreSQL 两个矩阵中运行，不使用真实模型密钥。

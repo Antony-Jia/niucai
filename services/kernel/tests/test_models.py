@@ -4,7 +4,6 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from niucai.agents.deepagent_adapter import DeepAgentRuntime
 from niucai.agents.runtime import StructuredRuntime
 from niucai.domain.schemas import Role
 from niucai.models.gateway import ModelGateway, ModelRouter
@@ -74,23 +73,3 @@ def test_missing_model_fails_before_network(tmp_path):
     config.write_text('roles:\n  fast: {model: ""}\n')
     with pytest.raises(ValueError, match="configure model role"):
         ModelRouter(config).resolve(Role.FAST)
-
-
-async def test_real_deepagents_adapter_uses_kernel_gateway():
-    pytest.importorskip("deepagents")
-
-    class FakeGateway:
-        calls = []
-
-        async def chat(self, role, messages, task_id, **extra):
-            self.calls.append((role, messages, task_id, extra))
-            return {
-                "choices": [{"message": {"content": json.dumps({"kind": "complete", "explanation": "done"})}}]
-            }
-
-    gateway = FakeGateway()
-    result = await DeepAgentRuntime(gateway).decide({"policies": "policy", "goal": "test"}, "test")
-    assert result.kind == "complete"
-    assert gateway.calls[0][0] == Role.EXECUTOR
-    assert gateway.calls[0][2] == "test"
-    assert "tools" in gateway.calls[0][3]
