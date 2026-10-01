@@ -385,3 +385,29 @@ async def test_plan_revision_and_human_wait_resume_in_session(setup):
     await run(db, settings, manager, model, computer)
     assert state(db, task.id).status == "COMPLETED"
     assert len(model.messages) == 3
+
+
+@pytest.mark.parametrize("error", [OSError("snapshot connection failed"), TimeoutError()])
+async def test_read_only_executor_failure_returns_feedback_without_human_wait(setup, error):
+    db, settings, manager, cid = setup
+    task = manager.create(TaskCreate(title="test", goal="observe after transient failure", computer_id=cid))
+
+    class FlakyComputer(Computer):
+        async def execute(self, spec, computer):
+            if not self.calls:
+                self.calls.append(spec)
+                raise error
+            return await super().execute(spec, computer)
+
+    def retry(messages):
+        feedback = json.loads([m for m in messages if m["role"] == "tool"][-1]["content"])
+        assert feedback["status"] == "FAILED"
+        return call("retry", {"type": "browser.snapshot"})
+
+    model = Model(call("first", {"type": "browser.snapshot"}), retry, {"content": "observed"})
+    computer = FlakyComputer()
+    await run(db, settings, manager, model, computer)
+    assert state(db, task.id).status == "COMPLETED"
+    assert len(computer.calls) == 2
+    with db.sessions() as s:
+        assert not s.scalars(select(Approval)).all()

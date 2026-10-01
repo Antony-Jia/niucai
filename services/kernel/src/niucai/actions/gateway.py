@@ -113,6 +113,7 @@ class ActionGateway:
             computer = require(s, Computer, action.computer_id, lock=True) if action.computer_id else None
             action = require(s, Action, action_id, lock=True)
             dispatched = False
+            read_only = action.spec["type"] in {"browser.snapshot", "files.read"}
             try:
                 self.check_task(task, token)
                 if computer and computer.kind != "linux":
@@ -146,11 +147,16 @@ class ActionGateway:
                 action.status = "APPROVED" if action.risk == "HIGH" else "PROPOSED"
                 s.commit()
                 raise
-            except (TimeoutError, asyncio.CancelledError):
-                action.status, action.result = "UNKNOWN", {"error": "execution interrupted or timed out"}
+            except TimeoutError:
+                action.status, action.result = (
+                    "FAILED" if read_only else "UNKNOWN",
+                    {"error": "execution timed out"},
+                )
+            except asyncio.CancelledError:
+                action.status, action.result = "UNKNOWN", {"error": "execution interrupted"}
             except Exception as exc:
                 action.status, action.result = (
-                    "UNKNOWN" if dispatched else "FAILED",
+                    "UNKNOWN" if dispatched and not read_only else "FAILED",
                     {"error": type(exc).__name__, "detail": str(exc)[:500]},
                 )
             s.add(Audit(action_id=action.id, outcome=action.status, data={"type": action.spec["type"]}))

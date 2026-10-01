@@ -327,7 +327,9 @@ async def test_executor_error_after_dispatch_is_unknown(setup):
             raise OSError("lost connection after possible side effect")
 
     gateway = ActionGateway(db, settings, UncertainAdapter())
-    action = gateway.propose(task.id, task.run_token, {"type": "browser.snapshot"}, "error")
+    action = gateway.propose(
+        task.id, task.run_token, {"type": "browser.navigate", "url": "https://example.com"}, "error"
+    )
     assert (await gateway.execute(action.id, task.run_token)).status == "UNKNOWN"
 
 

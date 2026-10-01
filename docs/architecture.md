@@ -74,7 +74,8 @@ DeepAgents 的内置文件工具只操作默认虚拟 Backend；真实 workspace
 
 审批 / UNKNOWN 的 interrupt 只能由 Kernel 的持久动作状态解除。点击 resume 本身不授权动作。
 UNKNOWN 必须经过人工 reconcile；拒绝审批作为 DENIED 工具反馈返回模型，允许选择其它方式。
-工具校验 / 禁用 Shell 等明确失败可直接反馈并纠错；执行器已派发后的异常保守按 UNKNOWN 处理。
+工具校验 / 禁用 Shell 等明确失败可直接反馈并纠错；只读 browser.snapshot / files.read 的超时和错误直接返回 FAILED，允许即时重试或调整。
+可能产生副作用的执行器已派发后异常仍保守按 UNKNOWN 处理；进程崩溃和取消保持人工核验。
 动作预算耗尽时 interrupt，用户 resume 后由 Kernel 延长预算；内部循环预算耗尽也等待用户。
 
 部署升级前暂停旧 Worker，执行 `uv run --no-sync alembic upgrade head`，再启动新 Worker。
