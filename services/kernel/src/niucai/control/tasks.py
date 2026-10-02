@@ -61,6 +61,11 @@ class TaskManager:
                     **task.checkpoint,
                     "budget_limit": task.current_step + self.settings.max_steps,
                 }
+            if operation == "resume" and task.checkpoint.get("reason") == "agent requested human":
+                task.checkpoint = {
+                    **task.checkpoint,
+                    "pi_human_resumed": task.checkpoint.get("pi_human_wait"),
+                }
             if operation == "retry":
                 task.retry_count += 1
             emit(s, f"task.{operation}", task.id, status=destination)

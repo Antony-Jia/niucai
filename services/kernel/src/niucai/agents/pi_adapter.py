@@ -1,0 +1,264 @@
+"""Pi Durable owns reasoning; Kernel journals and fences every external operation.
+
+Private stdio transport deliberately keeps credentials and computer capabilities out
+of the Node harness. JSONL sessions live outside the agent workspace, with fsync and
+an inherited OS lock held until the child exits. No distributed transaction is claimed.
+"""
+
+import asyncio
+import fcntl
+import json
+import os
+import shutil
+from hashlib import sha256
+
+from pydantic import TypeAdapter
+from sqlalchemy import select
+
+from niucai.control.tasks import Conflict, require
+from niucai.domain.schemas import ActionSpec, Plan, Role
+from niucai.storage.db import Action, Task, emit
+
+
+def inline_schema(schema):
+    """TypeBox and the model see a self-contained schema; Python validates again."""
+    definitions = schema.get("$defs", {})
+
+    def expand(value):
+        if isinstance(value, list):
+            return [expand(v) for v in value]
+        if not isinstance(value, dict):
+            return value
+        if "$ref" in value:
+            return expand(definitions[value["$ref"].split("/")[-1]])
+        result = {k: expand(v) for k, v in value.items() if k not in {"$defs", "discriminator"}}
+        # TypeBox's plain JSON Schema validator uses anyOf for union types.
+        if "oneOf" in result:
+            result["anyOf"] = result.pop("oneOf")
+        return result
+
+    return expand(schema)
+
+
+class PiDurableRuntime:
+    def __init__(self, gateway):
+        self.gateway = gateway
+
+    async def run(self, worker, task):
+        token, task_id = task.run_token, task.id
+
+        def current():
+            with worker.db.sessions() as session:
+                value = require(session, Task, task_id)
+                worker.actions.check_task(value, token)
+                return value
+
+        current()
+        storage_root = worker.settings.pi_storage.resolve()
+        workspace = worker.settings.workspace.resolve()
+        if storage_root == workspace or workspace in storage_root.parents:
+            raise ValueError("Pi session storage must be outside the agent workspace")
+        storage = storage_root / sha256(task_id.encode()).hexdigest()
+        storage.mkdir(parents=True, exist_ok=True, mode=0o700)
+        lock = (storage / "writer.lock").open("a+")
+        process = None
+        serve = monitor = drain = None
+        try:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise Conflict("Pi session still has a writer; retry after its exit") from exc
+            package = worker.context.compile(task_id)
+            if not task.plan:
+                plan = await self.gateway.structured(Role.PLANNER, package, Plan, task_id)
+                current()
+                worker.tasks.update(task_id, token, plan=plan.model_dump(mode="json"))
+                package = worker.context.compile(task_id)
+            prompt = (
+                package["policies"]
+                + " Use execute_action for every external computer/browser/file/shell operation. "
+                "Read tool feedback and adjust your approach in this session. FAILED permits correction; "
+                "UNKNOWN requires human inspection. Use update_plan to revise the plan, task to delegate, "
+                "and wait_for_human for login or clarification. A final answer completes the work. "
+                "Kernel context at this run's start (later tool feedback supersedes observations): "
+                + json.dumps(package, ensure_ascii=False)
+            )
+            node = shutil.which(worker.settings.pi_node)
+            entrypoint = worker.settings.pi_entrypoint.resolve()
+            if not node or not entrypoint.is_file():
+                raise ValueError("build services/pi-runtime with Node 24: npm ci && npm run build")
+            profile = self.gateway.router.resolve(Role.EXECUTOR) if hasattr(self.gateway, "router") else None
+            config = {
+                "taskId": task_id,
+                "storage": str(storage),
+                "prompt": prompt,
+                "actionSchema": inline_schema(TypeAdapter(ActionSpec).json_schema()),
+                "planSchema": inline_schema(Plan.model_json_schema()),
+                "contextWindow": profile.context_window if profile else 64000,
+                "maxTokens": profile.max_tokens if profile else 4096,
+                "retryCount": task.retry_count,
+                "requestId": task.checkpoint.get("pi_request_id"),
+            }
+            current()
+            # Inheritance ensures a killed Python owner cannot release a live Node writer's lock.
+            process = await asyncio.create_subprocess_exec(
+                node,
+                str(entrypoint),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                limit=8 * 1024 * 1024,
+                pass_fds=(lock.fileno(),),
+                env={k: os.environ[k] for k in ("PATH", "LANG", "TZ") if k in os.environ},
+            )
+            process.stdin.write((json.dumps(config, ensure_ascii=False) + "\n").encode())
+            await process.stdin.drain()
+
+            model_turns = 0
+
+            async def rpc(method, params):
+                nonlocal model_turns
+                value = current()
+                if method == "model.chat":
+                    if model_turns >= worker.settings.max_model_turns:
+                        return {"wait": {"reason": "model turn budget exhausted"}}
+                    model_turns += 1
+                    role = Role(params["role"])
+                    if role not in {Role.EXECUTOR, Role.SUMMARIZER}:
+                        raise ValueError("unsupported harness model role")
+                    data = await self.gateway.chat(
+                        role,
+                        params["messages"],
+                        task_id,
+                        **({"tools": params["tools"]} if params.get("tools") else {}),
+                    )
+                    current()
+                    return data
+                if method == "task.plan":
+                    plan = Plan.model_validate(params["plan"])
+                    worker.tasks.update(task_id, token, plan=plan.model_dump(mode="json"))
+                    return {"plan_saved": True}
+                if method == "task.wait":
+                    key = str(params["toolTaskId"])
+                    if value.checkpoint.get("pi_human_resumed") == key:
+                        return {"human_resumed": True}
+                    worker.tasks.update(
+                        task_id,
+                        token,
+                        checkpoint={
+                            **value.checkpoint,
+                            "pi_human_wait": key,
+                            "reason": "agent requested human",
+                            "detail": str(params["reason"])[:4000],
+                        },
+                    )
+                    return {
+                        "wait": {"reason": "agent requested human", "detail": str(params["reason"])[:4000]}
+                    }
+                if method != "action.execute":
+                    raise ValueError("unknown Pi bridge method")
+                key = f"{task_id}:pi:{sha256(str(params['toolTaskId']).encode()).hexdigest()}"
+                with worker.db.sessions() as session:
+                    existing = session.scalar(select(Action).where(Action.idempotency_key == key))
+                if not existing and value.current_step >= value.checkpoint.get(
+                    "budget_limit", worker.settings.max_steps
+                ):
+                    return {"wait": {"reason": "step budget exhausted"}}
+                try:
+                    action = worker.actions.propose(task_id, token, params["spec"], key)
+                except (PermissionError, ValueError) as exc:
+                    return {"status": "FAILED", "error": str(exc)[:500]}
+                action = await worker.actions.execute(action.id, token)
+                if action.status in {"WAITING_APPROVAL", "UNKNOWN"}:
+                    return {"wait": {"reason": action.status, "action_id": action.id}}
+                value = current()
+                counted = value.checkpoint.get("counted_actions", [])
+                if action.id not in counted:
+                    worker.tasks.update(
+                        task_id,
+                        token,
+                        current_step=value.current_step + 1,
+                        checkpoint={
+                            **value.checkpoint,
+                            "counted_actions": [*counted, action.id],
+                            "last_action_id": action.id,
+                            "last_result": action.result,
+                            "last_action_status": action.status,
+                        },
+                    )
+                return {"action_id": action.id, "status": action.status, "result": action.result}
+
+            async def service():
+                while line := await process.stdout.readline():
+                    frame = json.loads(line)
+                    if frame["type"] == "rpc":
+                        # A revoked lease must kill the child, not settle a Pi generation/tool as failed.
+                        try:
+                            response = {
+                                "id": frame["id"],
+                                "result": await rpc(frame["method"], frame["params"]),
+                            }
+                        except (ValueError, PermissionError) as exc:
+                            response = {"id": frame["id"], "error": str(exc)[:500]}
+                        process.stdin.write((json.dumps(response, ensure_ascii=False) + "\n").encode())
+                        await process.stdin.drain()
+                    elif frame["type"] == "session":
+                        value = current()
+                        worker.tasks.update(
+                            task_id,
+                            token,
+                            checkpoint={
+                                **value.checkpoint,
+                                "runtime": "pi",
+                                "pi_conversation_id": frame["conversationId"],
+                                "pi_submission_id": frame["submissionId"],
+                                "pi_request_id": frame["requestId"],
+                            },
+                        )
+                        with worker.db.sessions.begin() as session:
+                            emit(
+                                session,
+                                "agent.started",
+                                task_id,
+                                runtime="pi",
+                                conversation_id=frame["conversationId"],
+                            )
+                    elif frame["type"] == "outcome":
+                        current()
+                        if frame["status"] not in {"COMPLETED", "FAILED", "WAITING_HUMAN"}:
+                            raise ValueError("invalid Pi outcome")
+                        return {"status": frame["status"], "checkpoint": frame["checkpoint"]}
+                    elif frame["type"] == "fatal":
+                        raise RuntimeError(f"Pi runtime: {frame['error'][:500]}")
+                raise RuntimeError(
+                    "Pi process exited before reporting an outcome; retry preserves its session"
+                )
+
+            async def watch_lease():
+                while True:
+                    await asyncio.sleep(0.25)
+                    current()
+
+            async def drain_stderr():
+                # Drain without logging prompts, keys or tool output.
+                while await process.stderr.read(65536):
+                    pass
+
+            serve = asyncio.create_task(service())
+            monitor = asyncio.create_task(watch_lease())
+            drain = asyncio.create_task(drain_stderr())
+            done, _ = await asyncio.wait({serve, monitor}, return_when=asyncio.FIRST_COMPLETED)
+            for future in done:
+                if future is monitor:
+                    future.result()
+            return serve.result()
+        finally:
+            for future in (serve, monitor, drain):
+                if future:
+                    future.cancel()
+            if process:
+                if process.returncode is None:
+                    process.kill()
+                await process.wait()  # Keep storage locked until no child can write.
+            await asyncio.gather(*(f for f in (serve, monitor, drain) if f), return_exceptions=True)
+            lock.close()

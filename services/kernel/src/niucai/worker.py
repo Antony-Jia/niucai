@@ -5,7 +5,7 @@ from opentelemetry import trace
 
 from niucai.actions.adapters import DisabledAdapter, FakeAdapter, LocalAdapter
 from niucai.actions.gateway import ActionGateway
-from niucai.agents.runtime import StructuredRuntime
+from niucai.agents.selection import RuntimeRouter
 from niucai.config import Settings
 from niucai.context.compiler import ContextCompiler
 from niucai.control.tasks import Conflict, TaskManager, require
@@ -45,8 +45,11 @@ class Worker:
         token = task.run_token
         heartbeat = asyncio.create_task(self.heartbeat(task.id, token))
         try:
-            if hasattr(self.runtime, "run"):
-                outcome = await self.runtime.run(self, task)
+            runtime = (
+                self.runtime.select(self, task) if isinstance(self.runtime, RuntimeRouter) else self.runtime
+            )
+            if hasattr(runtime, "run"):
+                outcome = await runtime.run(self, task)
                 with self.db.sessions() as s:
                     current = require(s, Task, task.id)
                 self.tasks.update(
@@ -69,12 +72,12 @@ class Worker:
                     )
                     return
                 if not task.plan:
-                    plan = await self.runtime.plan(self.context.compile(task.id), task.id)
+                    plan = await runtime.plan(self.context.compile(task.id), task.id)
                     task = self.tasks.update(task.id, token, plan=plan.model_dump(mode="json"))
                 if task.checkpoint.get("proposal"):
                     decision = Decision.model_validate(task.checkpoint["proposal"]).validate_action()
                 else:
-                    decision = await self.runtime.decide(self.context.compile(task.id), task.id)
+                    decision = await runtime.decide(self.context.compile(task.id), task.id)
                     task = self.tasks.update(
                         task.id,
                         token,
@@ -85,7 +88,10 @@ class Worker:
                         task.id,
                         token,
                         status="COMPLETED" if decision.kind == "complete" else "WAITING_HUMAN",
-                        checkpoint={"result": decision.explanation},
+                        checkpoint={
+                            **{k: v for k, v in task.checkpoint.items() if k != "proposal"},
+                            "result": decision.explanation,
+                        },
                     )
                     return
                 action = self.actions.propose(
@@ -105,6 +111,7 @@ class Worker:
                     token,
                     current_step=task.current_step + 1,
                     checkpoint={
+                        **{k: v for k, v in task.checkpoint.items() if k != "proposal"},
                         "budget_limit": task.checkpoint.get("budget_limit", self.settings.max_steps),
                         "last_action_id": action.id,
                         "last_result": action.result,
@@ -167,12 +174,7 @@ async def main():
         raise ValueError("lease_seconds must exceed twice action_timeout")
     db = Database(settings.database_url)
     gateway = ModelGateway(db, settings, ModelRouter(settings.model_config_path))
-    if settings.runtime == "deepagents":
-        from niucai.agents.deepagent_adapter import DeepAgentRuntime
-
-        runtime = DeepAgentRuntime(gateway)
-    else:
-        runtime = StructuredRuntime(gateway)
+    runtime = RuntimeRouter(gateway)
     adapter = make_adapter(settings)
     worker = Worker(db, settings, runtime, adapter)
     try:

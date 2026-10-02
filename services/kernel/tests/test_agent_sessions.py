@@ -1,4 +1,4 @@
-"""Exercise actual DeepAgents/LangGraph with deterministic model and computer I/O."""
+"""Exercise both actual harnesses with deterministic model and computer I/O."""
 
 import json
 
@@ -13,6 +13,16 @@ from niucai.storage.db import Action, Approval, Database, Task
 from niucai.worker import Worker
 
 pytest.importorskip("deepagents")
+
+
+@pytest.fixture(params=["deepagents", "pi"], autouse=True)
+def harness(request, monkeypatch):
+    import sys
+
+    if request.param == "pi":
+        from niucai.agents.pi_adapter import PiDurableRuntime
+
+        monkeypatch.setattr(sys.modules[__name__], "DeepAgentRuntime", PiDurableRuntime)
 
 
 def call(ident, spec):
@@ -72,7 +82,7 @@ async def test_feedback_drives_correction_in_same_session(setup):
 
     def corrected(messages):
         feedback = [m for m in messages if m["role"] == "tool"]
-        assert '"status": "FAILED"' in feedback[-1]["content"]
+        assert json.loads(feedback[-1]["content"])["status"] == "FAILED"
         return call("snapshot", {"type": "browser.snapshot"})
 
     def final(messages):

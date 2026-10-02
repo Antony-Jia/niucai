@@ -17,3 +17,5 @@ target/
 *.tsbuildinfo
 playwright-report/
 test-results/
+
+runtime/

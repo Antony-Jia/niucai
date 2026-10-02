@@ -12,7 +12,7 @@
 | Task / State | PostgreSQL 持久化、独立于 Chat、pause/resume/retry/cancel、checkpoint |
 | Worker | `FOR UPDATE SKIP LOCKED` 领取任务、心跳、租约恢复、run token 阻止过期 Worker 写入 |
 | Context Compiler | Identity / Goal / State / Plan / Memory / Computer / Recent Actions / Artifacts / Tools / Policy，裁剪可选内容 |
-| Agent Runtime | DeepAgents + LangGraph 适配器；轻量 structured runtime 可切换；不拥有系统状态 |
+| Agent Runtime | Pi Durable 持久会话、工具反馈、子 Agent、压缩；旧任务兼容 DeepAgents / structured |
 | Model Router | planner / executor / browser / fast / vision / summarizer / guard / memory，按角色配置模型与层级 |
 | Model Gateway | OpenRouter 统一请求、有限重试、模型事件、延迟、Token / Cost 使用信息 |
 | Action Gateway | Pydantic 类型校验、策略、人工审批、审计、幂等键、动作执行前日志 |
@@ -27,6 +27,7 @@
 ```text
 apps/desktop/      Windows 优先的 Tauri 2 + React 客户端
 apps/web/          Android 优先的 React PWA 手机控制端
+services/pi-runtime/  Pi Durable Node 24 私有 stdio 运行时
 services/kernel/
   src/niucai/
     domain/        类型化协议
@@ -45,10 +46,13 @@ deploy/caddy/      HTTPS 代理模板
 docs/             架构、API、接入、验收
 ```
 
-## 本地运行（Python 3.12 + uv）
+## 本地运行（Linux Worker：Python 3.12 + uv + Node 24）
 
 ```bash
-cd services/kernel
+cd services/pi-runtime
+npm ci --ignore-scripts
+npm run build
+cd ../kernel
 uv sync --frozen --extra harness --extra browser
 cp .env.example .env
 # 在 .env 中设置 NIUCAI_API_TOKEN，至少 32 字符；推荐 secrets.token_hex(32)。
@@ -56,14 +60,15 @@ uv run alembic upgrade head
 uv run uvicorn niucai.api.app:app --host 127.0.0.1 --port 8080
 ```
 
-另开终端，先填写 `models.yaml` 的 `planner` 与 `executor` 模型 slug、`.env` 中的 OpenRouter Key：
+另开终端，先填写 `models.yaml` 的 `planner`、`executor` 与 `summarizer` 模型 slug、`.env` 中的 OpenRouter Key：
 
 ```bash
 cd services/kernel
 uv run --extra harness --extra browser python -m niucai.worker
 ```
 
-默认 `NIUCAI_RUNTIME=deepagents`。`structured` 模式直接调用 Gateway 返回类型化决策。
+默认 `NIUCAI_RUNTIME=pi`。Pi Durable 接管推理会话与恢复，Kernel 管理动作和权威状态。
+既有任务自动保留原运行时；`structured` 可显式选择。详见 [Pi Durable 研究与迁移](docs/pi-durable.md)。
 配置缺失的任务会以明确错误进入 FAILED，补齐后可 retry。没有设备时可以创建纯推理任务。
 
 ```bash
@@ -92,6 +97,8 @@ docker compose up -d --build
 ## 测试
 
 ```bash
+npm run build --prefix services/pi-runtime
+npm test --prefix services/pi-runtime
 cd services/kernel
 uv run --extra harness --extra browser pytest -q
 uv run ruff check src tests migrations
@@ -110,7 +117,8 @@ GitHub Actions 自动检查 main push / PR，并支持手动触发：Python 检�
 ## V1 边界
 
 - 单用户 API Bearer Token 认证；REST 与 WebSocket 均认证。Username / Password / TOTP 登录界面尚未实现。
-- DeepAgents 保持持续推理会话；LangGraph 检查点、工具反馈与子图中断持久化到数据库。
+- Pi Durable 保持持续推理会话；会话、工具意图与子 Agent 持久化到独立 JSONL 卷（fsync），部署为单个 Linux Worker。
+  备份恢复需同时保存 PostgreSQL 和 pi_sessions；旧 LangGraph 检查点保留供原任务恢复。
   Kernel 拥有 Task、权限、审批、动作日志和接管状态；会话通过受控工具访问真实电脑。
 - browser / vision 等角色可配置；当前主流程使用 planner + executor，不承诺自动复杂路由。
 - Memory 使用 PostgreSQL 记录与词项相关性筛选；pgvector 基础镜像已选定，但 embedding 与向量检索未启用。

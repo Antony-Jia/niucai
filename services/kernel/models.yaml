@@ -1,7 +1,7 @@
 # Set actual model slugs after choosing providers. No API request is made until configured.
 roles:
   planner: {model: "", tier: HIGH, reasoning: high}
-  executor: {model: "", tier: STANDARD, reasoning: medium}
+  executor: {model: "", tier: STANDARD, reasoning: medium, context_window: 64000}
   browser: {model: "", tier: STANDARD}
   fast: {model: "", tier: FAST}
   vision: {model: "", tier: STANDARD}

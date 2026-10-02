@@ -14,6 +14,7 @@ def setup(tmp_path):
         database_url=url,
         api_token="x" * 40,
         workspace=tmp_path / "workspace",
+        pi_storage=tmp_path / "pi",
         model_config_path="models.yaml",
         poll_seconds=0.01,
     )

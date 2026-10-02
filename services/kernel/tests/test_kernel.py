@@ -51,7 +51,8 @@ async def test_worker_end_to_end(setup):
         task = s.get(Task, task.id)
         assert task.status == "COMPLETED"
         assert task.current_step == 1
-        assert task.checkpoint == {"result": "done"}
+        assert task.checkpoint["result"] == "done"
+        assert "proposal" not in task.checkpoint
         assert s.scalar(select(Action)).status == "SUCCEEDED"
         assert s.scalar(select(TaskRun)).status == "COMPLETED"
         assert "task.completed" in s.scalars(select(Event.type)).all()

@@ -1,14 +1,17 @@
 name: niucai
 x-kernel: &kernel
   build:
-    context: ../../services/kernel
+    context: ../..
+    dockerfile: services/kernel/Dockerfile
   env_file: .env
   environment:
     NIUCAI_DATABASE_URL: postgresql+psycopg://niucai:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/niucai
     NIUCAI_WORKSPACE: /workspace
+    NIUCAI_PI_STORAGE: /var/lib/niucai/pi
     NIUCAI_MODEL_CONFIG_PATH: /app/models.yaml
   volumes:
     - workspace:/workspace
+    - pi_sessions:/var/lib/niucai/pi
     - ../../services/kernel/models.yaml:/app/models.yaml:ro
   restart: unless-stopped
   depends_on:
@@ -31,7 +34,8 @@ services:
     restart: unless-stopped
   migrate:
     build:
-      context: ../../services/kernel
+      context: ../..
+      dockerfile: services/kernel/Dockerfile
     env_file: .env
     environment:
       NIUCAI_DATABASE_URL: postgresql+psycopg://niucai:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/niucai
@@ -77,6 +81,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
 volumes:
+  pi_sessions:
   postgres:
   workspace:
   caddy_data:

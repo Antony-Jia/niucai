@@ -1,6 +1,7 @@
 from pathlib import Path
+from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,13 +13,17 @@ class Settings(BaseSettings):
     api_token: SecretStr = SecretStr("")
     openrouter_api_key: SecretStr = SecretStr("")
     model_config_path: Path = Path("models.yaml")
-    runtime: str = "deepagents"
+    runtime: Literal["pi", "deepagents", "structured"] = "pi"
+    pi_storage: Path = Path("./runtime/pi")
+    pi_entrypoint: Path = Path(__file__).resolve().parents[3] / "pi-runtime/dist/main.js"
+    pi_node: str = "node"
     adapter: str = "disabled"
     workspace: Path = Path("./workspace")
     browser_cdp_url: str = "http://computer:9222"
     lease_seconds: int = 90
     poll_seconds: float = 1
     max_steps: int = 30
+    max_model_turns: int = Field(default=100, ge=1, le=1000)
     context_chars: int = 24000
     tool_result_chars: int = 12000
     action_timeout: float = 30

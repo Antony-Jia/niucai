@@ -4,7 +4,7 @@ import time
 import httpx
 import yaml
 from opentelemetry import trace
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from niucai.domain.schemas import Role
 from niucai.storage.db import emit
@@ -17,7 +17,14 @@ class Profile(BaseModel):
     model: str
     tier: str = "STANDARD"
     reasoning: str | None = None
+    context_window: int = Field(default=64000, ge=8192, le=2000000)
     max_tokens: int = Field(default=4096, ge=256, le=16000)
+
+    @model_validator(mode="after")
+    def valid_window(self):
+        if self.max_tokens >= self.context_window:
+            raise ValueError("max_tokens must be smaller than context_window")
+        return self
 
 
 class ModelRouter:

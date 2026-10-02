@@ -2,7 +2,7 @@
 
 ## 本地已经验证的内容
 
-验证结果：24 passed，3 个 PostgreSQL 专用测试 skipped；Ruff 与迁移 schema check 通过。
+自动验证由 Kernel CI 执行；最新结果以 CI 测试报告为准，避免文档中的旧计数误导。
 
 - Task 创建、持续执行与完成；TaskRun 和 Event 持久化。
 - 审批暂停、批准/拒绝后恢复，恢复使用原 proposal，不重复创建动作。
@@ -34,8 +34,8 @@
 ## 交付范围
 
 此次交付为 V1 Kernel 可运行核心，以及后续远程 Computer 适配接口。
-Mobile PWA、Android Companion、复杂 RAG、embedding、完整用户登录体系
-及 Remote Desktop 镜像尚未开发。
+Windows Desktop 与 Android Mobile PWA 已实现；Android Companion、复杂 RAG、embedding、完整用户登录体系
+及 Remote Desktop 镜像留待后续阶段。
 
 
 ## Windows Desktop
@@ -44,16 +44,18 @@ Mobile PWA、Android Companion、复杂 RAG、embedding、完整用户登录体�
 
 ## 持续 Agent 会话验证
 
-使用真实 DeepAgents / LangGraph、脚本化 Model Gateway 和假电脑执行器验证：
+使用真实 Pi Durable Node 进程与旧 DeepAgents / LangGraph、脚本化 Model Gateway 和假电脑执行器验证：
 
 - 失败反馈进入同一推理会话，模型观察并调整下一步。
 - 审批同意 / 拒绝在重建数据库引擎和运行时后继续，不重提动作。
 - 未决审批不能被 resume 绕过，UNKNOWN 不能被 resume 自动重试。
-- 模型调用期间人工接管，迟到结果不执行；交还后恢复图。
-- 动作预算 interrupt 后恢复原工具调用。
+- 模型调用期间人工接管，迟到结果不执行；交还后恢复会话。
+- 动作预算暂停后恢复原工具调用。
 - 子 Agent 工具审批保持子图检查点。
 - 动作提交后、工具结果保存前崩溃，不重复执行或计数。
 - 最终回答保存后崩溃，恢复不重复模型调用。
 - 撤销租约的旧 Worker 无法写图检查点。
 
 以上测试由 Kernel CI 在 SQLite 和 PostgreSQL 两个矩阵中运行，不使用真实模型密钥。
+
+Pi 单写者、失败重试、模型轮次预算与自动租约恢复的人工等待语义，详见 [Pi Durable 文档](pi-durable.md)。

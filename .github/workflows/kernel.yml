@@ -75,6 +75,18 @@ jobs:
           cache-dependency-glob: services/kernel/uv.lock
       - name: Install locked dependencies
         run: uv sync --frozen --extra harness --extra browser
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: services/pi-runtime/package-lock.json
+      - name: Build and check Pi runtime
+        working-directory: services/pi-runtime
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run check
+          npm run build
+          npm test
       - name: Migrate a fresh database
         run: uv run --no-sync alembic upgrade head
       - name: SQLite tests
@@ -109,7 +121,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build kernel image
-        run: docker build -t niucai-kernel:ci services/kernel
+        run: docker build -f services/kernel/Dockerfile -t niucai-kernel:ci .
+      - name: Verify Pi runtime inside image
+        run: docker run --rm niucai-kernel:ci node --input-type=module -e "import('/opt/pi-runtime/node_modules/@earendil-works/pi-durable/dist/index.js').then(() => console.log(process.version))"
       - name: Verify migrations inside image
         run: docker run --rm niucai-kernel:ci uv run --no-sync alembic upgrade head
       - name: Start API without external credentials
