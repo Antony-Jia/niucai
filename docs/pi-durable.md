@@ -102,7 +102,7 @@ docker build -f services/kernel/Dockerfile -t niucai-kernel .
 Task.checkpoint.runtime 第一次领取后固定，改变默认配置不会偷偷切换运行中的任务。
 
 新部署还需配置 executor、planner、summarizer 模型与 OpenRouter Key。设备未接入时保持 adapter=disabled。
-备份恢复应在停止 Worker 后，同时保存数据库与 pi_sessions；只恢复数据库不能恢复 Pi 推理 Session。
+备份恢复应在停止 Worker 后，同时保存数据库与 pi_sessions；只恢复数据库不能恢复 Pi 推理 Session。已有 Session 缺失或 submission 与数据库检查点不一致时，会明确失败，禁止静默新建会话。
 不执行 `docker compose down -v`，否则会删除包括会话在内的持久数据。
 
 ## 验证范围

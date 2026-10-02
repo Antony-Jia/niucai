@@ -68,6 +68,12 @@ class PiDurableRuntime:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
                 raise Conflict("Pi session still has a writer; retry after its exit") from exc
+            if task.checkpoint.get("pi_submission_id") is not None:
+                journal = storage / "main.jsonl"
+                if not journal.is_file() or journal.stat().st_size == 0:
+                    raise ValueError(
+                        "Pi session storage missing; restore pi_sessions with the database before retry"
+                    )
             package = worker.context.compile(task_id)
             if not task.plan:
                 plan = await self.gateway.structured(Role.PLANNER, package, Plan, task_id)
@@ -98,6 +104,7 @@ class PiDurableRuntime:
                 "maxTokens": profile.max_tokens if profile else 4096,
                 "retryCount": task.retry_count,
                 "requestId": task.checkpoint.get("pi_request_id"),
+                "submissionId": task.checkpoint.get("pi_submission_id"),
             }
             current()
             # Inheritance ensures a killed Python owner cannot release a live Node writer's lock.

@@ -218,3 +218,23 @@ async def test_compaction_uses_kernel_summarizer_role(setup):
     await worker.run_once()
     assert state(db, task.id).status == "COMPLETED"
     assert model.summaries >= 1
+
+
+async def test_missing_session_volume_fails_without_replanning(setup):
+    import shutil
+
+    db, settings, manager, cid = setup
+    task = manager.create(TaskCreate(title="lost", goal="write", computer_id=cid))
+    model = Model(call("write", {"type": "files.write", "path": "a", "content": "x"}))
+    computer = Computer()
+    worker = Worker(db, settings, PiDurableRuntime(model), computer)
+    await worker.run_once()
+    assert state(db, task.id).status == "WAITING_HUMAN"
+    shutil.rmtree(settings.pi_storage)
+    manager.transition(task.id, "resume")
+    await worker.run_once()
+    after = state(db, task.id)
+    assert after.status == "FAILED"
+    assert "Pi session storage missing" in after.checkpoint["detail"]
+    assert len(model.messages) == 1
+    assert not computer.calls

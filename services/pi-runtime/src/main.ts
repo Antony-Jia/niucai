@@ -247,6 +247,19 @@ async function main() {
     const root = await harness.root(context, {
       agent: { model: { provider: "niucai", modelId: "executor" } },
     });
+    if (config.submissionId !== undefined && config.submissionId !== null) {
+      const existing = await harness.submission(config.submissionId, context);
+      const record = await existing?.status(context);
+      if (
+        !record ||
+        record.requestId !== config.requestId ||
+        record.conversationId !== root.id
+      ) {
+        throw new Error(
+          "Pi session does not match Kernel checkpoint; restore the matching session backup",
+        );
+      }
+    }
     await root.configure({ instructions: config.prompt }, context);
     let requestId = config.requestId ?? `kernel:${config.taskId}`;
     let submission = await root.submit(
