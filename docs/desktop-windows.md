@@ -29,7 +29,7 @@ Windows 系统凭据条目的服务名为 `niucai.desktop`，账户名为 Kernel
 | Dashboard | 任务、在线电脑、审批与最近事件 |
 | Chat | 持久会话，统一 Model Gateway；消息可显式转成独立 Task |
 | Tasks | 创建、筛选、详情、计划、动作、暂停、恢复、重试、取消，UNKNOWN 动作人工核验 |
-| Computer | 注册 Linux 节点、接管、交还、暂停、恢复、独立远程窗口与全屏 |
+| Computer | 三栏工作台、最近任务、执行过程、对话、内嵌桌面、接管与交还 |
 | Files | 查看任务产物并通过 Windows 保存对话框下载，当前单文件上限 100 MB |
 | Memory | 查看、新增语义/经历记忆 |
 | Settings | Kernel 地址、Token、KasmVNC 地址、凭据保存与清除 |
@@ -38,11 +38,19 @@ Windows 系统凭据条目的服务名为 `niucai.desktop`，账户名为 Kernel
 
 Chat 没有操作工具，也不会自动创建 Task。模型不可用时消息仍持久保存，并显示明确失败。API 进程若在回复过程中重启，未完成消息保留 PENDING；请新建会话继续，避免重复发送同一轮请求。
 
+## 三栏工作台
+
+Computer 页面采用浅色三栏布局：左侧导航与最近任务，中间是所选任务的计划、动作、结果、审批及任务输入，右侧是云端桌面。点击左侧任务即可切换；右侧支持切换 Files、管理电脑和展开桌面。对话页签使用独立的持久会话，不把聊天隐式变成 Task。
+
+Windows 使用独立的 WebView2 子视图将 KasmVNC 页面嵌入右侧；远程页面没有 Kernel IPC 能力或 API Token。调整窗口大小时桌面区域随之调整，打开应用弹窗时暂时隐藏远程子视图。离开工作台、断开连接或交还控制权会关闭子视图。电脑管理页仍保留独立窗口入口。
+
 ## Human takeover
 
-在 Computer 点击接管后，Kernel 先取得 HUMAN 控制权并暂停这台电脑相关的任务。随后才能打开远程桌面窗口。交还或暂停会先关闭客户端的远程窗口，再更新 Kernel 控制权。Kernel Action Gateway 会在 HUMAN 控制期间拒绝 Agent 输入操作。
+在 Computer 点击接管后，Kernel 先取得 HUMAN 控制权并暂停这台电脑相关的任务。随后才能在右侧打开远程桌面。交还或暂停会先关闭客户端的远程窗口，再更新 Kernel 控制权。Kernel Action Gateway 会在 HUMAN 控制期间拒绝 Agent 输入操作。
 
 远程窗口不会获得客户端的 Kernel IPC 权限或 API Token。鼠标、键盘、中文输入、剪贴板与桌面显示由服务器 KasmVNC/WebView2 提供；当前仓库不包含云端桌面镜像，需要之后配置并联调真实设备。关闭窗口不自动交还控制权，请使用交还按钮。
+
+当前只允许 HUMAN 控制期间连接远程桌面。Agent 工作时的实时只读观察尚未接入；示例模式的画面明确标为示例，不能当作真实 Agent 执行画面。
 
 这一版连接一个 Kernel、一个 KasmVNC 桌面地址。Computer 注册不会创建虚拟机；多个电脑可以登记、查看状态与控制权，但远程桌面入口只对应配置的单台电脑。Android 尚未接入。
 

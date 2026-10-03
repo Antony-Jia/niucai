@@ -185,7 +185,7 @@ export function Tasks() {
     </>
   );
 }
-function TaskDetail({ task }: { task: Task }) {
+export function TaskDetail({ task }: { task: Task }) {
   const actions = useData(["actions", task.id], () => api.actions(task.id));
   const command = useCommand(
     (operation: string) => api.taskControl(task.id, operation),

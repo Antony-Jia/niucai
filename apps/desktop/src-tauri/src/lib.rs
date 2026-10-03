@@ -181,9 +181,7 @@ async fn connect_kernel(
     };
     save_profile(&app, &profile)?;
     stop(&state);
-    if let Some(window) = app.get_webview_window("computer") {
-        let _ = window.close();
-    }
+    close_remote(&app)?;
     *state.connection.lock().unwrap() = Some(credentials);
     Ok(view(profile, true))
 }
@@ -195,9 +193,7 @@ fn disconnect_kernel(
 ) -> Result<(), String> {
     trusted(&window)?;
     stop(&state);
-    if let Some(window) = app.get_webview_window("computer") {
-        let _ = window.close();
-    }
+    close_remote(&app)?;
     if let Some(c) = state.connection.lock().unwrap().take() {
         forget(&c.base)?;
         save_profile(
@@ -277,12 +273,102 @@ async fn open_computer(
         }
     }
 }
+#[derive(Deserialize)]
+struct DesktopBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    visible: bool,
+}
+
+#[tauri::command]
+async fn embed_computer(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: State<'_, KernelState>,
+    computer_id: String,
+    bounds: DesktopBounds,
+) -> Result<(), String> {
+    trusted(&window)?;
+    for coordinate in [bounds.x, bounds.y, bounds.width, bounds.height] {
+        if !coordinate.is_finite() || !(0.0..=20000.0).contains(&coordinate) {
+            return Err("无效桌面尺寸".into());
+        }
+    }
+    if bounds.width < 50.0 || bounds.height < 50.0 {
+        return Err("桌面区域过小".into());
+    }
+    if !bounds.visible {
+        if let Some(view) = app.get_webview("computer-embedded") {
+            view.hide().map_err(|_| "无法隐藏桌面")?;
+        }
+        return Ok(());
+    }
+    let c = connection(&state)?;
+    let current = transport::request(
+        &c,
+        &format!("/api/computers/{computer_id}"),
+        "GET",
+        Value::Null,
+    )
+    .await?;
+    if current["control"] != "HUMAN" || current["kind"] != "linux" {
+        close_remote(&app)?;
+        return Err("请先接管 Linux Computer".into());
+    }
+    let position = tauri::LogicalPosition::new(bounds.x, bounds.y);
+    let size = tauri::LogicalSize::new(bounds.width, bounds.height);
+    if let Some(view) = app.get_webview("computer-embedded") {
+        if state.remote_computer.lock().unwrap().as_deref() != Some(computer_id.as_str()) {
+            return Err("请先关闭桌面再切换电脑".into());
+        }
+        view.set_position(position).map_err(|_| "无法定位桌面")?;
+        view.set_size(size).map_err(|_| "无法调整桌面尺寸")?;
+        view.show().map_err(|_| "无法显示桌面")?;
+    } else {
+        close_remote(&app)?;
+        let remote = validate_url(&c.computer_url)?;
+        let parent = app.get_window("main").ok_or("主窗口不存在")?;
+        // Separate WebView2 child: no iframe, remote IPC capability, token or script injection.
+        // Async creation avoids the Windows synchronous-builder deadlock.
+        parent
+            .add_child(
+                tauri::webview::WebviewBuilder::new(
+                    "computer-embedded",
+                    WebviewUrl::External(remote),
+                ),
+                position,
+                size,
+            )
+            .map_err(|_| "无法创建内嵌桌面")?;
+        *state.remote_computer.lock().unwrap() = Some(computer_id.clone());
+    }
+    match transport::request(
+        &c,
+        &format!("/api/computers/{computer_id}"),
+        "GET",
+        Value::Null,
+    )
+    .await
+    {
+        Ok(value) if value["control"] == "HUMAN" => Ok(()),
+        _ => {
+            close_remote(&app)?;
+            Err("控制权已变化，请重新接管".into())
+        }
+    }
+}
+
 #[tauri::command]
 fn close_computer(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
     trusted(&window)?;
     close_remote(&app)
 }
 fn close_remote(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(view) = app.get_webview("computer-embedded") {
+        view.close().map_err(|_| "无法关闭内嵌桌面")?;
+    }
     if let Some(window) = app.get_webview_window("computer") {
         window.close().map_err(|_| "无法关闭桌面窗口")?;
     }
@@ -400,6 +486,7 @@ pub fn run() {
             disconnect_kernel,
             api_request,
             open_computer,
+            embed_computer,
             close_computer,
             toggle_computer_fullscreen,
             start_events,

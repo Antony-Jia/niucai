@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
   MessageSquare,
@@ -12,11 +12,12 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useApp } from "./lib/state";
+import { useApp, useData } from "./lib/state";
 import { Dashboard } from "./pages/Dashboard";
 import { Tasks } from "./pages/Tasks";
 import { Chat } from "./pages/Chat";
-import { ComputerPage } from "./pages/Computer";
+import { Workbench } from "./pages/Workbench";
+import { api } from "./lib/api";
 import { Files, MemoryPage } from "./pages/FilesMemory";
 import { Settings } from "./pages/Settings";
 import type { Page } from "./lib/types";
@@ -33,6 +34,8 @@ export function App() {
   const { page, setPage, connected, demo, profile, stream, notice, notify } =
     useApp();
   const cache = useQueryClient();
+  const tasks = useData(["tasks"], api.tasks);
+  const [workspaceTask, setWorkspaceTask] = useState<string | null>(null);
   useEffect(() => {
     function shortcut(e: KeyboardEvent) {
       if (
@@ -54,13 +57,15 @@ export function App() {
     dashboard: Dashboard,
     chat: Chat,
     tasks: Tasks,
-    computer: ComputerPage,
+    computer: Workbench,
     files: Files,
     memory: MemoryPage,
     settings: Settings,
   }[page];
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell desktop-app ${page === "computer" ? "workbench-mode" : ""}`}
+    >
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
@@ -85,6 +90,32 @@ export function App() {
             </button>
           ))}
         </nav>
+        <div className="recent-sessions">
+          <div className="sidebar-section">RECENT TASKS</div>
+          {tasks.data?.slice(0, 8).map((t) => (
+            <button
+              key={t.id}
+              className={
+                workspaceTask === t.id && page === "computer"
+                  ? "recent-session selected"
+                  : "recent-session"
+              }
+              onClick={() => {
+                setWorkspaceTask(t.id);
+                setPage("computer");
+              }}
+            >
+              <span>{t.title}</span>
+              <small>
+                {t.status === "RUNNING"
+                  ? "● 运行中"
+                  : t.status === "WAITING_HUMAN"
+                    ? "等待你"
+                    : t.status}
+              </small>
+            </button>
+          ))}
+        </div>
         <div className="sidebar-bottom">
           <div className="connection-dot">
             <i className={connected ? "connected" : ""} />
@@ -137,7 +168,7 @@ export function App() {
           </div>
         )}
         <div className="page-content">
-          <Current />
+          <Current taskId={workspaceTask} onTask={setWorkspaceTask} />
         </div>
         <footer>
           <span>YOUR KERNEL. YOUR COMPUTER.</span>

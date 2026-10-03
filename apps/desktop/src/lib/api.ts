@@ -109,8 +109,28 @@ export async function openComputer(id: string) {
   if (demo) return;
   return invoke("open_computer", { computerId: id });
 }
+let computerQueue: Promise<unknown> = Promise.resolve();
+function computerCommand(command: string, args?: Record<string, unknown>) {
+  const result = computerQueue
+    .catch(() => {})
+    .then(() => invoke(command, args));
+  computerQueue = result;
+  return result;
+}
 export async function closeComputer() {
-  if (native()) await invoke("close_computer");
+  if (native()) await computerCommand("close_computer");
+}
+export function embedComputer(
+  computerId: string,
+  bounds: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    visible: boolean;
+  },
+) {
+  return computerCommand("embed_computer", { computerId, bounds });
 }
 export async function toggleComputerFullscreen() {
   if (native()) await invoke("toggle_computer_fullscreen");

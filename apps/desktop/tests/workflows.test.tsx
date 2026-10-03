@@ -40,7 +40,7 @@ describe("Desktop workflows", () => {
     fireEvent.click(screen.getByRole("button", { name: "交给 Agent 执行" }));
     await screen.findByText("任务已创建");
     await waitFor(() =>
-      expect(screen.getAllByText("核验 Windows 流程")).toHaveLength(2),
+      expect(screen.getAllByText("核验 Windows 流程")).toHaveLength(3),
     );
     fireEvent.click(screen.getByRole("button", { name: "暂停" }));
     await waitFor(() =>
