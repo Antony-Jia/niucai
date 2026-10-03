@@ -96,7 +96,8 @@ export function App() {
             <button
               key={t.id}
               className={
-                workspaceTask === t.id && page === "computer"
+                (workspaceTask || tasks.data?.[0]?.id) === t.id &&
+                page === "computer"
                   ? "recent-session selected"
                   : "recent-session"
               }

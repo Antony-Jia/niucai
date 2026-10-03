@@ -84,3 +84,21 @@ test("three-column workspace selects tasks, creates goals and expands the deskto
   await session.getByRole("button", { name: "对话", exact: true }).click();
   await expect(session.getByLabel("聊天内容")).toBeVisible();
 });
+
+test("workspace fits the minimum Windows window and expands across its full width", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 650 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "体验示例", exact: true }).click();
+  await page.getByRole("button", { name: /^Computer 4$/ }).click();
+  const desktop = page.getByRole("region", { name: "云端电脑面板" });
+  const initial = await desktop.boundingBox();
+  expect(initial!.x + initial!.width).toBeLessThanOrEqual(901);
+  await page.getByRole("button", { name: "展开桌面" }).click();
+  const expanded = await desktop.boundingBox();
+  expect(expanded!.width).toBeGreaterThan(700);
+  await expect(
+    desktop.getByRole("button", { name: "接管电脑", exact: true }),
+  ).toBeVisible();
+});

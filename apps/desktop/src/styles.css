@@ -1668,7 +1668,7 @@ footer span:last-child {
 .workbench .composer textarea {
   color: #33445b;
 }
-.desktop-expanded {
+.workbench.desktop-expanded {
   grid-template-columns: 1fr;
 }
 .desktop-expanded .workbench-session {
