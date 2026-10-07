@@ -1760,3 +1760,22 @@ footer span:last-child {
 .computer-preview small {
   color: var(--muted);
 }
+.task-progress {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid #dce5f1;
+  border-radius: 8px;
+  background: #f6f8fc;
+  color: #344b6e;
+  overflow-wrap: anywhere;
+}
+.task-progress p {
+  margin: 6px 0;
+}
+.task-progress small {
+  display: block;
+  color: #697c95;
+}
+.task-progress .progress-offline {
+  color: #9b5d16;
+}

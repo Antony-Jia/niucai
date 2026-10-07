@@ -5,13 +5,14 @@ import fcntl
 from hashlib import sha256
 
 import pytest
+from sqlalchemy import select
 from test_agent_sessions import Computer, Model, call, state
 
 from niucai.agents.pi_adapter import PiDurableRuntime
 from niucai.agents.selection import RuntimeRouter
 from niucai.control.tasks import Conflict
 from niucai.domain.schemas import TaskCreate
-from niucai.storage.db import Task
+from niucai.storage.db import Approval, Task
 from niucai.worker import Worker
 
 
@@ -125,7 +126,9 @@ async def test_router_pins_runtime_and_preserves_legacy_graph(setup):
     model = Model(call("write", {"type": "files.write", "path": "a", "content": "x"}))
     worker = Worker(db, settings, DeepAgentRuntime(model), Computer())
     await worker.run_once()
-    manager.transition(task.id, "resume")
+    with db.sessions() as s:
+        approval = s.scalar(select(Approval))
+    worker.actions.decide(approval.id, True)
     claimed = manager.claim()
     router = RuntimeRouter(model)
     assert isinstance(router.select(worker, claimed), DeepAgentRuntime)
@@ -251,7 +254,9 @@ async def test_missing_session_volume_fails_without_replanning(setup):
     await worker.run_once()
     assert state(db, task.id).status == "WAITING_HUMAN"
     shutil.rmtree(settings.pi_storage)
-    manager.transition(task.id, "resume")
+    with db.sessions() as s:
+        approval = s.scalar(select(Approval))
+    worker.actions.decide(approval.id, True)
     await worker.run_once()
     after = state(db, task.id)
     assert after.status == "FAILED"

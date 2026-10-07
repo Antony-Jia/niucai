@@ -1,6 +1,7 @@
 # 第二阶段：Kernel 任务进度与异常恢复
 
 状态：实施计划，尚未全部实现。基线日期：2026-10-07。
+本轮进展：K1/K2 已落地源码及自动化验证；真实服务器切换和三端联合验收仍待维护窗口执行。K3–K7 继续按计划推进。
 目标：任务状态可信、等待原因明确、异常可恢复、结果可追溯。
 配套：[远端环境](phase-2-remote.md)、[本地客户端](phase-2-desktop.md)。
 
@@ -10,7 +11,7 @@
 - 已修复 Chat 漏传 computer_id 导致 RUNNING 反复恢复；缺少执行电脑改为 WAITING_HUMAN / computer required。
 - 已有暂停后绑定电脑接口，以及每两秒刷新客户端使用的认证浏览器截图接口。
 - 接管使相关运行任务暂停，交还只恢复被电脑接管暂停的任务，不替用户批准动作或确认 UNKNOWN。
-- 尚无统一、可供界面直接使用的执行阶段/等待原因合同；终态 checkpoint 曾保留旧 WAITING_APPROVAL。
+- 已新增统一 progress 合同、等待原因与 allowed_operations，终态清理旧等待提示；合同见 [API](api.md#任务进度合同第二阶段-k1k2)。
 - 当前 local adapter 与预览使用全局 CDP，面向一台 Computer；多电脑路由未实现。
 
 ## 职责边界
@@ -31,7 +32,7 @@ Kernel 是任务、租约、动作、审批、产物和恢复判定的权威来�
 | K6 | P1 | 标准化完成摘要与产物关联 | 返回结果说明、最终页面、截图 artifact ID、失败位置和已完成部分；下载继续走认证和 workspace 边界 |
 | K7 | P1 | 故障回归矩阵和最小诊断输出 | 覆盖模型超时、CDP 断开、缺设备、租约丢失、重复审批、进程重启、事件重连；不泄漏密钥 |
 
-## 与客户端协商的接口合同（拟议，不是现有 API）
+## 已实现的接口合同
 
 在现有 Task 快照中增量加入可选进度字段，示意：
 
@@ -40,14 +41,15 @@ Kernel 是任务、租约、动作、审批、产物和恢复判定的权威来�
   "progress": {
     "phase": "WAITING_APPROVAL",
     "message": "等待批准输入搜索词",
+    "wait_reason": "APPROVAL_REQUIRED",
     "last_progress_at": "2026-10-07T04:00:00Z",
-    "allowed_operations": ["pause", "cancel"],
+    "allowed_operations": ["pause", "cancel", "approve", "deny"],
     "action_id": "action-uuid"
   }
 }
 ```
 
-字段名称及枚举需在 K1 开始时定稿并写入 API 文档；保留旧客户端兼容，不移除现有 status/checkpoint。
+字段名称及枚举已定稿并写入 API 文档；保留旧客户端兼容，不移除现有 status/checkpoint。进度日志存于 checkpoint._progress，无新增数据库列或迁移。
 统一 UTC 时间。任务心跳、最后业务进展、客户端收到消息的时间应分别表达。
 事件至少能关联 task_id、action_id、阶段与时间；重放幂等，重连后以 REST 快照校准。
 前端按钮展示由状态/允许操作决定，服务端始终再次校验；纯推理任务仍允许不绑定电脑。

@@ -81,3 +81,35 @@ V1 不把 Chat 消息自动转成 Task。
 - `GET /api/events/recent?limit=100`：最新事件，ID 降序；Desktop 从首项 ID 启动事件续传。
 
 以上 REST 路由统一要求 Bearer Token。
+
+## 任务进度合同（第二阶段 K1/K2）
+
+创建、列表、详情、控制与绑定电脑的 Task 响应均增量返回 `progress`。原有 status、checkpoint 保留。
+
+```json
+{
+  "progress": {
+    "phase": "WAITING_APPROVAL",
+    "message": "等待你批准或拒绝动作，继续任务不能代替审批",
+    "wait_reason": "APPROVAL_REQUIRED",
+    "last_progress_at": "2026-10-07T04:00:00Z",
+    "allowed_operations": ["pause", "cancel", "approve", "deny"],
+    "action_id": "action-uuid"
+  }
+}
+```
+
+- `phase`：QUEUED、PLANNING、MODEL_REQUEST、PROCESSING、EXECUTING_ACTION、RECOVERING、WAITING_APPROVAL、WAITING_RECONCILIATION、WAITING_COMPUTER、WAITING_HUMAN，以及 PAUSED / COMPLETED / FAILED / CANCELLED。
+- `wait_reason`：无阻塞时为 null；否则为 APPROVAL_REQUIRED、ACTION_UNKNOWN、COMPUTER_REQUIRED、COMPUTER_HUMAN_CONTROL、COMPUTER_PAUSED、COMPUTER_BUSY、USER_PAUSED、STEP_BUDGET_EXHAUSTED、MODEL_BUDGET_EXHAUSTED、GRAPH_BUDGET_EXHAUSTED、HUMAN_REQUESTED 或 TASK_FAILED。
+- `last_progress_at`：UTC ISO 8601，记录持久业务事件，不随任务心跳或客户端轮询变化。旧记录没有进度日志时回退到创建时间。
+- `allowed_operations`：pause / resume / retry / cancel 使用现有任务控制接口；attach_computer、approve / deny、reconcile 使用各自独立接口。不存在重复“开始”接口；PENDING 自动领取。
+- `action_id`：当前等待审批、待核对或执行中的动作 ID；否则为 null。可能存在多个待处理动作，详情以 actions / approvals 列表为准。
+
+服务端基于任务、动作日志和 Computer 控制权重新校验。待审批、UNKNOWN、未绑定所需电脑或未交还控制权时，普通 resume 返回 409；不能把继续当作批准或核对。FAILED 重试也检查未解决阻塞。
+FAILED 若仍有待审批动作，retry 只恢复为 WAITING_HUMAN，必须显式审批后才会排队；仍有 UNKNOWN 时 retry 返回 409。批准一个动作也不会绕过同任务其他未决审批或 UNKNOWN。
+任务完成/停止后不再返回有效等待提示；旧终态 checkpoint 的 reason/action_id 会在响应中清理，历史事件不删。
+失败保留 error/detail 兼容旧客户端，同时提供 error_detail；恢复时清理活动等待字段，保留 proposal、预算和 Pi 会话恢复信息。
+
+任务相关业务事件在同一事务中携带 `data.progress`，与 REST 使用同一投影。新增 task.phase_changed、task.plan_updated、task.step_completed、task.computer_control_changed；租约续期不生成业务进展。
+已失效 Worker 的迟到模型事件不携带 progress，也不会覆盖新一轮任务的进度。客户端按事件 ID 去重，并在事件或重连后刷新 REST；队列对电脑占用的依赖也以最新 REST 为准。
+旧 Kernel 没有 progress 时，客户端只显示旧状态和兼容提示，不猜测模型执行阶段或进展时间。

@@ -13,6 +13,7 @@ from niucai.actions.gateway import ActionGateway
 from niucai.config import Settings
 from niucai.context.compiler import ContextCompiler
 from niucai.control.computers import ComputerManager
+from niucai.control.progress import task_snapshot
 from niucai.control.tasks import Conflict, Missing, TaskManager, require
 from niucai.domain.schemas import ApprovalDecision, ComputerCreate, MemoryCreate, TaskCreate
 from niucai.storage.db import (
@@ -104,31 +105,31 @@ def create_app(settings=None, db=None, chat_gateway=None):
 
     @app.post("/api/tasks", dependencies=auth, status_code=201)
     def create_task(request: TaskCreate):
-        return as_dict(tasks.create(request))
+        return get_task(tasks.create(request).id)
 
     @app.get("/api/tasks", dependencies=auth)
     def list_tasks(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
         with db.sessions() as s:
             return [
-                as_dict(t)
+                task_snapshot(s, t)
                 for t in s.scalars(select(Task).order_by(Task.created_at.desc()).limit(limit).offset(offset))
             ]
 
     @app.get("/api/tasks/{task_id}", dependencies=auth)
     def get_task(task_id: str):
         with db.sessions() as s:
-            return as_dict(require(s, Task, task_id))
+            return task_snapshot(s, require(s, Task, task_id))
 
     @app.post("/api/tasks/{task_id}/{operation}", dependencies=auth)
     def task_control(task_id: str, operation: Literal["pause", "resume", "retry", "cancel"]):
-        return as_dict(tasks.transition(task_id, operation))
+        return get_task(tasks.transition(task_id, operation).id)
 
     class TaskComputer(BaseModel):
         computer_id: str
 
     @app.put("/api/tasks/{task_id}/computer", dependencies=auth)
     def attach_task_computer(task_id: str, request: TaskComputer):
-        return as_dict(tasks.attach_computer(task_id, request.computer_id))
+        return get_task(tasks.attach_computer(task_id, request.computer_id).id)
 
     @app.get("/api/context/{task_id}", dependencies=auth)
     def context(task_id: str):

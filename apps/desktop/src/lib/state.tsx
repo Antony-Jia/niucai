@@ -4,6 +4,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useRef,
   type ReactNode,
 } from "react";
 import {
@@ -218,12 +219,22 @@ export function useCommand<T, V>(
 ) {
   const cache = useQueryClient();
   const { notify } = useApp();
-  return useMutation({
+  const submitting = useRef(false);
+  const mutation = useMutation({
     mutationFn: fn,
-    onSuccess: () => {
-      void cache.invalidateQueries();
+    onSuccess: async () => {
+      await cache.invalidateQueries();
       if (success) notify(success);
     },
     onError: (e: Error) => notify(e.message || String(e)),
+    onSettled: () => {
+      submitting.current = false;
+    },
   });
+  const mutate: typeof mutation.mutate = (...args) => {
+    if (submitting.current) return;
+    submitting.current = true;
+    mutation.mutate(...args);
+  };
+  return { ...mutation, mutate };
 }

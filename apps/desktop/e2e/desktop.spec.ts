@@ -102,3 +102,62 @@ test("workspace fits the minimum Windows window and expands across its full widt
     desktop.getByRole("button", { name: "接管电脑", exact: true }),
   ).toBeVisible();
 });
+
+test("minimum workspace shows Kernel progress and separates approval from resume", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 650 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "体验示例", exact: true }).click();
+  await page.getByRole("button", { name: /^Computer 4$/ }).click();
+  await page
+    .locator(".recent-sessions")
+    .getByRole("button", { name: /保存研究结论/ })
+    .click();
+  // Feed a captured server contract through the real query/render path. The
+  // deterministic demo keeps this layout check independent of provider calls.
+  await page.evaluate(async () => {
+    const modulePath = "/src/lib/state.tsx";
+    const { queryClient } = await import(modulePath);
+    queryClient.setQueryData(["tasks"], (old: Array<Record<string, unknown>>) =>
+      old.map((t) =>
+        t.id === "demo-report"
+          ? {
+              ...t,
+              progress: {
+                phase: "WAITING_APPROVAL",
+                message: "等待你批准或拒绝动作，继续任务不能代替审批",
+                wait_reason: "APPROVAL_REQUIRED",
+                last_progress_at: "2026-10-07T04:00:00Z",
+                allowed_operations: ["pause", "cancel", "approve", "deny"],
+                action_id: "demo-action",
+              },
+            }
+          : t,
+      ),
+    );
+  });
+  const session = page.getByRole("region", { name: "任务与对话" });
+  await expect(
+    session.getByRole("region", { name: "任务执行进度" }),
+  ).toContainText("等待审批");
+  await expect(session.getByText(/最后业务进展/)).toBeVisible();
+  await expect(
+    session.getByRole("button", { name: "恢复", exact: true }),
+  ).toHaveCount(0);
+  await page.screenshot({
+    path: "test-results/phase2-progress.png",
+    fullPage: true,
+  });
+  await session
+    .getByRole("button", { name: "批准执行" })
+    .scrollIntoViewIfNeeded();
+  await expect(session.getByRole("button", { name: "批准执行" })).toBeVisible();
+  await page.screenshot({
+    path: "test-results/phase2-progress-minimum.png",
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(900);
+});

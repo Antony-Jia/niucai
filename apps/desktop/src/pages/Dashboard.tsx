@@ -19,7 +19,10 @@ import {
   Loading,
   time,
 } from "../components/ui";
-export function Approvals({ taskId }: { taskId?: string } = {}) {
+export function Approvals({
+  taskId,
+  disabled = false,
+}: { taskId?: string; disabled?: boolean } = {}) {
   const q = useData(["approvals"], api.approvals);
   const pending = q.data?.filter((a) => !taskId || a.action.task_id === taskId);
   const command = useCommand(
@@ -44,13 +47,13 @@ export function Approvals({ taskId }: { taskId?: string } = {}) {
           <div className="button-row">
             <button
               className="primary"
-              disabled={command.isPending}
+              disabled={disabled || command.isPending}
               onClick={() => command.mutate({ id: a.id, approve: true })}
             >
               批准执行
             </button>
             <button
-              disabled={command.isPending}
+              disabled={disabled || command.isPending}
               onClick={() => command.mutate({ id: a.id, approve: false })}
             >
               拒绝

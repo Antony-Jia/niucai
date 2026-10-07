@@ -8,6 +8,7 @@ from sqlalchemy import select
 from niucai.actions.adapters import FakeAdapter
 from niucai.agents.deepagent_adapter import DeepAgentRuntime
 from niucai.control.computers import ComputerManager
+from niucai.control.tasks import Conflict
 from niucai.domain.schemas import TaskCreate
 from niucai.storage.db import Action, Approval, Database, Task
 from niucai.worker import Worker
@@ -136,8 +137,8 @@ async def test_resume_does_not_bypass_pending_approval(setup):
     model = Model(call("write", {"type": "files.write", "path": "a", "content": "x"}))
     computer = Computer()
     await run(db, settings, manager, model, computer)
-    manager.transition(task.id, "resume")
-    await run(db, settings, manager, model, computer)
+    with pytest.raises(Conflict):
+        manager.transition(task.id, "resume")
     assert state(db, task.id).status == "WAITING_HUMAN"
     assert len(model.messages) == 1
     assert not computer.calls
@@ -239,8 +240,8 @@ async def test_unknown_outcome_blocks_model_until_reconciled(setup):
     await run(db, settings, manager, model, computer)
     assert state(db, task.id).status == "WAITING_HUMAN"
     assert len(model.messages) == 1
-    manager.transition(task.id, "resume")
-    await run(db, settings, manager, model, computer)
+    with pytest.raises(Conflict):
+        manager.transition(task.id, "resume")
     assert state(db, task.id).status == "WAITING_HUMAN"
     assert len(computer.calls) == 1
     assert len(model.messages) == 1

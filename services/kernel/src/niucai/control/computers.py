@@ -47,4 +47,6 @@ class ComputerManager:
                         task.status = "PENDING"
                         emit(s, "task.resumed", task.id)
             emit(s, "computer.control_changed", computer_id=computer.id, control=target)
+            for task in tasks:
+                emit(s, "task.computer_control_changed", task.id, control=target)
             return computer

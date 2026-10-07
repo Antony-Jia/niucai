@@ -16,6 +16,8 @@ export interface Task {
   updated_at: string;
   current_step: number;
   retry_count: number;
+  heartbeat_at?: string | null;
+  progress?: TaskProgress;
   plan: {
     goal?: string;
     steps?: { id: string; description: string; status: string }[];
@@ -26,6 +28,23 @@ export interface Task {
     detail?: string;
     [key: string]: unknown;
   };
+}
+export type TaskOperation =
+  | "pause"
+  | "resume"
+  | "retry"
+  | "cancel"
+  | "attach_computer"
+  | "approve"
+  | "deny"
+  | "reconcile";
+export interface TaskProgress {
+  phase: string;
+  message: string;
+  wait_reason: string | null;
+  last_progress_at: string;
+  allowed_operations: TaskOperation[];
+  action_id: string | null;
 }
 export interface Computer {
   id: string;

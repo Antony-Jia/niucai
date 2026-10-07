@@ -10,7 +10,7 @@ from typing import Any
 from niucai.domain.schemas import Plan, Role
 
 
-def gateway_model(gateway, role, task_id, guard=None):
+def gateway_model(gateway, role, task_id, guard=None, phase=None):
     from langchain_core.language_models.chat_models import BaseChatModel
     from langchain_core.messages import AIMessage
     from langchain_core.messages.utils import convert_to_openai_messages
@@ -36,6 +36,8 @@ def gateway_model(gateway, role, task_id, guard=None):
         async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
             if guard:
                 guard()
+            if phase:
+                phase("MODEL_REQUEST")
             payload = {**self.bound, **kwargs}
             if stop:
                 payload["stop"] = stop
@@ -44,6 +46,8 @@ def gateway_model(gateway, role, task_id, guard=None):
             data = await gateway.chat(role, convert_to_openai_messages(messages), task_id, **payload)
             if guard:
                 guard()
+            if phase:
+                phase("PROCESSING")
             message = data["choices"][0]["message"]
             calls = [
                 {
@@ -168,6 +172,7 @@ class DeepAgentRuntime:
 
         package = worker.context.compile(task_id)
         if not task.plan:
+            worker.tasks.phase(task_id, token, "PLANNING")
             plan = await self.gateway.structured(Role.PLANNER, package, Plan, task_id)
             worker.tasks.update(task_id, token, plan=plan.model_dump(mode="json"))
             package = worker.context.compile(task_id)
@@ -185,13 +190,25 @@ class DeepAgentRuntime:
         # An explicitly compiled child inherits the parent's saver. Default raw
         # DeepAgents children are not checkpointed and can replan on interrupt replay.
         child = create_agent(
-            model=gateway_model(self.gateway, Role.EXECUTOR, task_id, guard),
+            model=gateway_model(
+                self.gateway,
+                Role.EXECUTOR,
+                task_id,
+                guard,
+                lambda phase: worker.tasks.phase(task_id, token, phase),
+            ),
             tools=tools,
             system_prompt=prompt,
             checkpointer=True,
         )
         graph = create_deep_agent(
-            model=gateway_model(self.gateway, Role.EXECUTOR, task_id, guard),
+            model=gateway_model(
+                self.gateway,
+                Role.EXECUTOR,
+                task_id,
+                guard,
+                lambda phase: worker.tasks.phase(task_id, token, phase),
+            ),
             tools=tools,
             checkpointer=DatabaseSaver(worker.db, task_id, token),
             system_prompt=prompt,

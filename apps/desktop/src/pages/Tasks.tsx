@@ -22,8 +22,10 @@ import {
   statuses,
   time,
 } from "../components/ui";
-import type { Task, TaskStatus } from "../lib/types";
+import type { Task, TaskStatus, TaskOperation } from "../lib/types";
 import { Approvals } from "./Dashboard";
+import { TaskProgress } from "../components/TaskProgress";
+import { taskProgress } from "../lib/task-progress";
 export function Tasks() {
   const { connected } = useApp();
   const q = useData(["tasks"], api.tasks);
@@ -120,7 +122,9 @@ export function Tasks() {
                   />
                 )}
               </section>
-              {chosen && <TaskDetail task={chosen} />}
+              {chosen && (
+                <TaskDetail key={chosen.id} task={chosen} stale={q.isError} />
+              )}
             </div>
           )}
         </>
@@ -186,9 +190,17 @@ export function Tasks() {
     </>
   );
 }
-export function TaskDetail({ task }: { task: Task }) {
+export function TaskDetail({
+  task,
+  stale = false,
+}: {
+  task: Task;
+  stale?: boolean;
+}) {
+  const { stream, demo } = useApp();
   const actions = useData(["actions", task.id], () => api.actions(task.id));
   const computers = useData(["computers"], api.computers);
+  const approvals = useData(["approvals"], api.approvals);
   const [computerId, setComputerId] = useState("");
   const assign = useCommand(
     () =>
@@ -209,6 +221,17 @@ export function TaskDetail({ task }: { task: Task }) {
   );
   const [cancel, setCancel] = useState(false);
   const status = task.status as TaskStatus;
+  const progress = taskProgress(
+    task,
+    actions.data,
+    approvals.data,
+    computers.data?.find((c) => c.id === task.computer_id),
+  );
+  const offline = stale || (!demo && /重连|中断|未连接|失效/.test(stream));
+  const busy =
+    command.isPending || assign.isPending || reconcile.isPending || offline;
+  const allows = (operation: TaskOperation) =>
+    progress.allowed_operations.includes(operation);
   return (
     <aside className="panel task-detail">
       <div className="section-heading">
@@ -217,27 +240,18 @@ export function TaskDetail({ task }: { task: Task }) {
       </div>
       <h3>{task.title}</h3>
       <p className="preserve">{task.goal}</p>
-      {status === "PENDING" && (
-        <p className="quiet-note">
-          任务已排队，将自动开始；电脑暂停或被接管时会等待控制权交还。
-        </p>
-      )}
-      {status === "RUNNING" && (
-        <p className="quiet-note">
-          Agent 正在执行
-          {!actions.data?.length
-            ? "，等待模型产生首个动作"
-            : `，已记录 ${actions.data.length} 个动作`}
-          。可暂停或取消任务。
-        </p>
-      )}
+      <TaskProgress
+        progress={progress}
+        legacy={!task.progress}
+        stale={offline}
+      />
       {!task.computer_id &&
         !["COMPLETED", "CANCELLED", "FAILED"].includes(status) && (
           <div className="task-computer-choice">
             <p className="muted">
               此任务尚未绑定电脑；浏览器任务需要先选择执行电脑。
             </p>
-            {["PENDING", "PAUSED", "WAITING_HUMAN"].includes(status) ? (
+            {allows("attach_computer") ? (
               <>
                 <select
                   aria-label="任务执行电脑"
@@ -261,8 +275,7 @@ export function TaskDetail({ task }: { task: Task }) {
                 </select>
                 <button
                   disabled={
-                    assign.isPending ||
-                    !computers.data?.some((c) => c.kind === "linux")
+                    busy || !computers.data?.some((c) => c.kind === "linux")
                   }
                   onClick={() => assign.mutate(undefined)}
                 >
@@ -277,38 +290,32 @@ export function TaskDetail({ task }: { task: Task }) {
           </div>
         )}
       <div className="button-row">
-        {["PENDING", "RUNNING", "WAITING_HUMAN"].includes(status) && (
-          <button
-            disabled={command.isPending}
-            onClick={() => command.mutate("pause")}
-          >
+        {allows("pause") && (
+          <button disabled={busy} onClick={() => command.mutate("pause")}>
             <Pause size={14} />
             暂停
           </button>
         )}
-        {["PAUSED", "WAITING_HUMAN"].includes(status) && (
+        {allows("resume") && (
           <button
             className="primary"
-            disabled={command.isPending}
+            disabled={busy}
             onClick={() => command.mutate("resume")}
           >
             <Play size={14} />
             恢复
           </button>
         )}
-        {status === "FAILED" && (
-          <button
-            disabled={command.isPending}
-            onClick={() => command.mutate("retry")}
-          >
+        {allows("retry") && (
+          <button disabled={busy} onClick={() => command.mutate("retry")}>
             <RotateCcw size={14} />
             重试
           </button>
         )}
-        {!["COMPLETED", "CANCELLED"].includes(status) && (
+        {allows("cancel") && (
           <button
             className="danger"
-            disabled={command.isPending}
+            disabled={busy}
             onClick={() => setCancel(true)}
           >
             <Square size={13} />
@@ -316,24 +323,41 @@ export function TaskDetail({ task }: { task: Task }) {
           </button>
         )}
       </div>
+      {command.isPending && (
+        <p role="status">正在提交操作，等待 Kernel 确认…</p>
+      )}
+      <ErrorNotice error={command.error || assign.error || reconcile.error} />
       {task.checkpoint.result && (
         <div className="result">
           <h4>执行结果</h4>
           <p className="preserve">{task.checkpoint.result}</p>
         </div>
       )}
-      {!["COMPLETED", "CANCELLED"].includes(status) &&
+      {!task.progress &&
+        !["COMPLETED", "CANCELLED", "FAILED"].includes(status) &&
         task.checkpoint.reason && (
           <div className="error-notice">{task.checkpoint.reason}</div>
         )}
-      {!["COMPLETED", "CANCELLED"].includes(status) &&
+      {!["COMPLETED", "CANCELLED", "FAILED"].includes(status) &&
         task.checkpoint.detail && (
           <div className="error-notice">{task.checkpoint.detail}</div>
         )}
+      {status === "FAILED" && (
+        <ErrorNotice
+          error={
+            task.checkpoint.error_detail ||
+            task.checkpoint.detail ||
+            task.checkpoint.error
+          }
+        />
+      )}
       {!["COMPLETED", "CANCELLED"].includes(status) && (
         <section aria-label="当前任务审批">
           <h4>待确认动作</h4>
-          <Approvals taskId={task.id} />
+          <Approvals
+            taskId={task.id}
+            disabled={busy || (Boolean(task.progress) && !allows("approve"))}
+          />
         </section>
       )}
       <h4>任务计划</h4>
@@ -348,17 +372,17 @@ export function TaskDetail({ task }: { task: Task }) {
       <h4>动作记录</h4>
       <ErrorNotice error={actions.error} />
       {actions.data?.map((a) => (
-        <details key={a.id}>
+        <details key={a.id} open={a.status === "UNKNOWN" ? true : undefined}>
           <summary>
             {String(a.spec.type)} <span>{a.status}</span>
           </summary>
           <Json data={{ spec: a.spec, result: a.result }} />
-          {a.status === "UNKNOWN" && (
+          {a.status === "UNKNOWN" && allows("reconcile") && (
             <div className="reconcile">
               <p>请先查看设备并确认此动作的实际结果。</p>
               <div className="button-row">
                 <button
-                  disabled={reconcile.isPending}
+                  disabled={busy}
                   onClick={() =>
                     reconcile.mutate({ id: a.id, outcome: "SUCCEEDED" })
                   }
@@ -366,7 +390,7 @@ export function TaskDetail({ task }: { task: Task }) {
                   确认已完成
                 </button>
                 <button
-                  disabled={reconcile.isPending}
+                  disabled={busy}
                   onClick={() =>
                     reconcile.mutate({ id: a.id, outcome: "FAILED" })
                   }
@@ -385,7 +409,7 @@ export function TaskDetail({ task }: { task: Task }) {
           <div className="button-row">
             <button
               className="danger"
-              disabled={command.isPending}
+              disabled={busy || !allows("cancel")}
               onClick={() =>
                 command.mutate("cancel", { onSuccess: () => setCancel(false) })
               }

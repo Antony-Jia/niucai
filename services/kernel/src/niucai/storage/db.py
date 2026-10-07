@@ -192,6 +192,17 @@ class Database:
 
 
 def emit(session, event_type: str, task_id: str | None = None, **data):
+    task = None
+    if task_id and event_type.startswith(("task.", "action.", "approval.", "agent.", "model.")):
+        from sqlalchemy import select
+
+        from niucai.control.progress import journal_event, task_progress
+
+        # Task locks precede the event allocation lock throughout the control plane.
+        task = session.scalar(select(Task).where(Task.id == task_id).with_for_update())
+        if task and journal_event(session, task, event_type, data):
+            session.flush()
+            data = {**data, "progress": task_progress(session, task)}
     if session.bind.dialect.name == "postgresql":
         from sqlalchemy import text
 

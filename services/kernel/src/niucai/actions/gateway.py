@@ -5,6 +5,7 @@ from opentelemetry import trace
 from pydantic import TypeAdapter
 from sqlalchemy import select
 
+from niucai.control.progress import clear_wait
 from niucai.control.tasks import ComputerRequired, Conflict, require
 from niucai.domain.schemas import ActionSpec
 from niucai.storage.db import Action, Approval, Artifact, Audit, Computer, Task, emit, now
@@ -83,7 +84,14 @@ class ActionGateway:
             action.status = "APPROVED" if approved else "DENIED"
             s.add(Audit(action_id=action.id, outcome=action.status, data={"note": note}))
             emit(s, "action.approved" if approved else "action.denied", task.id, action_id=action.id)
-            if task.status == "WAITING_HUMAN":
+            if task.checkpoint.get("action_id") == action.id:
+                task.checkpoint = clear_wait(task.checkpoint)
+            unresolved = s.scalar(
+                select(Action.id)
+                .where(Action.task_id == task.id, Action.status.in_(["WAITING_APPROVAL", "UNKNOWN"]))
+                .limit(1)
+            )
+            if task.status == "WAITING_HUMAN" and not unresolved:
                 task.status = "PENDING"
                 emit(s, "task.resumed", task.id, reason="approval_decided")
             return approval

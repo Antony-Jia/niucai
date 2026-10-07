@@ -76,6 +76,7 @@ class PiDurableRuntime:
                     )
             package = worker.context.compile(task_id)
             if not task.plan:
+                worker.tasks.phase(task_id, token, "PLANNING")
                 plan = await self.gateway.structured(Role.PLANNER, package, Plan, task_id)
                 current()
                 worker.tasks.update(task_id, token, plan=plan.model_dump(mode="json"))
@@ -133,6 +134,7 @@ class PiDurableRuntime:
                     role = Role(params["role"])
                     if role not in {Role.EXECUTOR, Role.SUMMARIZER}:
                         raise ValueError("unsupported harness model role")
+                    worker.tasks.phase(task_id, token, "MODEL_REQUEST")
                     data = await self.gateway.chat(
                         role,
                         params["messages"],
@@ -140,6 +142,7 @@ class PiDurableRuntime:
                         **({"tools": params["tools"]} if params.get("tools") else {}),
                     )
                     current()
+                    worker.tasks.phase(task_id, token, "PROCESSING")
                     return data
                 if method == "task.plan":
                     plan = Plan.model_validate(params["plan"])

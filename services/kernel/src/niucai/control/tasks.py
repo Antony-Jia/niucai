@@ -2,8 +2,9 @@ from datetime import timedelta
 
 from sqlalchemy import or_, select
 
+from niucai.control.progress import TERMINAL, clear_wait, task_progress
 from niucai.domain.schemas import TaskCreate
-from niucai.storage.db import Agent, Computer, Task, TaskRun, emit, now, uid
+from niucai.storage.db import Action, Agent, Computer, Task, TaskRun, emit, now, uid
 
 
 class Conflict(Exception):
@@ -57,6 +58,8 @@ class TaskManager:
             sources, destination = allowed[operation]
             if task.status not in sources:
                 raise Conflict(f"cannot {operation} task in {task.status}")
+            if operation not in task_progress(s, task)["allowed_operations"]:
+                raise Conflict("resolve approvals, uncertain actions or computer control before continuing")
             if task.run_token:
                 run = s.get(TaskRun, task.run_token)
                 if run:
@@ -74,6 +77,31 @@ class TaskManager:
                 }
             if operation == "retry":
                 task.retry_count += 1
+            if operation in {"retry", "resume", "cancel"}:
+                task.checkpoint = clear_wait(task.checkpoint)
+            if operation == "retry":
+                previous = {k: task.checkpoint[k] for k in ("error", "error_detail") if k in task.checkpoint}
+                task.checkpoint = {
+                    k: v for k, v in task.checkpoint.items() if k not in {"error", "error_detail"}
+                }
+                if previous:
+                    task.checkpoint = {**task.checkpoint, "last_error": previous}
+            if operation == "retry":
+                pending = s.scalar(
+                    select(Action)
+                    .where(Action.task_id == task.id, Action.status == "WAITING_APPROVAL")
+                    .order_by(Action.created_at, Action.id)
+                    .limit(1)
+                )
+                if pending:
+                    destination = task.status = "WAITING_HUMAN"
+                    task.checkpoint = {
+                        **task.checkpoint,
+                        "reason": "WAITING_APPROVAL",
+                        "action_id": pending.id,
+                    }
+            if operation == "pause":
+                task.checkpoint = {**task.checkpoint, "paused_by_computer": False}
             emit(s, f"task.{operation}", task.id, status=destination)
             return task
 
@@ -117,7 +145,8 @@ class TaskManager:
                         ):
                             continue
                     computer.active_task_id = task.id
-                if task.status == "RUNNING":
+                recovered = task.status == "RUNNING"
+                if recovered:
                     old = s.get(TaskRun, task.run_token)
                     if old:
                         old.status, old.ended_at = "EXPIRED", now()
@@ -127,7 +156,7 @@ class TaskManager:
                 task.lease_until = now() + timedelta(seconds=self.settings.lease_seconds)
                 task.heartbeat_at = now()
                 s.add(TaskRun(id=task.run_token, task_id=task.id))
-                emit(s, "task.started", task.id, run_token=task.run_token)
+                emit(s, "task.started", task.id, run_token=task.run_token, recovered=recovered)
                 return task
             return None
 
@@ -145,11 +174,52 @@ class TaskManager:
             task = require(s, Task, task_id, lock=True)
             if task.status != "RUNNING" or task.run_token != token or task.lease_until < now():
                 raise Conflict("worker lost its task lease")
+            # Callers may carry an older checkpoint across a model/tool await.
+            # Preserve the clock/phase journal written by intervening business events.
+            if "checkpoint" in changes:
+                journal = task.checkpoint.get("_progress")
+                if journal:
+                    changes["checkpoint"] = {**changes["checkpoint"], "_progress": journal}
             for field, value in changes.items():
                 setattr(task, field, value)
+            # Approval may be decided after execute() returns WAITING_APPROVAL
+            # but before the harness checkpoints its wait. Do not strand it.
+            if task.status == "WAITING_HUMAN" and task.checkpoint.get("reason") == "WAITING_APPROVAL":
+                action = (
+                    s.get(Action, task.checkpoint.get("action_id"))
+                    if task.checkpoint.get("action_id")
+                    else None
+                )
+                unresolved = s.scalar(
+                    select(Action.id)
+                    .where(Action.task_id == task.id, Action.status.in_(["WAITING_APPROVAL", "UNKNOWN"]))
+                    .limit(1)
+                )
+                if (
+                    action
+                    and action.status in {"APPROVED", "DENIED", "SUCCEEDED", "FAILED"}
+                    and not unresolved
+                ):
+                    task.status = "PENDING"
+                    task.checkpoint = clear_wait(task.checkpoint)
+            if task.status in TERMINAL:
+                task.checkpoint = clear_wait(task.checkpoint, failed=task.status == "FAILED")
             if task.status != "RUNNING":
                 run = require(s, TaskRun, token)
                 run.status, run.ended_at = task.status, now()
                 task.run_token, task.lease_until = None, None
                 emit(s, f"task.{task.status.lower()}", task.id)
+            elif "plan" in changes:
+                emit(s, "task.plan_updated", task.id)
+            elif "current_step" in changes:
+                emit(s, "task.step_completed", task.id, current_step=task.current_step)
             return task
+
+    def phase(self, task_id, token, phase):
+        if phase not in {"PLANNING", "MODEL_REQUEST", "PROCESSING"}:
+            raise ValueError("unsupported worker phase")
+        with self.db.sessions.begin() as s:
+            task = require(s, Task, task_id, lock=True)
+            if task.status != "RUNNING" or task.run_token != token or task.lease_until < now():
+                raise Conflict("worker lost its task lease")
+            emit(s, "task.phase_changed", task.id, phase=phase)

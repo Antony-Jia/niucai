@@ -8,6 +8,7 @@ from niucai.actions.gateway import ActionGateway
 from niucai.agents.selection import RuntimeRouter
 from niucai.config import Settings
 from niucai.context.compiler import ContextCompiler
+from niucai.control.progress import run_context
 from niucai.control.tasks import ComputerRequired, Conflict, TaskManager, require
 from niucai.domain.schemas import Decision
 from niucai.models.gateway import ModelGateway, ModelRouter
@@ -43,6 +44,7 @@ class Worker:
 
     async def _run_claimed(self, task):
         token = task.run_token
+        context_token = run_context.set((task.id, token))
         heartbeat = asyncio.create_task(self.heartbeat(task.id, token))
         try:
             runtime = (
@@ -72,11 +74,13 @@ class Worker:
                     )
                     return
                 if not task.plan:
+                    self.tasks.phase(task.id, token, "PLANNING")
                     plan = await runtime.plan(self.context.compile(task.id), task.id)
                     task = self.tasks.update(task.id, token, plan=plan.model_dump(mode="json"))
                 if task.checkpoint.get("proposal"):
                     decision = Decision.model_validate(task.checkpoint["proposal"]).validate_action()
                 else:
+                    self.tasks.phase(task.id, token, "MODEL_REQUEST")
                     decision = await runtime.decide(self.context.compile(task.id), task.id)
                     task = self.tasks.update(
                         task.id,
@@ -91,6 +95,7 @@ class Worker:
                         checkpoint={
                             **{k: v for k, v in task.checkpoint.items() if k != "proposal"},
                             "result": decision.explanation,
+                            **({"reason": "agent requested human"} if decision.kind == "wait" else {}),
                         },
                     )
                     return
@@ -146,6 +151,7 @@ class Worker:
             except Conflict:
                 pass
         finally:
+            run_context.reset(context_token)
             heartbeat.cancel()
             try:
                 await heartbeat

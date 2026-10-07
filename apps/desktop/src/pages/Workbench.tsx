@@ -107,7 +107,7 @@ export function Workbench({
             <>
               <ErrorNotice error={tasks.error} />
               {task ? (
-                <TaskDetail task={task} />
+                <TaskDetail key={task.id} task={task} stale={tasks.isError} />
               ) : (
                 <div className="workspace-empty">
                   <h2>你想完成什么？</h2>
