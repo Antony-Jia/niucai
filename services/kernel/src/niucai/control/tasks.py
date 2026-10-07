@@ -14,6 +14,12 @@ class Missing(Exception):
     pass
 
 
+class ComputerRequired(ValueError):
+    """A recoverable configuration problem, not a revoked worker lease."""
+
+    pass
+
+
 def require(session, model, ident, lock=False):
     query = select(model).where(model.id == ident)
     if lock:
@@ -69,6 +75,22 @@ class TaskManager:
             if operation == "retry":
                 task.retry_count += 1
             emit(s, f"task.{operation}", task.id, status=destination)
+            return task
+
+    def attach_computer(self, task_id, computer_id):
+        with self.db.sessions.begin() as s:
+            task = require(s, Task, task_id, lock=True)
+            if task.status not in {"PENDING", "PAUSED", "WAITING_HUMAN"}:
+                raise Conflict("pause the task before choosing a computer")
+            if task.computer_id and task.computer_id != computer_id:
+                raise Conflict("task already belongs to another computer")
+            computer = require(s, Computer, computer_id, lock=True)
+            if computer.kind != "linux":
+                raise Conflict("browser tasks require a Linux computer")
+            task.computer_id = computer_id
+            if task.checkpoint.get("reason") == "computer required":
+                task.checkpoint = {k: v for k, v in task.checkpoint.items() if k not in {"reason", "detail"}}
+            emit(s, "task.computer_assigned", task.id, computer_id=computer_id)
             return task
 
     def claim(self):

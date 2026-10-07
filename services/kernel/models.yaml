@@ -1,10 +1,26 @@
-# Set actual model slugs after choosing providers. No API request is made until configured.
 roles:
-  planner: {model: "", tier: HIGH, reasoning: high}
-  executor: {model: "", tier: STANDARD, reasoning: medium, context_window: 64000}
-  browser: {model: "", tier: STANDARD}
-  fast: {model: "", tier: FAST}
-  vision: {model: "", tier: STANDARD}
-  summarizer: {model: "", tier: FAST}
-  guard: {model: "", tier: FAST}
-  memory: {model: "", tier: FAST}
+  planner:
+    model: deepseek-flash
+    tier: HIGH
+  executor:
+    model: deepseek-flash
+    tier: STANDARD
+    context_window: 64000
+  browser:
+    model: deepseek-flash
+    tier: STANDARD
+  fast:
+    model: deepseek-flash
+    tier: FAST
+  vision:
+    model: deepseek-flash
+    tier: STANDARD
+  summarizer:
+    model: deepseek-flash
+    tier: FAST
+  guard:
+    model: deepseek-flash
+    tier: FAST
+  memory:
+    model: deepseek-flash
+    tier: FAST

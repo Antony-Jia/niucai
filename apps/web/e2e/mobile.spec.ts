@@ -103,9 +103,9 @@ test("real cookie session, task lifecycle, chat and logout", async ({
   await page.getByRole("button", { name: new RegExp(name) }).click();
   await page
     .locator(".task-detail")
-    .getByRole("button", { name: "取消", exact: true })
+    .getByRole("button", { name: "停止任务", exact: true })
     .click();
-  await page.getByRole("button", { name: "确认取消", exact: true }).click();
+  await page.getByRole("button", { name: "确认停止", exact: true }).click();
   await expect(page.locator(".task-detail .badge")).toHaveText("已取消");
   await nav(page, "对话");
   await page.getByLabel("聊天内容").fill("你好，规划一下手机工作流");

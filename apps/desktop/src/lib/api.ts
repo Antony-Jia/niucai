@@ -76,8 +76,16 @@ export const api = {
     }),
   taskControl: (id: string, operation: string) =>
     request<Task>(`/api/tasks/${id}/${operation}`, "POST"),
+  attachTaskComputer: (id: string, computerId: string) =>
+    request<Task>(`/api/tasks/${id}/computer`, "PUT", {
+      computer_id: computerId,
+    }),
   actions: (id: string) => request<Action[]>(`/api/tasks/${id}/actions`),
   computers: () => request<Computer[]>("/api/computers"),
+  computerPreview: (id: string) =>
+    request<{ image: string; captured_at: string }>(
+      `/api/computers/${id}/preview`,
+    ),
   computerControl: (id: string, operation: string) =>
     request<Computer>(`/api/computers/${id}/${operation}`, "POST"),
   registerComputer: (name: string) =>
@@ -113,12 +121,39 @@ let computerQueue: Promise<unknown> = Promise.resolve();
 function computerCommand(command: string, args?: Record<string, unknown>) {
   const result = computerQueue
     .catch(() => {})
-    .then(() => invoke(command, args));
+    .then(
+      () =>
+        new Promise((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error("桌面窗口响应超时，请重试连接")),
+            8000,
+          );
+          invoke(command, args)
+            .then(resolve, reject)
+            .finally(() => clearTimeout(timer));
+        }),
+    );
   computerQueue = result;
   return result;
 }
 export async function closeComputer() {
   if (native()) await computerCommand("close_computer");
+}
+export async function changeComputerControl(
+  id: string,
+  operation: string,
+  onCleanupError: (message: string) => void,
+) {
+  // Ownership must reach Kernel even when the local desktop is broken.
+  const computer = await api.computerControl(id, operation);
+  if (operation !== "take-control") {
+    void closeComputer().catch(() =>
+      onCleanupError(
+        "控制权已更新，但桌面窗口关闭失败，请关闭残留窗口后重新连接。",
+      ),
+    );
+  }
+  return computer;
 }
 export function embedComputer(
   computerId: string,

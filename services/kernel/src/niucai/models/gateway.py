@@ -49,9 +49,12 @@ class ModelGateway:
 
     async def chat(self, role, messages, task_id, **extra):
         profile = self.router.resolve(role)
-        key = self.settings.openrouter_api_key.get_secret_value()
+        key = (
+            self.settings.openai_api_key.get_secret_value()
+            or self.settings.openrouter_api_key.get_secret_value()
+        )
         if not key:
-            raise ValueError("configure NIUCAI_OPENROUTER_API_KEY")
+            raise ValueError("configure NIUCAI_OPENAI_API_KEY or NIUCAI_OPENROUTER_API_KEY")
         request = {"model": profile.model, "messages": messages, "max_tokens": profile.max_tokens, **extra}
         if profile.reasoning:
             request["reasoning"] = {"effort": profile.reasoning}
@@ -64,7 +67,7 @@ class ModelGateway:
             try:
                 for attempt in range(3):
                     response = await self.client.post(
-                        "https://openrouter.ai/api/v1/chat/completions",
+                        self.settings.openai_api_base_url.rstrip("/") + "/chat/completions",
                         json=request,
                         headers={"Authorization": f"Bearer {key}", "X-Title": "niucai"},
                     )
@@ -92,17 +95,25 @@ class ModelGateway:
     async def structured(self, role, package, schema, task_id):
         import json
 
+        # json_object guarantees JSON syntax, not the requested application shape.
+        json_schema = schema.model_json_schema()
         data = await self.chat(
             role,
             [
                 {
                     "role": "system",
-                    "content": package["policies"] + " Return only JSON matching the supplied schema.",
+                    "content": (
+                        package["policies"]
+                        + " Return only json matching this JSON schema exactly."
+                        + " Do not add extra keys and do not wrap it in prose."
+                        + " JSON schema: "
+                        + json.dumps(json_schema, ensure_ascii=False)
+                    ),
                 },
                 {
                     "role": "user",
                     "content": json.dumps(
-                        {"context": package, "schema": schema.model_json_schema()}, ensure_ascii=False
+                        {"context": package, "required_json_schema": json_schema}, ensure_ascii=False
                     ),
                 },
             ],

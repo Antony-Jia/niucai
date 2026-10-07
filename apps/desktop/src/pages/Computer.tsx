@@ -11,7 +11,7 @@ import {
 import {
   api,
   openComputer,
-  closeComputer,
+  changeComputerControl,
   toggleComputerFullscreen,
 } from "../lib/api";
 import { useApp, useCommand, useData } from "../lib/state";
@@ -35,10 +35,7 @@ export function ComputerPage() {
   const create = useCommand(() => api.registerComputer(name), "电脑已注册");
   const control = useCommand(async (operation: string) => {
     if (!computer) throw new Error("请选择电脑");
-    if (operation === "hand-back" || operation === "pause")
-      await closeComputer();
-    const c = await api.computerControl(computer.id, operation);
-    return c;
+    return changeComputerControl(computer.id, operation, notify);
   }, "控制权已更新");
   const open = useCommand(async () => {
     if (!computer) throw new Error("请选择电脑");

@@ -19,8 +19,9 @@ import {
   Loading,
   time,
 } from "../components/ui";
-export function Approvals() {
+export function Approvals({ taskId }: { taskId?: string } = {}) {
   const q = useData(["approvals"], api.approvals);
+  const pending = q.data?.filter((a) => !taskId || a.action.task_id === taskId);
   const command = useCommand(
     ({ id, approve }: { id: string; approve: boolean }) =>
       api.decide(id, approve),
@@ -29,7 +30,7 @@ export function Approvals() {
   return (
     <>
       <ErrorNotice error={q.error} />
-      {q.data?.map((a) => (
+      {pending?.map((a) => (
         <div className="approval-card" key={a.id}>
           <div className="section-heading">
             <span className="approval-title">
@@ -57,7 +58,7 @@ export function Approvals() {
           </div>
         </div>
       ))}
-      {q.data?.length === 0 && (
+      {pending?.length === 0 && (
         <div className="quiet-note">
           <ShieldCheck size={17} />
           暂时没有待确认的动作

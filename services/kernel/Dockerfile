@@ -24,6 +24,10 @@ COPY services/kernel/alembic.ini services/kernel/models.yaml ./
 RUN uv sync --frozen --no-dev --extra harness --extra browser && \
     useradd --uid 10001 --create-home kernel && mkdir -p /workspace /var/lib/niucai/pi && \
     chown -R kernel:kernel /workspace /var/lib/niucai /app
+# Computer (gid 1000) and Worker share workspace without world-writable files.
+RUN groupadd -g 1000 shared && usermod -aG 1000 kernel && \
+    mkdir -p /workspace/artifacts /workspace/downloads && \
+    chgrp -R shared /workspace && chmod 2775 /workspace /workspace/artifacts /workspace/downloads
 USER kernel
 EXPOSE 8080
 CMD ["uv", "run", "--no-sync", "uvicorn", "niucai.api.app:app", "--host", "0.0.0.0", "--port", "8080"]

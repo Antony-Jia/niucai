@@ -15,7 +15,7 @@ from hashlib import sha256
 from pydantic import TypeAdapter
 from sqlalchemy import select
 
-from niucai.control.tasks import Conflict, require
+from niucai.control.tasks import ComputerRequired, Conflict, require
 from niucai.domain.schemas import ActionSpec, Plan, Role
 from niucai.storage.db import Action, Task, emit
 
@@ -173,6 +173,8 @@ class PiDurableRuntime:
                     return {"wait": {"reason": "step budget exhausted"}}
                 try:
                     action = worker.actions.propose(task_id, token, params["spec"], key)
+                except ComputerRequired as exc:
+                    return {"wait": {"reason": "computer required", "detail": str(exc)}}
                 except (PermissionError, ValueError) as exc:
                     return {"status": "FAILED", "error": str(exc)[:500]}
                 action = await worker.actions.execute(action.id, token)

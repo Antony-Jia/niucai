@@ -80,6 +80,8 @@ it("keeps chat separate from tasks until the user explicitly creates one", async
   fireEvent.click(screen.getByRole("button", { name: "交给 Agent 执行" }));
   await screen.findByText("任务已创建");
   expect((await request<unknown[]>("/api/tasks")).length).toBe(4);
+  const created = await request<{ computer_id: string | null }[]>("/api/tasks");
+  expect(created[0].computer_id).toBe("demo-computer");
 });
 
 it("removes a denied approval from the waiting queue", async () => {
@@ -91,4 +93,32 @@ it("removes a denied approval from the waiting queue", async () => {
     ).not.toBeInTheDocument(),
   );
   expect(await request("/api/approvals")).toEqual([]);
+});
+
+it("approves the selected task directly in Tasks", async () => {
+  await explore();
+  nav("Tasks");
+  fireEvent.click(
+    await screen.findByRole("button", { name: /保存研究结论.*将研究结论/ }),
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "批准执行" }));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: "批准执行" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(await request("/api/approvals")).toEqual([]);
+});
+
+it("does not show another task's approval in the selected detail", async () => {
+  await explore();
+  nav("Tasks");
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: /调研 Agent Harness.*比较三个开源/,
+    }),
+  );
+  expect(
+    screen.queryByRole("button", { name: "批准执行" }),
+  ).not.toBeInTheDocument();
 });

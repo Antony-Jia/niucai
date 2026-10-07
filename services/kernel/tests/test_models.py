@@ -36,6 +36,11 @@ async def test_gateway_role_routing_and_usage(setup, tmp_path):
     assert result.kind == "complete"
     assert requests[0]["model"] == "test/model"
     assert requests[0]["reasoning"] == {"effort": "medium"}
+    system = requests[0]["messages"][0]["content"]
+    payload = json.loads(requests[0]["messages"][1]["content"])
+    assert "json" in system.lower()
+    assert '"properties"' in system
+    assert "required_json_schema" in payload
     with db.sessions() as s:
         event = s.scalar(select(Event).where(Event.type == "model.completed"))
         assert event.data["usage"]["total_tokens"] == 20
@@ -73,3 +78,24 @@ def test_missing_model_fails_before_network(tmp_path):
     config.write_text('roles:\n  fast: {model: ""}\n')
     with pytest.raises(ValueError, match="configure model role"):
         ModelRouter(config).resolve(Role.FAST)
+
+
+async def test_gateway_custom_openai_endpoint(setup, tmp_path):
+    db, settings, _, _ = setup
+    config = tmp_path / "models.yaml"
+    config.write_text('roles:\n  fast: {model: "deepseek-flash"}\n')
+    settings.openai_api_key = "custom-secret"
+    settings.openrouter_api_key = "legacy-secret"
+    settings.openai_api_base_url = "https://api.deepseek.com/"
+
+    def handler(request):
+        assert str(request.url) == "https://api.deepseek.com/chat/completions"
+        assert request.headers["Authorization"] == "Bearer custom-secret"
+        assert json.loads(request.content)["model"] == "deepseek-flash"
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    gateway = ModelGateway(
+        db, settings, ModelRouter(config), httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+    assert (await gateway.chat(Role.FAST, [], "test"))["choices"][0]["message"]["content"] == "ok"
+    await gateway.close()

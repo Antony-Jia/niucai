@@ -3,7 +3,9 @@
 用户定义 Kernel，模型提出决策，Kernel 拥有状态与执行权。
 
 本仓库实现 **V1 Kernel + Windows Desktop + Android PWA**。远程设备尚未配置时，可以先开发、测试和部署控制平面；
-默认关闭设备动作，不虚构 Computer 在线状态。Windows Desktop 与 Android 手机 PWA 已提供；云端 KasmVNC 镜像与 Android Device Node 是后续阶段。
+默认关闭设备动作，不虚构 Computer 在线状态。第一阶段已打通远端 KasmVNC/Chrome、Pi Worker、人工审批与 Windows 客户端；Android Device Node 尚未实现。
+
+第二阶段聚焦任务进度与异常恢复，按职责拆分为：[远端环境](docs/phase-2-remote.md)、[Kernel](docs/phase-2-kernel.md)、[本地客户端](docs/phase-2-desktop.md)。工程文档入口见 [docs 索引](docs/README.md)。
 
 ## 已实现
 
@@ -14,7 +16,7 @@
 | Context Compiler | Identity / Goal / State / Plan / Memory / Computer / Recent Actions / Artifacts / Tools / Policy，裁剪可选内容 |
 | Agent Runtime | Pi Durable 持久会话、工具反馈、子 Agent、压缩；旧任务兼容 DeepAgents / structured |
 | Model Router | planner / executor / browser / fast / vision / summarizer / guard / memory，按角色配置模型与层级 |
-| Model Gateway | OpenRouter 统一请求、有限重试、模型事件、延迟、Token / Cost 使用信息 |
+| Model Gateway | OpenRouter / 自定义 OpenAI 兼容地址、有限重试、模型事件、延迟、Token / Cost 使用信息 |
 | Action Gateway | Pydantic 类型校验、策略、人工审批、审计、幂等键、动作执行前日志 |
 | Human Control | AGENT / HUMAN / PAUSED，接管暂停关联任务并撤销 Worker 租约，交还后恢复 |
 | Events | PostgreSQL 事件日志、REST 回放、认证 WebSocket、游标续传 |
@@ -42,6 +44,8 @@ services/kernel/
   migrations/      显式数据库迁移
   tests/           核心流程与适配器测试
 deploy/compose/    API + Worker + PostgreSQL
+computer/         可见 Chrome + KasmVNC 桌面
+relay/            CDP 与桌面私网中继
 deploy/caddy/      HTTPS 代理模板
 docs/             架构、API、接入、验收
 ```
@@ -92,7 +96,8 @@ docker compose up -d --build
 
 默认只在宿主机 `127.0.0.1:8080` 监听 API；数据库不映射公网端口。
 有域名、DNS 和 80/443 可用后：`docker compose --profile public up -d`。
-公网设备接入与 KasmVNC 暂不包含在此 Compose，详见 [设备接入](docs/device-integration.md)。
+基础 Compose 不启动桌面；可选 `compose.computer.yml` 提供第一阶段远端部署模板，详见 [远端部署](docs/remote-deployment.md)。
+Windows 使用 uv 安装 Python 环境并构建客户端，详见 [Windows 开发](docs/development-windows.md)。
 
 ## 测试
 

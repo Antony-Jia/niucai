@@ -19,3 +19,19 @@ playwright-report/
 test-results/
 
 runtime/
+
+# Machine-local credentials, deliveries and build downloads.
+/secrets/
+/build-cache/
+/downloads/
+/local-client/
+/local-logs/
+/niucai-delivery/
+/niucai-*.zip
+/niucai-*.zip.sha256
+/apps/desktop/src-tauri/gen/
+# Historical machine-specific setup records; maintained docs live in docs/.
+/LOCAL-DEVELOPMENT.md
+/REMOTE-CONNECTION.md
+/niucai-windows-local-start.md
+/docs/handoff/

@@ -5,7 +5,7 @@ from opentelemetry import trace
 from pydantic import TypeAdapter
 from sqlalchemy import select
 
-from niucai.control.tasks import Conflict, require
+from niucai.control.tasks import ComputerRequired, Conflict, require
 from niucai.domain.schemas import ActionSpec
 from niucai.storage.db import Action, Approval, Artifact, Audit, Computer, Task, emit, now
 
@@ -30,7 +30,7 @@ class ActionGateway:
             if kind == "shell.exec" and not self.settings.allow_shell:
                 raise PermissionError("shell execution disabled by kernel policy")
             if kind.startswith("browser.") and not task.computer_id:
-                raise Conflict("browser action requires a computer")
+                raise ComputerRequired("请为任务选择执行电脑，然后继续任务。")
             # Semantic side effects cannot be inferred from DOM alone. Conservative V1 policy.
             risk = "HIGH" if kind in {"browser.click", "browser.fill", "files.write", "shell.exec"} else "LOW"
             action = Action(

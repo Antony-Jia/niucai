@@ -1,0 +1,185 @@
+# niucai remote environment — Computer plane + Kernel control plane.
+#
+# Merge order matters. This file ADDS the Kernel services and RECONCILES them
+# with the already-verified Computer plane:
+#
+#   docker compose -f docker-compose.yml -f compose.computer.yml up -d --no-build postgres api worker
+#
+# Deployment details: docs/remote-deployment.md in the repository root.
+#
+#  1. Project name: docker-compose.yml declares `name: niucai`, this file
+#     declares `name: niucai-remote`. The LAST -f wins for the project name, so
+#     the merged project is `niucai-remote` (the existing, already-deployed
+#     Computer project). That is what keeps the existing Computer container,
+#     network and volumes in scope instead of orphaning them.
+#
+#  2. api port: upstream publishes 127.0.0.1:8080, which nginx already owns on
+#     this host. Republished on 127.0.0.1:${NIUCAI_KERNEL_HOST_PORT:-18080}.
+#     The Windows SSH tunnel therefore forwards 18080, not 8080.
+#
+#  3. workspace volume: upstream declares a project-scoped `workspace` volume;
+#     the Computer plane uses the external name `niucai_workspace`. Both are
+#     pinned to `niucai_workspace` so the Worker and the Computer desktop share
+#     ONE volume (task doc 6.3). Two separately-created same-named dirs would
+#     not be shared storage.
+#
+#  4. web/caddy services are NOT started: the initial Windows path is an SSH
+#     tunnel to the REST API, not a public HTTPS origin. The repo's `public`
+#     Caddy profile needs a real domain + cert.
+
+name: niucai-remote
+
+x-kernel-common: &kernel-common
+  image: ${NIUCAI_KERNEL_IMAGE:-niucai-kernel:local}
+  env_file: .env
+  environment:
+    NIUCAI_DATABASE_URL: postgresql+psycopg://niucai:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/niucai
+    NIUCAI_WORKSPACE: /workspace
+    NIUCAI_PI_STORAGE: /var/lib/niucai/pi
+    NIUCAI_MODEL_CONFIG_PATH: /app/models.yaml
+    # Real CDP endpoint verified earlier on this deployment. NOT 9222: Chrome
+    # binds 9222 to its own loopback, so peers must use the relay on 9223.
+    NIUCAI_BROWSER_CDP_URL: ${NIUCAI_BROWSER_CDP_URL:-http://computer:9223}
+  volumes:
+    - workspace:/workspace
+    - pi_sessions:/var/lib/niucai/pi
+    - ../../services/kernel/models.yaml:/app/models.yaml:ro
+  networks:
+    - niucai_net
+  restart: unless-stopped
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: niucai
+      POSTGRES_USER: niucai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U niucai -d niucai"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - niucai_net
+
+  migrate:
+    image: ${NIUCAI_KERNEL_IMAGE:-niucai-kernel:local}
+    env_file: .env
+    environment:
+      NIUCAI_DATABASE_URL: postgresql+psycopg://niucai:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/niucai
+    command: [uv, run, --no-sync, alembic, upgrade, head]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - niucai_net
+
+  api:
+    <<: *kernel-common
+    image: ${NIUCAI_KERNEL_IMAGE:-niucai-kernel:local}
+    command: [uv, run, --no-sync, uvicorn, niucai.api.app:app, --host, 0.0.0.0, --port, "8080"]
+    # !override is REQUIRED (not !reset): compose merges port lists additively,
+    # so without it the upstream 127.0.0.1:8080 mapping survives and collides
+    # with nginx, which already owns :8080 on this host. !reset would clear the
+    # list entirely (published: None) instead of replacing it.
+    ports: !override
+      - "127.0.0.1:${NIUCAI_KERNEL_HOST_PORT:-18080}:8080"
+    healthcheck:
+      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    <<: *kernel-common
+    command: [uv, run, --no-sync, python, -m, niucai.worker]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # ---------------------------------------------------------------------------
+  # Computer plane (already built and verified — do not rebuild).
+  # ---------------------------------------------------------------------------
+  computer:
+    build:
+      context: ../../computer
+      dockerfile: Dockerfile
+    image: niucai-computer:local
+    shm_size: "1gb"
+    restart: unless-stopped
+    environment:
+      DISPLAY_NUM: ":1"
+      # Chrome's own CDP port. Loopback-only (measured: Chrome ignores
+      # --remote-debugging-address), so it is NOT reachable from other
+      # containers. The in-container relay below fronts it.
+      CDP_PORT: "9222"
+      # Relay listen port inside this container, reachable as computer:9223 on
+      # the project network. Advertised back to clients as computer:9223.
+      RELAY_LISTEN_PORT: "9223"
+      RELAY_PUBLIC_HOSTPORT: "computer:9223"
+      # Secrets for the desktop only. No niucai model key, no API token here.
+      VNC_PW: "${VNC_PW:?set VNC_PW in deploy/compose/.env}"
+      VNC_VIEW_ONLY_PW: "${VNC_VIEW_ONLY_PW:-}"
+    volumes:
+      - workspace:/workspace
+      - browser-profile:/browser-profile
+      - downloads:/downloads
+      - desktop-home:/home/kasm-user
+      - ../../relay:/relay:ro
+    networks:
+      niucai_net:
+        aliases:
+          - computer
+    expose:
+      - "9223"   # relay (what niucai's NIUCAI_BROWSER_CDP_URL points at)
+      - "9222"   # raw Chrome CDP, loopback-only, kept for diagnostics
+      - "6901"   # KasmVNC
+
+  # Private HTTP/WebSocket relay to KasmVNC. Preserves auth; the server maps
+  # it to loopback only, for the Windows SSH tunnel.
+  desktop-relay:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - computer
+    volumes:
+      - ../../relay/desktop-relay.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:16901:6901"
+    networks:
+      - niucai_net
+
+networks:
+  niucai_net:
+    name: niucai_net
+    driver: bridge
+
+volumes:
+  # Pinned to fixed external names so BOTH planes resolve to the same volumes
+  # regardless of which file declares them first.
+  workspace:
+    name: niucai_workspace
+  browser-profile:
+    name: niucai_browser_profile
+  downloads:
+    name: niucai_downloads
+  desktop-home:
+    name: niucai_desktop_home
+  # Kernel-only state: never mounted into the desktop, so the desktop browser
+  # cannot read Pi session data.
+  pi_sessions:
+    name: niucai_pi_sessions
+  postgres:
+    name: niucai_postgres

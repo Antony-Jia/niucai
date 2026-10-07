@@ -124,6 +124,8 @@ export async function demoRequest(
     const [, , , id, operation] = route.split("/");
     const t = tasks.find((t) => t.id === id);
     if (!t) throw new Error("任务不存在");
+    if (method === "PUT" && operation === "computer" && data)
+      t.computer_id = data.computer_id;
     if (method === "POST")
       t.status = (
         {

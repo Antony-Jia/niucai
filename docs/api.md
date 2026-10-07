@@ -13,11 +13,13 @@ Token 必须至少 32 字符。当前为单用户，不实现多租户。
 | POST | /api/tasks/{id}/retry | FAILED 重试 |
 | POST | /api/tasks/{id}/cancel | 取消 |
 | GET | /api/tasks/{id}/actions | 动作列表与结果 |
+| PUT | /api/tasks/{id}/computer | 为 PENDING / PAUSED / WAITING_HUMAN 未绑定任务选择 Linux Computer |
 | GET | /api/tasks/{id}/artifacts | Artifact 元数据 |
 | GET | /api/context/{id} | 当前 Context Package |
 | POST | /api/computers | 注册 Computer（初始 OFFLINE） |
 | GET | /api/computers | Computer 列表 |
 | GET | /api/computers/{id} | 设备与控制权 |
+| GET | /api/computers/{id}/preview | 认证只读浏览器 JPEG，JSON data URL 与 captured_at，不改变控制权 |
 | POST | /api/computers/{id}/take-control | HUMAN 接管 |
 | POST | /api/computers/{id}/hand-back | AGENT 交还 |
 | POST | /api/computers/{id}/pause | Computer PAUSED |
@@ -40,6 +42,9 @@ Token 必须至少 32 字符。当前为单用户，不实现多租户。
 ```
 
 纯推理任务可以省略 computer_id；真实 Browser 动作需要注册的 Linux Computer。
+缺少电脑的浏览器任务进入 WAITING_HUMAN，checkpoint.reason 为 `computer required`。
+绑定接口 body 为 `{"computer_id":"registered-uuid"}`；运行中必须先 pause，绑定后显式 resume，不自动批准动作。
+预览接口依赖 local adapter，只展示全局 CDP 浏览器的第一个页面，并非完整桌面视频或多电脑路由；不可用返回 503。
 动作只能由持有效租约的 Worker 在内部提出，没有公开的任意动作执行 endpoint。
 
 UNKNOWN 确认：

@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./niucai.db"
     api_token: SecretStr = SecretStr("")
     openrouter_api_key: SecretStr = SecretStr("")
+    openai_api_key: SecretStr = SecretStr("")
+    openai_api_base_url: str = "https://openrouter.ai/api/v1"
     model_config_path: Path = Path("models.yaml")
     runtime: Literal["pi", "deepagents", "structured"] = "pi"
     pi_storage: Path = Path("./runtime/pi")

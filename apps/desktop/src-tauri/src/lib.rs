@@ -366,14 +366,21 @@ fn close_computer(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result
     close_remote(&app)
 }
 fn close_remote(app: &tauri::AppHandle) -> Result<(), String> {
+    let mut failed = false;
     if let Some(view) = app.get_webview("computer-embedded") {
-        view.close().map_err(|_| "无法关闭内嵌桌面")?;
+        let _ = view.hide();
+        failed |= view.close().is_err();
     }
     if let Some(window) = app.get_webview_window("computer") {
-        window.close().map_err(|_| "无法关闭桌面窗口")?;
+        let _ = window.hide();
+        failed |= window.close().is_err();
     }
     *app.state::<KernelState>().remote_computer.lock().unwrap() = None;
-    Ok(())
+    if failed {
+        Err("部分桌面窗口关闭失败，请关闭残留窗口".into())
+    } else {
+        Ok(())
+    }
 }
 #[tauri::command]
 fn toggle_computer_fullscreen(

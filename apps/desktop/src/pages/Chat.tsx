@@ -18,6 +18,10 @@ import {
 export function Chat() {
   const { connected, setPage } = useApp();
   const conversations = useData(["conversations"], api.conversations);
+  const computers = useData(["computers"], api.computers);
+  const [computerId, setComputerId] = useState<string | undefined>();
+  const executionComputer =
+    computerId ?? computers.data?.find((c) => c.kind === "linux")?.id ?? "";
   const [conversation, setConversation] = useState<string | undefined>();
   const [content, setContent] = useState("");
   const [taskGoal, setTaskGoal] = useState("");
@@ -27,7 +31,8 @@ export function Chat() {
   const bottom = useRef<HTMLDivElement>(null);
   const send = useCommand((text: string) => api.chat(text, conversation));
   const create = useCommand(
-    (goal: string) => api.createTask(goal.slice(0, 70), goal),
+    (goal: string) =>
+      api.createTask(goal.slice(0, 70), goal, executionComputer),
     "任务已创建",
   );
   useEffect(() => {
@@ -85,6 +90,25 @@ export function Chat() {
             ))}
           </aside>
           <section className="panel chat-main">
+            <label className="chat-computer-choice">
+              转交 Agent 的执行电脑
+              <select
+                aria-label="聊天任务执行电脑"
+                value={executionComputer}
+                disabled={computers.isLoading || create.isPending}
+                onChange={(e) => setComputerId(e.target.value)}
+              >
+                <option value="">不使用电脑（纯推理任务）</option>
+                {computers.data
+                  ?.filter((c) => c.kind === "linux")
+                  .map((c) => (
+                    <option value={c.id} key={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <ErrorNotice error={computers.error} />
             <ErrorNotice error={messages.error} />
             <div className="messages">
               {!conversation && (
@@ -118,7 +142,11 @@ export function Chat() {
                   {m.role === "user" && (
                     <button
                       className="text-button"
-                      disabled={create.isPending}
+                      disabled={
+                        create.isPending ||
+                        computers.isLoading ||
+                        !!computers.error
+                      }
                       onClick={() =>
                         create.mutate(m.content, {
                           onSuccess: () => setPage("tasks"),

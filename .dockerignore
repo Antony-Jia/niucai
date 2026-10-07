@@ -12,3 +12,13 @@
 
 **/runtime
 **/workspace
+
+secrets
+build-cache
+downloads
+local-client
+local-logs
+niucai-delivery
+niucai-*.zip
+niucai-*.zip.sha256
+apps/desktop/src-tauri/gen

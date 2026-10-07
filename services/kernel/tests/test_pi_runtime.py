@@ -15,6 +15,26 @@ from niucai.storage.db import Task
 from niucai.worker import Worker
 
 
+async def test_browser_without_computer_can_attach_and_resume_same_tool(setup):
+    db, settings, manager, cid = setup
+    task = manager.create(TaskCreate(title="browser", goal="observe"))
+    model = Model(call("observe", {"type": "browser.snapshot"}), {"content": "done"})
+    computer = Computer()
+    worker = Worker(db, settings, PiDurableRuntime(model), computer)
+    await worker.run_once()
+    before = state(db, task.id)
+    assert before.status == "WAITING_HUMAN"
+    assert before.checkpoint["reason"] == "computer required"
+    assert not computer.calls
+    manager.attach_computer(task.id, cid)
+    manager.transition(task.id, "resume")
+    await worker.run_once()
+    after = state(db, task.id)
+    assert after.status == "COMPLETED"
+    assert after.checkpoint["pi_submission_id"] == before.checkpoint["pi_submission_id"]
+    assert len(computer.calls) == 1
+
+
 async def test_model_turn_budget_preserves_pending_generation(setup):
     db, settings, manager, cid = setup
     settings.max_model_turns = 1

@@ -23,6 +23,7 @@ import {
   time,
 } from "../components/ui";
 import type { Task, TaskStatus } from "../lib/types";
+import { Approvals } from "./Dashboard";
 export function Tasks() {
   const { connected } = useApp();
   const q = useData(["tasks"], api.tasks);
@@ -187,6 +188,16 @@ export function Tasks() {
 }
 export function TaskDetail({ task }: { task: Task }) {
   const actions = useData(["actions", task.id], () => api.actions(task.id));
+  const computers = useData(["computers"], api.computers);
+  const [computerId, setComputerId] = useState("");
+  const assign = useCommand(
+    () =>
+      api.attachTaskComputer(
+        task.id,
+        computerId || computers.data?.find((c) => c.kind === "linux")?.id || "",
+      ),
+    "执行电脑已绑定，请继续任务",
+  );
   const command = useCommand(
     (operation: string) => api.taskControl(task.id, operation),
     "任务状态已更新",
@@ -206,6 +217,65 @@ export function TaskDetail({ task }: { task: Task }) {
       </div>
       <h3>{task.title}</h3>
       <p className="preserve">{task.goal}</p>
+      {status === "PENDING" && (
+        <p className="quiet-note">
+          任务已排队，将自动开始；电脑暂停或被接管时会等待控制权交还。
+        </p>
+      )}
+      {status === "RUNNING" && (
+        <p className="quiet-note">
+          Agent 正在执行
+          {!actions.data?.length
+            ? "，等待模型产生首个动作"
+            : `，已记录 ${actions.data.length} 个动作`}
+          。可暂停或取消任务。
+        </p>
+      )}
+      {!task.computer_id &&
+        !["COMPLETED", "CANCELLED", "FAILED"].includes(status) && (
+          <div className="task-computer-choice">
+            <p className="muted">
+              此任务尚未绑定电脑；浏览器任务需要先选择执行电脑。
+            </p>
+            {["PENDING", "PAUSED", "WAITING_HUMAN"].includes(status) ? (
+              <>
+                <select
+                  aria-label="任务执行电脑"
+                  value={
+                    computerId ||
+                    computers.data?.find((c) => c.kind === "linux")?.id ||
+                    ""
+                  }
+                  onChange={(e) => setComputerId(e.target.value)}
+                >
+                  {!computers.data?.some((c) => c.kind === "linux") && (
+                    <option value="">尚无可用电脑</option>
+                  )}
+                  {computers.data
+                    ?.filter((c) => c.kind === "linux")
+                    .map((c) => (
+                      <option value={c.id} key={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  disabled={
+                    assign.isPending ||
+                    !computers.data?.some((c) => c.kind === "linux")
+                  }
+                  onClick={() => assign.mutate(undefined)}
+                >
+                  绑定执行电脑
+                </button>
+              </>
+            ) : (
+              <p className="muted">
+                若要使用浏览器，请暂停任务后绑定电脑，再继续。
+              </p>
+            )}
+          </div>
+        )}
       <div className="button-row">
         {["PENDING", "RUNNING", "WAITING_HUMAN"].includes(status) && (
           <button
@@ -242,7 +312,7 @@ export function TaskDetail({ task }: { task: Task }) {
             onClick={() => setCancel(true)}
           >
             <Square size={13} />
-            取消
+            停止任务
           </button>
         )}
       </div>
@@ -252,11 +322,19 @@ export function TaskDetail({ task }: { task: Task }) {
           <p className="preserve">{task.checkpoint.result}</p>
         </div>
       )}
-      {task.checkpoint.reason && (
-        <div className="error-notice">{task.checkpoint.reason}</div>
-      )}
-      {task.checkpoint.detail && (
-        <div className="error-notice">{task.checkpoint.detail}</div>
+      {!["COMPLETED", "CANCELLED"].includes(status) &&
+        task.checkpoint.reason && (
+          <div className="error-notice">{task.checkpoint.reason}</div>
+        )}
+      {!["COMPLETED", "CANCELLED"].includes(status) &&
+        task.checkpoint.detail && (
+          <div className="error-notice">{task.checkpoint.detail}</div>
+        )}
+      {!["COMPLETED", "CANCELLED"].includes(status) && (
+        <section aria-label="当前任务审批">
+          <h4>待确认动作</h4>
+          <Approvals taskId={task.id} />
+        </section>
       )}
       <h4>任务计划</h4>
       <div className="plan">
@@ -302,7 +380,7 @@ export function TaskDetail({ task }: { task: Task }) {
       ))}
       {actions.data?.length === 0 && <p className="muted">尚无动作记录</p>}
       {cancel && (
-        <Modal title="取消任务？" onClose={() => setCancel(false)}>
+        <Modal title="停止任务？" onClose={() => setCancel(false)}>
           <p>Agent 将停止推进“{task.title}”。已经完成的动作和文件会保留。</p>
           <div className="button-row">
             <button
@@ -312,7 +390,7 @@ export function TaskDetail({ task }: { task: Task }) {
                 command.mutate("cancel", { onSuccess: () => setCancel(false) })
               }
             >
-              确认取消
+              确认停止
             </button>
             <button onClick={() => setCancel(false)}>继续任务</button>
           </div>

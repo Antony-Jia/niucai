@@ -11,7 +11,14 @@ import {
   Folder,
   Settings2,
 } from "lucide-react";
-import { api, closeComputer, embedComputer, native } from "../lib/api";
+import {
+  api,
+  closeComputer,
+  embedComputer,
+  native,
+  changeComputerControl,
+} from "../lib/api";
+import { ComputerPreview } from "../components/ComputerPreview";
 import { useApp, useCommand, useData } from "../lib/state";
 import { Badge, ConnectionEmpty, ErrorNotice } from "../components/ui";
 import { TaskDetail } from "./Tasks";
@@ -46,9 +53,8 @@ export function Workbench({
   );
   const control = useCommand(async (operation: string) => {
     setView(false);
-    await closeComputer();
     if (!computer) throw new Error("请选择电脑");
-    return api.computerControl(computer.id, operation);
+    return changeComputerControl(computer.id, operation, notify);
   }, "控制权已更新");
   const open = useCommand(async () => {
     if (!computer) throw new Error("请选择电脑");
@@ -108,10 +114,12 @@ export function Workbench({
                   <p>描述目标，选择云端电脑，然后交给 Agent。</p>
                 </div>
               )}
-              <section className="workspace-approvals">
-                <h2>等待你的决定</h2>
-                <Approvals />
-              </section>
+              {!task && (
+                <section className="workspace-approvals">
+                  <h2>等待你的决定</h2>
+                  <Approvals />
+                </section>
+              )}
             </>
           )}
         </div>
@@ -246,8 +254,21 @@ export function Workbench({
               )}
             </div>
             <ErrorNotice error={computers.error} />
+            {task && task.computer_id !== computer?.id && (
+              <p className="computer-context-note">
+                当前画面不属于此任务的执行电脑
+                {!task.computer_id
+                  ? "：此任务尚未绑定电脑"
+                  : "，请切换到任务绑定的电脑"}
+                。
+              </p>
+            )}
             {view && computer?.control === "HUMAN" && !demo ? (
               <EmbeddedDesktop computerId={computer.id} />
+            ) : !demo &&
+              computer?.kind === "linux" &&
+              computer.control !== "HUMAN" ? (
+              <ComputerPreview key={computer.id} computerId={computer.id} />
             ) : demo ? (
               <div className="demo-desktop" aria-label="示例桌面画面">
                 <div className="demo-browser">
@@ -297,7 +318,7 @@ export function Workbench({
                     ? "先注册并配置你的 Linux Computer。"
                     : computer.control === "HUMAN"
                       ? "连接后，远程桌面会显示在这个面板内。"
-                      : "接管后可在这里连接桌面。Agent 运行时的实时只读画面尚未接入。"}
+                      : "接管后可在这里连接桌面。"}
                 </p>
                 {computer?.control === "HUMAN" ? (
                   <button
@@ -330,7 +351,10 @@ export function Workbench({
                   ? "示例画面 · 未连接真实设备"
                   : view
                     ? "远程连接已打开；连接状态以桌面画面为准"
-                    : "桌面未连接"}
+                    : computer?.control !== "HUMAN" &&
+                        computer?.kind === "linux"
+                      ? "只读浏览器画面 · 每 2 秒刷新 · 接管后可操作完整桌面"
+                      : "桌面未连接"}
               </span>
               {computer && <Badge status={computer.control} />}
             </div>
@@ -384,7 +408,7 @@ function EmbeddedDesktop({ computerId }: { computerId: string }) {
       resize.disconnect();
       overlays.disconnect();
       window.removeEventListener("resize", update);
-      void closeComputer();
+      void closeComputer().catch(() => {});
     };
   }, [computerId, notify]);
   return (

@@ -80,6 +80,9 @@ def create_app(settings=None, db=None, chat_gateway=None):
     from niucai.api.chat import chat_router
 
     app.include_router(chat_router(db, settings, auth, chat_gateway))
+    from niucai.api.computer_preview import preview_router
+
+    app.include_router(preview_router(db, settings, auth))
 
     @app.exception_handler(Missing)
     async def not_found(_, exc):
@@ -119,6 +122,13 @@ def create_app(settings=None, db=None, chat_gateway=None):
     @app.post("/api/tasks/{task_id}/{operation}", dependencies=auth)
     def task_control(task_id: str, operation: Literal["pause", "resume", "retry", "cancel"]):
         return as_dict(tasks.transition(task_id, operation))
+
+    class TaskComputer(BaseModel):
+        computer_id: str
+
+    @app.put("/api/tasks/{task_id}/computer", dependencies=auth)
+    def attach_task_computer(task_id: str, request: TaskComputer):
+        return as_dict(tasks.attach_computer(task_id, request.computer_id))
 
     @app.get("/api/context/{task_id}", dependencies=auth)
     def context(task_id: str):

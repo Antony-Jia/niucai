@@ -8,7 +8,7 @@ from niucai.actions.gateway import ActionGateway
 from niucai.agents.selection import RuntimeRouter
 from niucai.config import Settings
 from niucai.context.compiler import ContextCompiler
-from niucai.control.tasks import Conflict, TaskManager, require
+from niucai.control.tasks import ComputerRequired, Conflict, TaskManager, require
 from niucai.domain.schemas import Decision
 from niucai.models.gateway import ModelGateway, ModelRouter
 from niucai.storage.db import Action, Database, Task
@@ -118,6 +118,18 @@ class Worker:
                         "last_action_status": action.status,
                     },
                 )
+        except ComputerRequired as exc:
+            try:
+                with self.db.sessions() as s:
+                    current = require(s, Task, task.id)
+                self.tasks.update(
+                    task.id,
+                    token,
+                    status="WAITING_HUMAN",
+                    checkpoint={**current.checkpoint, "reason": "computer required", "detail": str(exc)},
+                )
+            except Conflict:
+                pass
         except Conflict:
             log.info("task %s lease/control changed", task.id)
         except Exception as exc:

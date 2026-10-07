@@ -1,6 +1,6 @@
-# 稍后接入远程 Computer
+# 远程 Computer 接入合同
 
-本轮只完成 Kernel；没有假设你的云服务器、域名、浏览器 profile 或设备凭据已经存在。
+第一阶段已有真实 KasmVNC/Chrome 部署和用户验收。当前部署入口见 [远端部署](remote-deployment.md)，本文保留设备接口边界。
 
 ## 核心配置
 
@@ -12,12 +12,12 @@
 
 ## Computer Runtime 合同
 
-接入一台 Linux Computer 容器：KasmVNC + Openbox + Chromium。
+接入一台 Linux Computer 容器：KasmVNC + 图形桌面 + Chrome/Chromium；当前模板使用 Kasm 的 XFCE 桌面。
 Kernel Worker 不负责安装 VNC 或启动桌面。
 
-- Computer 在同一私有 Docker 网络提供 CDP，例 `http://computer:9222`。
+- Computer 在同一私有 Docker 网络提供 CDP；当前模板通过中继使用 `http://computer:9223`，浏览器原始 9222 仅绑定容器回环。
 - Chromium 有且只有一个供人和 Agent 共享的 persistent context。
-- Chromium 在 Openbox 桌面内运行；Playwright 使用 connect_over_cdp，不能再 launch 第二个浏览器。
+- Chromium 在上述桌面内运行；Playwright 使用 connect_over_cdp，不能再 launch 第二个浏览器。
 - `/browser-profile`、`/downloads`、`/workspace` 持久挂载。
 - Kernel 的 workspace volume 与 Computer 的 workspace 挂载对应。
 - CDP 只在内网监听；较新 Chromium 需要独立 `--user-data-dir=/browser-profile` 才启用远程调试。
