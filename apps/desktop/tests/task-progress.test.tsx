@@ -11,6 +11,7 @@ import { api } from "../src/lib/api";
 import { taskProgress } from "../src/lib/task-progress";
 import { TaskDetail } from "../src/pages/Tasks";
 import type { Task, TaskProgress } from "../src/lib/types";
+import { TaskProgress as ProgressView } from "../src/components/TaskProgress";
 
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => false,
@@ -61,6 +62,34 @@ async function show(value: Task, stale = false) {
 }
 
 describe("task progress and controls", () => {
+  it("explains prolonged queueing without inventing a failed server state", () => {
+    render(
+      <ProgressView
+        progress={{
+          ...progress,
+          phase: "QUEUED",
+          last_progress_at: new Date(Date.now() - 180000).toISOString(),
+        }}
+        legacy={false}
+        stale={false}
+      />,
+    );
+    expect(screen.getByText(/任务尚未开始，请检查 Worker/)).toBeInTheDocument();
+    expect(screen.queryByText("任务已失败")).not.toBeInTheDocument();
+  });
+  it("does not label approval waiting or disconnected snapshots as runtime stalls", () => {
+    const { rerender } = render(
+      <ProgressView
+        progress={{ ...progress, phase: "WAITING_APPROVAL" }}
+        legacy={false}
+        stale={false}
+      />,
+    );
+    expect(screen.queryByText(/没有新的业务进展/)).not.toBeInTheDocument();
+    rerender(<ProgressView progress={progress} legacy={false} stale={true} />);
+    expect(screen.queryByText(/没有新的业务进展/)).not.toBeInTheDocument();
+    expect(screen.getByText(/服务器任务状态待同步/)).toBeInTheDocument();
+  });
   it("shows authoritative stage and business time despite stale checkpoint or zero actions", async () => {
     await show(task({ checkpoint: { reason: "WAITING_APPROVAL" } }));
     const section = screen.getByRole("region", { name: "任务执行进度" });

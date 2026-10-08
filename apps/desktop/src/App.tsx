@@ -31,10 +31,23 @@ const navigation: { id: Page; label: string; icon: typeof Monitor }[] = [
   { id: "settings", label: "Settings", icon: SettingsIcon },
 ];
 export function App() {
-  const { page, setPage, connected, demo, profile, stream, notice, notify } =
-    useApp();
+  const {
+    page,
+    setPage,
+    connected,
+    demo,
+    profile,
+    stream,
+    synchronizing,
+    notice,
+    notify,
+  } = useApp();
   const cache = useQueryClient();
   const tasks = useData(["tasks"], api.tasks);
+  const stale =
+    !demo &&
+    connected &&
+    (synchronizing || tasks.isError || /连接中|重连|中断|失效/.test(stream));
   const [workspaceTask, setWorkspaceTask] = useState<string | null>(null);
   useEffect(() => {
     function shortcut(e: KeyboardEvent) {
@@ -119,12 +132,14 @@ export function App() {
         </div>
         <div className="sidebar-bottom">
           <div className="connection-dot">
-            <i className={connected ? "connected" : ""} />
+            <i className={connected && !stale ? "connected" : ""} />
             <strong>
               {demo
                 ? "示例工作台"
                 : connected
-                  ? "Kernel 已连接"
+                  ? stale
+                    ? "Kernel 待同步"
+                    : "Kernel 已连接"
                   : "Kernel 未连接"}
             </strong>
           </div>
@@ -146,8 +161,8 @@ export function App() {
           </span>
           <div>
             <span className="sync-status">
-              <i className={connected ? "connected" : ""} />
-              {stream}
+              <i className={connected && !stale ? "connected" : ""} />
+              {stale ? "状态待同步" : stream}
             </span>
             <button
               className="icon-button"
@@ -166,6 +181,11 @@ export function App() {
             <button onClick={() => setPage("settings")}>
               连接真实 Kernel <ChevronRight size={13} />
             </button>
+          </div>
+        )}
+        {stale && (
+          <div className="demo-banner" role="status">
+            连接中断或正在同步，当前显示最后已知状态；服务器上的任务可能仍在执行。
           </div>
         )}
         <div className="page-content">

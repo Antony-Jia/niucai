@@ -265,12 +265,32 @@ class PiDurableRuntime:
                     future.result()
             return serve.result()
         finally:
-            for future in (serve, monitor, drain):
-                if future:
-                    future.cancel()
-            if process:
-                if process.returncode is None:
-                    process.kill()
-                await process.wait()  # Keep storage locked until no child can write.
-            await asyncio.gather(*(f for f in (serve, monitor, drain) if f), return_exceptions=True)
-            lock.close()
+
+            async def cleanup():
+                try:
+                    for future in (serve, monitor, drain):
+                        if future:
+                            future.cancel()
+                    if process:
+                        if process.returncode is None:
+                            try:
+                                process.kill()
+                            except ProcessLookupError:
+                                pass
+                        await process.wait()  # Keep storage locked until no child can write.
+                    await asyncio.gather(*(f for f in (serve, monitor, drain) if f), return_exceptions=True)
+                finally:
+                    lock.close()
+
+            # The inner lease watcher and Worker watchdog can revoke the same run.
+            # A second cancellation must not interrupt child termination or unlock.
+            cleaning = asyncio.create_task(cleanup())
+            cancelled = False
+            while not cleaning.done():
+                try:
+                    await asyncio.shield(cleaning)
+                except asyncio.CancelledError:
+                    cancelled = True
+            cleaning.result()
+            if cancelled:
+                raise asyncio.CancelledError

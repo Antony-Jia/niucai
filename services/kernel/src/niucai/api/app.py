@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import secrets
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -246,6 +247,30 @@ def create_app(settings=None, db=None, chat_gateway=None):
             if not path.is_relative_to(root) or not path.is_file():
                 raise HTTPException(404, "artifact content unavailable")
             return FileResponse(path, media_type=artifact.media_type, filename=path.name)
+
+    @app.get("/api/artifacts/{artifact_id}/preview", dependencies=auth)
+    def artifact_preview(artifact_id: str):
+        from fastapi.responses import JSONResponse
+
+        with db.sessions() as s:
+            artifact = require(s, Artifact, artifact_id)
+            root = settings.workspace.resolve()
+            path = (root / artifact.path).resolve()
+            if not path.is_relative_to(root) or not path.is_file():
+                raise HTTPException(404, "artifact content unavailable")
+            # Bounded raster previews only; retain authenticated download for other files.
+            if artifact.media_type not in {"image/png", "image/jpeg"}:
+                raise HTTPException(415, "only PNG and JPEG previews are supported")
+            with path.open("rb") as source:
+                content = source.read(2 * 1024 * 1024 + 1)
+            if len(content) > 2 * 1024 * 1024:
+                raise HTTPException(413, "image too large for preview; download instead")
+            png = artifact.media_type == "image/png" and content.startswith(b"\x89PNG\r\n\x1a\n")
+            jpeg = artifact.media_type == "image/jpeg" and content.startswith(b"\xff\xd8\xff")
+            if not (png or jpeg):
+                raise HTTPException(415, "image signature does not match media type")
+            image = f"data:{artifact.media_type};base64," + base64.b64encode(content).decode("ascii")
+            return JSONResponse({"image": image}, headers={"Cache-Control": "no-store"})
 
     def events_after(cursor, limit=100):
         with db.sessions() as s:

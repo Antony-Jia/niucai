@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     context_chars: int = 24000
     tool_result_chars: int = 12000
     action_timeout: float = 30
+    model_timeout: float = Field(default=120, gt=0)
+    runtime_idle_timeout: float = Field(default=300, gt=0)
     allow_shell: bool = False
     auto_create_schema: bool = False
 

@@ -35,6 +35,7 @@ interface State {
   demo: boolean;
   profile: Profile | null;
   stream: string;
+  synchronizing: boolean;
   notice: string;
   notify: (message: string) => void;
   connectTo: (input: ConnectionInput) => Promise<void>;
@@ -61,6 +62,7 @@ function StateProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [demo, setDemoState] = useState(false);
   const [stream, setStream] = useState("未连接");
+  const [synchronizing, setSynchronizing] = useState(false);
   const [notice, notify] = useState("");
   const cache = useQueryClient();
   const disconnectFrom = useCallback(async () => {
@@ -71,6 +73,7 @@ function StateProvider({ children }: { children: ReactNode }) {
       setConnected(false);
       setDemoState(false);
       setStream("未连接");
+      setSynchronizing(false);
       setProfile((p) => (p ? { ...p, has_token: false } : null));
     }
   }, [cache]);
@@ -82,7 +85,8 @@ function StateProvider({ children }: { children: ReactNode }) {
       setProfile(p);
       setDemoState(false);
       setConnected(true);
-      setStream("连接中");
+      setStream(native() ? "连接中" : "轮询同步");
+      setSynchronizing(native());
       notify("已连接 Kernel");
     },
     [cache],
@@ -95,6 +99,7 @@ function StateProvider({ children }: { children: ReactNode }) {
         setDemoState(true);
         setConnected(true);
         setStream("示例");
+        setSynchronizing(false);
         setPage("dashboard");
       })
       .catch((e) => notify(String(e)));
@@ -111,11 +116,16 @@ function StateProvider({ children }: { children: ReactNode }) {
             await api.tasks();
             if (active) {
               setConnected(true);
-              setStream("连接中");
+              setStream(native() ? "连接中" : "轮询同步");
+              setSynchronizing(native());
             }
           } catch {
-            if (active)
-              notify("已保存连接，服务器暂不可用。请在设置中重新连接。");
+            if (active) {
+              setConnected(native());
+              setStream("等待重连");
+              setSynchronizing(native());
+              notify("已保存连接，服务器暂不可用，正在尝试恢复连接。");
+            }
           }
         }
       })
@@ -127,6 +137,8 @@ function StateProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!connected || demo || !native()) return;
     let stopped = false;
+    let healthy = false;
+    let revision = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const unlisteners: (() => void)[] = [];
     async function start() {
@@ -154,6 +166,20 @@ function StateProvider({ children }: { children: ReactNode }) {
       unlisteners.push(eventOff);
       const streamOff = await listen<string>("kernel-stream", ({ payload }) => {
         setStream(payload);
+        const available =
+          payload === "WebSocket 同步" || payload === "轮询同步";
+        if (!available) {
+          healthy = false;
+          revision += 1;
+          setSynchronizing(true);
+        } else if (!healthy) {
+          healthy = true;
+          const current = ++revision;
+          setSynchronizing(true);
+          void cache.invalidateQueries().finally(() => {
+            if (!stopped && revision === current) setSynchronizing(false);
+          });
+        }
         if (payload === "认证失效") {
           setConnected(false);
           notify("连接凭据已失效，请重新连接。");
@@ -166,11 +192,23 @@ function StateProvider({ children }: { children: ReactNode }) {
       unlisteners.push(streamOff);
       const recent = await api.events().catch(() => []);
       if (stopped) return;
-      cache.setQueryData(["events"], recent);
+      cache.setQueryData<KernelEvent[]>(["events"], (old) =>
+        [
+          ...new Map(
+            [...recent, ...(old || [])].map((event) => [event.id, event]),
+          ).values(),
+        ]
+          .sort((a, b) => b.id - a.id)
+          .slice(0, 100),
+      );
       await invoke("start_events", { after: recent[0]?.id || 0 });
     }
     void start().catch(() => {
-      if (!stopped) setStream("轮询同步");
+      if (!stopped) {
+        setStream("轮询同步");
+        setSynchronizing(false);
+        void cache.invalidateQueries();
+      }
     });
     return () => {
       stopped = true;
@@ -188,6 +226,7 @@ function StateProvider({ children }: { children: ReactNode }) {
         demo,
         profile,
         stream,
+        synchronizing,
         notice,
         notify,
         connectTo,

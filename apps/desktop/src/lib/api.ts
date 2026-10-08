@@ -101,6 +101,10 @@ export const api = {
   createMemory: (content: string, kind: string, tags: string[]) =>
     request<Memory>("/api/memories", "POST", { content, kind, tags }),
   artifacts: () => request<Artifact[]>("/api/artifacts?limit=200"),
+  taskArtifacts: (id: string) =>
+    request<Artifact[]>(`/api/tasks/${id}/artifacts`),
+  artifactPreview: (id: string) =>
+    request<{ image: string }>(`/api/artifacts/${id}/preview`),
   events: () => request<KernelEvent[]>("/api/events/recent?limit=100"),
   conversations: () => request<Conversation[]>("/api/conversations"),
   messages: (id: string) =>

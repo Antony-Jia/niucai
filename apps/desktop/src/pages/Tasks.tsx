@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Plus,
   Pause,
@@ -25,6 +26,7 @@ import {
 import type { Task, TaskStatus, TaskOperation } from "../lib/types";
 import { Approvals } from "./Dashboard";
 import { TaskProgress } from "../components/TaskProgress";
+import { TaskResult } from "../components/TaskResult";
 import { taskProgress } from "../lib/task-progress";
 export function Tasks() {
   const { connected } = useApp();
@@ -197,7 +199,8 @@ export function TaskDetail({
   task: Task;
   stale?: boolean;
 }) {
-  const { stream, demo } = useApp();
+  const { stream, demo, synchronizing } = useApp();
+  const cache = useQueryClient();
   const actions = useData(["actions", task.id], () => api.actions(task.id));
   const computers = useData(["computers"], api.computers);
   const approvals = useData(["approvals"], api.approvals);
@@ -227,7 +230,12 @@ export function TaskDetail({
     approvals.data,
     computers.data?.find((c) => c.id === task.computer_id),
   );
-  const offline = stale || (!demo && /重连|中断|未连接|失效/.test(stream));
+  const offline =
+    stale ||
+    actions.isError ||
+    approvals.isError ||
+    computers.isError ||
+    (!demo && (synchronizing || /连接中|重连|中断|未连接|失效/.test(stream)));
   const busy =
     command.isPending || assign.isPending || reconcile.isPending || offline;
   const allows = (operation: TaskOperation) =>
@@ -245,6 +253,9 @@ export function TaskDetail({
         legacy={!task.progress}
         stale={offline}
       />
+      <button onClick={() => void cache.invalidateQueries()}>
+        刷新任务状态
+      </button>
       {!task.computer_id &&
         !["COMPLETED", "CANCELLED", "FAILED"].includes(status) && (
           <div className="task-computer-choice">
@@ -327,12 +338,7 @@ export function TaskDetail({
         <p role="status">正在提交操作，等待 Kernel 确认…</p>
       )}
       <ErrorNotice error={command.error || assign.error || reconcile.error} />
-      {task.checkpoint.result && (
-        <div className="result">
-          <h4>执行结果</h4>
-          <p className="preserve">{task.checkpoint.result}</p>
-        </div>
-      )}
+      <TaskResult key={task.id} task={task} actions={actions.data || []} />
       {!task.progress &&
         !["COMPLETED", "CANCELLED", "FAILED"].includes(status) &&
         task.checkpoint.reason && (

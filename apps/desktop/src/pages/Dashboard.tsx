@@ -24,6 +24,8 @@ export function Approvals({
   disabled = false,
 }: { taskId?: string; disabled?: boolean } = {}) {
   const q = useData(["approvals"], api.approvals);
+  const { synchronizing, demo } = useApp();
+  const unavailable = disabled || q.isError || (!demo && synchronizing);
   const pending = q.data?.filter((a) => !taskId || a.action.task_id === taskId);
   const command = useCommand(
     ({ id, approve }: { id: string; approve: boolean }) =>
@@ -47,13 +49,13 @@ export function Approvals({
           <div className="button-row">
             <button
               className="primary"
-              disabled={disabled || command.isPending}
+              disabled={unavailable || command.isPending}
               onClick={() => command.mutate({ id: a.id, approve: true })}
             >
               批准执行
             </button>
             <button
-              disabled={disabled || command.isPending}
+              disabled={unavailable || command.isPending}
               onClick={() => command.mutate({ id: a.id, approve: false })}
             >
               拒绝

@@ -137,9 +137,11 @@ pub async fn stream(app: tauri::AppHandle, c: Credentials, mut after: u64) {
             {
                 let _ = app.emit_to("main", "kernel-stream", "WebSocket 同步");
                 let mut ping = tokio::time::interval(Duration::from_secs(25));
+                let mut received = tokio::time::Instant::now();
                 loop {
                     tokio::select! {
                         message = socket.next() => {
+                            received = tokio::time::Instant::now();
                             match message {
                                 Some(Ok(Message::Text(text))) => { if let Ok(value) = serde_json::from_str(&text) { publish(&app, value, &mut after); } },
                                 Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == 1008 => {
@@ -150,12 +152,15 @@ pub async fn stream(app: tauri::AppHandle, c: Credentials, mut after: u64) {
                                 _ => break,
                             }
                         },
-                        _ = ping.tick() => { if socket.send(Message::Ping(Vec::new().into())).await.is_err() { break; } }
+                        _ = ping.tick() => {
+                            if received.elapsed() > Duration::from_secs(75) { break; }
+                            if socket.send(Message::Ping(Vec::new().into())).await.is_err() { break; }
+                        }
                     }
                 }
+                let _ = app.emit_to("main", "kernel-stream", "等待重连");
             }
         }
-        let _ = app.emit_to("main", "kernel-stream", "轮询同步");
         match request(
             &c,
             &format!("/api/events?after={after}&limit=200"),
@@ -168,6 +173,7 @@ pub async fn stream(app: tauri::AppHandle, c: Credentials, mut after: u64) {
                 for event in events {
                     publish(&app, event, &mut after);
                 }
+                let _ = app.emit_to("main", "kernel-stream", "轮询同步");
             }
             Err(message) if message.contains("Token") => {
                 let _ = app.emit_to("main", "kernel-stream", "认证失效");

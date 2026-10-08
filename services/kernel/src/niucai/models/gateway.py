@@ -48,6 +48,15 @@ class ModelGateway:
         await self.client.aclose()
 
     async def chat(self, role, messages, task_id, **extra):
+        try:
+            async with asyncio.timeout(self.settings.model_timeout):
+                return await self._chat(role, messages, task_id, **extra)
+        except TimeoutError:
+            with self.db.sessions.begin() as s:
+                emit(s, "model.failed", task_id, error="ModelTimeout")
+            raise TimeoutError("模型响应超时，本轮请求已终止；请检查连接后重试。") from None
+
+    async def _chat(self, role, messages, task_id, **extra):
         profile = self.router.resolve(role)
         key = (
             self.settings.openai_api_key.get_secret_value()

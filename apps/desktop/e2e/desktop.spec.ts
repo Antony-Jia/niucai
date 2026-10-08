@@ -61,6 +61,18 @@ test("three-column workspace selects tasks, creates goals and expands the deskto
   await expect(session.getByRole("heading", { level: 1 })).toHaveText(
     "梳理项目架构",
   );
+  const result = session.getByRole("region", { name: "任务结果与文件" });
+  await expect(
+    result.getByText("已整理结果，文件保存在 workspace。"),
+  ).toBeVisible();
+  await expect(result.getByText("research/architecture.md")).toBeVisible();
+  await expect(
+    result.getByRole("button", { name: "下载", exact: true }),
+  ).toBeDisabled();
+  await page.screenshot({
+    path: "test-results/task-result.png",
+    fullPage: true,
+  });
   await page.getByLabel("工作台任务目标").fill("在云端电脑整理项目资料");
   await page.getByRole("button", { name: "创建工作台任务" }).click();
   await expect(session.getByRole("heading", { level: 1 })).toHaveText(

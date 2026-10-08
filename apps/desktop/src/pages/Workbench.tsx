@@ -34,9 +34,10 @@ export function Workbench({
   taskId: string | null;
   onTask: (id: string) => void;
 }) {
-  const { connected, demo, profile, setPage, notify } = useApp();
+  const { connected, demo, profile, setPage, notify, synchronizing } = useApp();
   const tasks = useData(["tasks"], api.tasks);
   const computers = useData(["computers"], api.computers);
+  const controlStale = computers.isError || (!demo && synchronizing);
   const task = tasks.data?.find((t) => t.id === taskId) || tasks.data?.[0];
   const [selected, select] = useState("");
   const computer =
@@ -215,10 +216,13 @@ export function Workbench({
               </select>
               {computer && (
                 <>
+                  {view && (
+                    <button onClick={() => setView(false)}>关闭桌面连接</button>
+                  )}
                   {computer.control === "AGENT" && (
                     <button
                       className="primary"
-                      disabled={control.isPending}
+                      disabled={control.isPending || controlStale}
                       onClick={() => control.mutate("take-control")}
                     >
                       <MousePointer2 size={14} />
@@ -228,7 +232,7 @@ export function Workbench({
                   {computer.control === "HUMAN" && (
                     <button
                       className="primary"
-                      disabled={control.isPending}
+                      disabled={control.isPending || controlStale}
                       onClick={() => control.mutate("hand-back")}
                     >
                       <CornerUpLeft size={14} />
@@ -236,7 +240,7 @@ export function Workbench({
                     </button>
                   )}
                   <button
-                    disabled={control.isPending}
+                    disabled={control.isPending || controlStale}
                     onClick={() =>
                       control.mutate(
                         computer.control === "PAUSED" ? "resume" : "pause",
@@ -254,6 +258,9 @@ export function Workbench({
               )}
             </div>
             <ErrorNotice error={computers.error} />
+            {controlStale && (
+              <p role="status">电脑控制状态待同步，暂不能接管或交还。</p>
+            )}
             {task && task.computer_id !== computer?.id && (
               <p className="computer-context-note">
                 当前画面不属于此任务的执行电脑
@@ -264,7 +271,10 @@ export function Workbench({
               </p>
             )}
             {view && computer?.control === "HUMAN" && !demo ? (
-              <EmbeddedDesktop computerId={computer.id} />
+              <EmbeddedDesktop
+                computerId={computer.id}
+                onClose={() => setView(false)}
+              />
             ) : !demo &&
               computer?.kind === "linux" &&
               computer.control !== "HUMAN" ? (
@@ -326,6 +336,7 @@ export function Workbench({
                     disabled={
                       !profile?.computer_url ||
                       open.isPending ||
+                      controlStale ||
                       computer.kind !== "linux"
                     }
                     onClick={() => open.mutate(undefined)}
@@ -369,9 +380,17 @@ export function Workbench({
   );
 }
 
-function EmbeddedDesktop({ computerId }: { computerId: string }) {
+function EmbeddedDesktop({
+  computerId,
+  onClose,
+}: {
+  computerId: string;
+  onClose: () => void;
+}) {
   const element = useRef<HTMLDivElement>(null);
   const { notify } = useApp();
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let stopped = false;
     let previous = "";
@@ -386,13 +405,18 @@ function EmbeddedDesktop({ computerId }: { computerId: string }) {
           y: rect.y,
           width: rect.width,
           height: rect.height,
-          visible: !document.querySelector(".modal-backdrop, .toast"),
+          visible:
+            document.visibilityState !== "hidden" &&
+            !document.querySelector(".modal-backdrop, .toast"),
         };
         const key = JSON.stringify(bounds);
         if (key === previous) return;
         previous = key;
         void embedComputer(computerId, bounds).catch((e) => {
-          if (!stopped) notify(String(e));
+          if (!stopped) {
+            setError(String(e));
+            notify(String(e));
+          }
         });
       }, 60);
     };
@@ -401,6 +425,7 @@ function EmbeddedDesktop({ computerId }: { computerId: string }) {
     if (element.current) resize.observe(element.current);
     overlays.observe(document.body, { childList: true, subtree: true });
     window.addEventListener("resize", update);
+    document.addEventListener("visibilitychange", update);
     update();
     return () => {
       stopped = true;
@@ -408,16 +433,38 @@ function EmbeddedDesktop({ computerId }: { computerId: string }) {
       resize.disconnect();
       overlays.disconnect();
       window.removeEventListener("resize", update);
+      document.removeEventListener("visibilitychange", update);
       void closeComputer().catch(() => {});
     };
-  }, [computerId, notify]);
+  }, [computerId, notify, attempt]);
   return (
     <div
       className="embedded-desktop"
       ref={element}
       aria-label="远程桌面连接区域"
     >
-      <span>正在连接云端桌面…</span>
+      <div>
+        <span>
+          {error
+            ? "桌面连接失败；控制权仍由 Kernel 管理。"
+            : "正在连接云端桌面…"}
+        </span>
+        {error && <ErrorNotice error={error} />}
+        <p>
+          若登录失败或画面无响应，可重新连接，或关闭桌面后使用上方“交还 Agent”。
+        </p>
+        <div className="button-row">
+          <button
+            onClick={() => {
+              setError("");
+              setAttempt((n) => n + 1);
+            }}
+          >
+            重新连接桌面
+          </button>
+          <button onClick={onClose}>关闭桌面连接</button>
+        </div>
+      </div>
     </div>
   );
 }

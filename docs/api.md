@@ -32,6 +32,7 @@ Token 必须至少 32 字符。当前为单用户，不实现多租户。
 | POST | /api/memories | 创建 episodic / semantic Memory |
 | GET | /api/memories | Memory 列表 |
 | GET | /api/artifacts/{id}/content | 认证 Artifact 下载 |
+| GET | /api/artifacts/{id}/preview | 认证 PNG/JPEG 预览（最大 2 MiB） |
 | GET | /api/events?after=0 | 持久事件回放 |
 | WS | /api/events | 首帧认证、事件流与续传 |
 
@@ -78,6 +79,7 @@ V1 不把 Chat 消息自动转成 Task。
 - `GET /api/artifacts?limit=200`：最近产物元数据。
 - `GET /api/artifacts/{id}`：单个产物元数据。
 - `GET /api/artifacts/{id}/content`：受 workspace 边界限制的认证下载。
+- `GET /api/artifacts/{id}/preview`：同样校验认证、Artifact 记录及 workspace 路径，返回 `{"image":"data:image/png;base64,..."}`（或 JPEG），响应 `Cache-Control: no-store`。仅允许 PNG/JPEG MIME 与文件签名匹配，最多读取 2 MiB；越界/缺文件 404，不支持或签名不匹配 415，过大 413。预览失败仍可使用下载；旧版 Kernel 无此接口时客户端显示下载提示。
 - `GET /api/events/recent?limit=100`：最新事件，ID 降序；Desktop 从首项 ID 启动事件续传。
 
 以上 REST 路由统一要求 Bearer Token。

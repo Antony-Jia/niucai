@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 
 from opentelemetry import trace
 
@@ -40,7 +41,55 @@ class Worker:
         with trace.get_tracer("niucai.worker").start_as_current_span("task.run") as span:
             span.set_attribute("task.id", task.id)
             span.set_attribute("task.run_token", task.run_token)
-            return await self._run_claimed(task)
+            execution = asyncio.create_task(self._run_claimed(task))
+            monitor = asyncio.create_task(self.watch_run(task.id, task.run_token))
+            try:
+                done, _ = await asyncio.wait({execution, monitor}, return_when=asyncio.FIRST_COMPLETED)
+                if execution in done:
+                    return await execution
+                reason = await monitor
+                execution.cancel()
+                await asyncio.gather(execution, return_exceptions=True)
+                if reason == "idle":
+                    try:
+                        with self.db.sessions() as s:
+                            current = require(s, Task, task.id)
+                        self.tasks.update(
+                            task.id,
+                            task.run_token,
+                            status="FAILED",
+                            checkpoint={
+                                **current.checkpoint,
+                                "error": "RuntimeIdleTimeout",
+                                "detail": "运行时长时间没有业务进展，已终止本轮执行；请检查后重试。",
+                            },
+                        )
+                    except Conflict:
+                        pass  # User control or UNKNOWN handling already settled this run.
+            finally:
+                execution.cancel()
+                monitor.cancel()
+                await asyncio.gather(execution, monitor, return_exceptions=True)
+
+    async def watch_run(self, task_id, token):
+        marker, changed_at = None, time.monotonic()
+
+        def snapshot():
+            with self.db.sessions() as s:
+                task = require(s, Task, task_id)
+                self.actions.check_task(task, token)
+                return task.checkpoint.get("_progress", {}).get("last_progress_at")
+
+        while True:
+            try:
+                current = await asyncio.to_thread(snapshot)
+            except Conflict:
+                return "revoked"
+            if current != marker:
+                marker, changed_at = current, time.monotonic()
+            if time.monotonic() - changed_at >= self.settings.runtime_idle_timeout:
+                return "idle"
+            await asyncio.sleep(min(0.25, self.settings.runtime_idle_timeout / 4))
 
     async def _run_claimed(self, task):
         token = task.run_token

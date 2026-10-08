@@ -26,8 +26,9 @@ import {
 } from "../components/ui";
 import { Approvals } from "./Dashboard";
 export function ComputerPage() {
-  const { connected, demo, profile, notify } = useApp();
+  const { connected, demo, profile, notify, synchronizing } = useApp();
   const q = useData(["computers"], api.computers);
+  const controlStale = q.isError || (!demo && synchronizing);
   const [selected, setSelected] = useState("");
   const [register, setRegister] = useState(false);
   const [name, setName] = useState("Cloud Computer");
@@ -58,6 +59,9 @@ export function ComputerPage() {
       ) : (
         <>
           <ErrorNotice error={q.error} />
+          {controlStale && (
+            <p role="status">电脑控制状态待同步，暂不能接管或交还。</p>
+          )}
           {q.isLoading ? (
             <Loading />
           ) : computer ? (
@@ -116,6 +120,7 @@ export function ComputerPage() {
                       className="primary"
                       disabled={
                         open.isPending ||
+                        controlStale ||
                         demo ||
                         !profile?.computer_url ||
                         computer.kind !== "linux"
@@ -140,7 +145,7 @@ export function ComputerPage() {
                     {computer.control === "AGENT" && (
                       <button
                         className="primary"
-                        disabled={control.isPending}
+                        disabled={control.isPending || controlStale}
                         onClick={() => control.mutate("take-control")}
                       >
                         <MousePointer2 size={16} />
@@ -162,7 +167,7 @@ export function ComputerPage() {
                         </button>
                         <button
                           className="primary"
-                          disabled={control.isPending}
+                          disabled={control.isPending || controlStale}
                           onClick={() => control.mutate("hand-back")}
                         >
                           <CornerUpLeft size={16} />
@@ -172,7 +177,7 @@ export function ComputerPage() {
                     )}
                     {computer.control === "PAUSED" ? (
                       <button
-                        disabled={control.isPending}
+                        disabled={control.isPending || controlStale}
                         onClick={() => control.mutate("resume")}
                       >
                         <Play size={16} />
@@ -180,7 +185,7 @@ export function ComputerPage() {
                       </button>
                     ) : (
                       <button
-                        disabled={control.isPending}
+                        disabled={control.isPending || controlStale}
                         onClick={() => control.mutate("pause")}
                       >
                         <Pause size={16} />

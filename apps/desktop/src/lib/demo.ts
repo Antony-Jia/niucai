@@ -120,6 +120,18 @@ export async function demoRequest(
     return t;
   }
   if (route.match(/^\/api\/tasks\/[^/]+\/actions$/)) return [] as Action[];
+  if (route.match(/^\/api\/tasks\/[^/]+\/artifacts$/))
+    return route.includes("demo-completed")
+      ? [
+          {
+            id: "demo-artifact",
+            task_id: "demo-completed",
+            path: "research/architecture.md",
+            media_type: "text/markdown",
+            created_at: stamp,
+          },
+        ]
+      : [];
   if (route.startsWith("/api/tasks/")) {
     const [, , , id, operation] = route.split("/");
     const t = tasks.find((t) => t.id === id);
