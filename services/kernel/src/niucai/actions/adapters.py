@@ -133,6 +133,15 @@ class LocalAdapter:
 
             path = self.path(f"artifacts/{uid()}.png")
             path.parent.mkdir(parents=True, exist_ok=True)
-            await page.screenshot(path=str(path))
+            # A background tab in this headless/Xvnc Chromium stops producing
+            # compositor frames, so Page.captureScreenshot never returns and the
+            # action dies on the execution timeout. bringToFront activates the
+            # page and restores frame production. Reproduced: pages[0] behind
+            # another tab -> screenshot times out; after bring_to_front ~0.2s.
+            try:
+                await page.screenshot(path=str(path), timeout=8000)
+            except Exception:
+                await page.bring_to_front()
+                await page.screenshot(path=str(path), timeout=20000)
             return {"path": str(path.relative_to(self.root)), "media_type": "image/png"}
         raise ValueError("unsupported action")
