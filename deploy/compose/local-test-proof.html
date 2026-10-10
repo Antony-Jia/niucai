@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Unified Local Docker Proof</title>
+<style>body{font:24px sans-serif;padding:40px}input,button{font:24px sans-serif;padding:12px;margin:12px}</style>
+<h1>Local Docker acceptance</h1>
+<p>Verification word: blue. This page belongs to the isolated local test environment.</p>
+<label for="human-proof">Human takeover proof</label>
+<input id="human-proof" autocomplete="off">
+<button id="save-proof" onclick="document.querySelector('#proof-result').textContent=document.querySelector('#human-proof').value">Save proof</button>
+<p id="proof-result">No human input yet</p>
+</html>

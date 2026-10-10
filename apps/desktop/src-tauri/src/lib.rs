@@ -73,8 +73,11 @@ fn forget(base: &str) -> Result<(), String> {
     let _ = base;
     Ok(())
 }
-fn trusted(window: &tauri::WebviewWindow) -> Result<(), String> {
-    if window.label() != "main" {
+fn trusted(window: &tauri::Webview) -> Result<(), String> {
+    trusted_labels(window.label(), window.window().label())
+}
+fn trusted_labels(webview: &str, window: &str) -> Result<(), String> {
+    if webview != "main" || window != "main" {
         return Err("此窗口没有 Kernel 权限".into());
     }
     Ok(())
@@ -101,7 +104,7 @@ fn view(profile: Profile, has_token: bool) -> ProfileView {
 }
 #[tauri::command]
 fn load_profile(
-    window: tauri::WebviewWindow,
+    window: tauri::Webview,
     app: tauri::AppHandle,
     state: State<KernelState>,
 ) -> Result<ProfileView, String> {
@@ -128,7 +131,7 @@ fn load_profile(
 }
 #[tauri::command]
 async fn connect_kernel(
-    window: tauri::WebviewWindow,
+    window: tauri::Webview,
     app: tauri::AppHandle,
     state: State<'_, KernelState>,
     input: ConnectionInput,
@@ -187,7 +190,7 @@ async fn connect_kernel(
 }
 #[tauri::command]
 fn disconnect_kernel(
-    window: tauri::WebviewWindow,
+    window: tauri::Webview,
     app: tauri::AppHandle,
     state: State<KernelState>,
 ) -> Result<(), String> {
@@ -209,7 +212,7 @@ fn disconnect_kernel(
 }
 #[tauri::command]
 async fn api_request(
-    window: tauri::WebviewWindow,
+    window: tauri::Webview,
     state: State<'_, KernelState>,
     path: String,
     method: String,
@@ -220,7 +223,7 @@ async fn api_request(
 }
 #[tauri::command]
 async fn open_computer(
-    window: tauri::WebviewWindow,
+    window: tauri::Webview,
     app: tauri::AppHandle,
     state: State<'_, KernelState>,
     computer_id: String,
@@ -284,7 +287,7 @@ struct DesktopBounds {
 
 #[tauri::command]
 async fn embed_computer(
-    window: tauri::WebviewWindow,
+    window: tauri::Webview,
     app: tauri::AppHandle,
     state: State<'_, KernelState>,
     computer_id: String,
@@ -361,7 +364,7 @@ async fn embed_computer(
 }
 
 #[tauri::command]
-fn close_computer(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+fn close_computer(window: tauri::Webview, app: tauri::AppHandle) -> Result<(), String> {
     trusted(&window)?;
     close_remote(&app)
 }
@@ -383,10 +386,7 @@ fn close_remote(app: &tauri::AppHandle) -> Result<(), String> {
     }
 }
 #[tauri::command]
-fn toggle_computer_fullscreen(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
+fn toggle_computer_fullscreen(window: tauri::Webview, app: tauri::AppHandle) -> Result<(), String> {
     trusted(&window)?;
     let window = app
         .get_webview_window("computer")
@@ -396,14 +396,14 @@ fn toggle_computer_fullscreen(
         .map_err(|_| "无法切换全屏".into())
 }
 #[tauri::command]
-fn stop_events(window: tauri::WebviewWindow, state: State<KernelState>) -> Result<(), String> {
+fn stop_events(window: tauri::Webview, state: State<KernelState>) -> Result<(), String> {
     trusted(&window)?;
     stop(&state);
     Ok(())
 }
 #[tauri::command]
 async fn start_events(
-    window: tauri::WebviewWindow,
+    window: tauri::Webview,
     app: tauri::AppHandle,
     state: State<'_, KernelState>,
     after: u64,
@@ -419,7 +419,7 @@ async fn start_events(
 }
 #[tauri::command]
 async fn download_artifact(
-    window: tauri::WebviewWindow,
+    window: tauri::Webview,
     app: tauri::AppHandle,
     state: State<'_, KernelState>,
     artifact_id: String,
@@ -506,6 +506,13 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_local_main_webview_has_kernel_access() {
+        assert!(trusted_labels("main", "main").is_ok());
+        assert!(trusted_labels("computer-embedded", "main").is_err());
+        assert!(trusted_labels("computer", "computer").is_err());
+        assert!(trusted_labels("main", "computer").is_err());
+    }
     #[test]
     fn profile_contains_no_token() {
         let serialized = serde_json::to_string(&Profile {

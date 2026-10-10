@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+const apiTarget = `http://127.0.0.1:${process.env.NIUCAI_TEST_API_PORT || "8080"}`;
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -7,8 +8,8 @@ export default defineConfig({
     strictPort: true,
     fs: { allow: ["../.."] },
     proxy: {
-      "/api": { target: "http://127.0.0.1:8080", ws: true },
-      "/computer": { target: "http://127.0.0.1:8080", ws: true },
+      "/api": { target: apiTarget, ws: true },
+      "/computer": { target: apiTarget, ws: true },
     },
   },
   preview: { port: 1421, strictPort: true },

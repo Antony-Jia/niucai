@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Monitor,
   MousePointer2,
@@ -6,26 +6,18 @@ import {
   Pause,
   Play,
   Maximize2,
-  ArrowUp,
   Globe,
   Folder,
   Settings2,
 } from "lucide-react";
-import {
-  api,
-  closeComputer,
-  embedComputer,
-  native,
-  changeComputerControl,
-} from "../lib/api";
+import { api, native, changeComputerControl } from "../lib/api";
+import { EmbeddedDesktop } from "../components/EmbeddedDesktop";
 import { ComputerPreview } from "../components/ComputerPreview";
 import { useApp, useCommand, useData } from "../lib/state";
 import { Badge, ConnectionEmpty, ErrorNotice } from "../components/ui";
-import { TaskDetail } from "./Tasks";
 import { Chat } from "./Chat";
 import { Files } from "./FilesMemory";
 import { ComputerPage } from "./Computer";
-import { Approvals } from "./Dashboard";
 
 export function Workbench({
   taskId,
@@ -38,20 +30,19 @@ export function Workbench({
   const tasks = useData(["tasks"], api.tasks);
   const computers = useData(["computers"], api.computers);
   const controlStale = computers.isError || (!demo && synchronizing);
-  const task = tasks.data?.find((t) => t.id === taskId) || tasks.data?.[0];
+  const conversations = useData(["conversations"], api.conversations);
+  const conversationId =
+    tasks.data?.find((t) => t.id === taskId)?.conversation_id || taskId;
+  const session = conversations.data?.find((c) => c.id === conversationId);
+  const task = tasks.data?.find((t) => t.conversation_id === conversationId);
   const [selected, select] = useState("");
   const computer =
-    computers.data?.find((c) => c.id === (selected || task?.computer_id)) ||
-    computers.data?.[0];
+    computers.data?.find(
+      (c) => c.id === (selected || session?.computer_id || task?.computer_id),
+    ) || computers.data?.[0];
   const [tab, setTab] = useState("computer");
-  const [conversation, setConversation] = useState(false);
-  const [goal, setGoal] = useState("");
   const [view, setView] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const create = useCommand(
-    (text: string) => api.createTask(text.slice(0, 70), text, computer?.id),
-    "任务已创建",
-  );
   const control = useCommand(async (operation: string) => {
     setView(false);
     if (!computer) throw new Error("请选择电脑");
@@ -83,82 +74,16 @@ export function Workbench({
         <header className="session-heading">
           <div>
             <span className="workspace-kicker">SESSION</span>
-            <h1>{task?.title || "开始一个新目标"}</h1>
+            <h1>{session?.title || "开始一个新会话"}</h1>
           </div>
-          {task && <Badge status={task.status} />}
+          <button onClick={() => onTask("")}>新建会话</button>
         </header>
-        <div className="workspace-tabs">
-          <button
-            className={!conversation ? "active" : ""}
-            onClick={() => setConversation(false)}
-          >
-            执行过程
-          </button>
-          <button
-            className={conversation ? "active" : ""}
-            onClick={() => setConversation(true)}
-          >
-            对话
-          </button>
-        </div>
-        <div className="session-scroll">
-          {conversation ? (
-            <Chat />
-          ) : (
-            <>
-              <ErrorNotice error={tasks.error} />
-              {task ? (
-                <TaskDetail key={task.id} task={task} stale={tasks.isError} />
-              ) : (
-                <div className="workspace-empty">
-                  <h2>你想完成什么？</h2>
-                  <p>描述目标，选择云端电脑，然后交给 Agent。</p>
-                </div>
-              )}
-              {!task && (
-                <section className="workspace-approvals">
-                  <h2>等待你的决定</h2>
-                  <Approvals />
-                </section>
-              )}
-            </>
-          )}
-        </div>
-        {!conversation && (
-          <form
-            className="workspace-composer"
-            onSubmit={(e) => {
-              e.preventDefault();
-              const text = goal.trim();
-              if (text)
-                create.mutate(text, {
-                  onSuccess: (t) => {
-                    onTask(t.id);
-                    setGoal("");
-                  },
-                });
-            }}
-          >
-            <textarea
-              aria-label="工作台任务目标"
-              placeholder="让 Agent 完成一件事…"
-              value={goal}
-              onChange={(e) => setGoal(e.target.value)}
-              maxLength={16000}
-              required
-            />
-            <div>
-              <span>{computer ? computer.name : "纯推理任务"}</span>
-              <button
-                className="primary"
-                aria-label="创建工作台任务"
-                disabled={!goal.trim() || create.isPending}
-              >
-                <ArrowUp size={16} />
-              </button>
-            </div>
-          </form>
-        )}
+        <Chat
+          conversationId={conversationId || null}
+          onConversation={(id) => onTask(id || "")}
+          computerId={computer?.id}
+          compact
+        />
       </section>
       <section className="workbench-computer" aria-label="云端电脑面板">
         <div className="computer-tabs workspace-tabs">
@@ -376,95 +301,6 @@ export function Workbench({
           </div>
         )}
       </section>
-    </div>
-  );
-}
-
-function EmbeddedDesktop({
-  computerId,
-  onClose,
-}: {
-  computerId: string;
-  onClose: () => void;
-}) {
-  const element = useRef<HTMLDivElement>(null);
-  const { notify } = useApp();
-  const [error, setError] = useState("");
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    let stopped = false;
-    let previous = "";
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const update = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        const rect = element.current?.getBoundingClientRect();
-        if (stopped || !rect) return;
-        const bounds = {
-          x: rect.x,
-          y: rect.y,
-          width: rect.width,
-          height: rect.height,
-          visible:
-            document.visibilityState !== "hidden" &&
-            !document.querySelector(".modal-backdrop, .toast"),
-        };
-        const key = JSON.stringify(bounds);
-        if (key === previous) return;
-        previous = key;
-        void embedComputer(computerId, bounds).catch((e) => {
-          if (!stopped) {
-            setError(String(e));
-            notify(String(e));
-          }
-        });
-      }, 60);
-    };
-    const resize = new ResizeObserver(update);
-    const overlays = new MutationObserver(update);
-    if (element.current) resize.observe(element.current);
-    overlays.observe(document.body, { childList: true, subtree: true });
-    window.addEventListener("resize", update);
-    document.addEventListener("visibilitychange", update);
-    update();
-    return () => {
-      stopped = true;
-      if (timer) clearTimeout(timer);
-      resize.disconnect();
-      overlays.disconnect();
-      window.removeEventListener("resize", update);
-      document.removeEventListener("visibilitychange", update);
-      void closeComputer().catch(() => {});
-    };
-  }, [computerId, notify, attempt]);
-  return (
-    <div
-      className="embedded-desktop"
-      ref={element}
-      aria-label="远程桌面连接区域"
-    >
-      <div>
-        <span>
-          {error
-            ? "桌面连接失败；控制权仍由 Kernel 管理。"
-            : "正在连接云端桌面…"}
-        </span>
-        {error && <ErrorNotice error={error} />}
-        <p>
-          若登录失败或画面无响应，可重新连接，或关闭桌面后使用上方“交还 Agent”。
-        </p>
-        <div className="button-row">
-          <button
-            onClick={() => {
-              setError("");
-              setAttempt((n) => n + 1);
-            }}
-          >
-            重新连接桌面
-          </button>
-          <button onClick={onClose}>关闭桌面连接</button>
-        </div>
-      </div>
     </div>
   );
 }

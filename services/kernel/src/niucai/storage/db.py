@@ -1,7 +1,18 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, LargeBinary, String, Text, create_engine
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -53,6 +64,10 @@ class Conversation(Base):
     __tablename__ = "conversations"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     title: Mapped[str] = mapped_column(String(200))
+    agent_id: Mapped[str] = mapped_column(String(100), default="main")
+    computer_id: Mapped[str | None] = mapped_column(ForeignKey("computers.id"))
+    next_sequence: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -60,15 +75,25 @@ class Message(Base):
     __tablename__ = "messages"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    sequence: Mapped[int | None] = mapped_column(Integer)
+    client_id: Mapped[str | None] = mapped_column(String(100))
+    task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), index=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime)
+    submission_id: Mapped[str | None] = mapped_column(String(200))
     role: Mapped[str] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="COMPLETED")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "sequence", name="uq_message_sequence"),
+        UniqueConstraint("conversation_id", "client_id", name="uq_message_client"),
+    )
 
 
 class Task(Base):
     __tablename__ = "tasks"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    conversation_id: Mapped[str | None] = mapped_column(ForeignKey("conversations.id"), index=True)
     title: Mapped[str] = mapped_column(String(200))
     goal: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(30), default="PENDING", index=True)
@@ -173,6 +198,13 @@ class TaskRun(Base):
 
 
 Index("ix_tasks_claim", Task.status, Task.lease_until, Task.created_at)
+Index(
+    "uq_conversation_active_task",
+    Task.conversation_id,
+    unique=True,
+    sqlite_where=Task.status.not_in(["COMPLETED", "CANCELLED"]),
+    postgresql_where=Task.status.not_in(["COMPLETED", "CANCELLED"]),
+)
 
 
 class Database:

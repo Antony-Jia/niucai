@@ -11,7 +11,7 @@
 
 | 模块 | V1 行为 |
 |---|---|
-| Task / State | PostgreSQL 持久化、独立于 Chat、pause/resume/retry/cancel、checkpoint |
+| Task / State | 会话内执行轮次、PostgreSQL 持久化、pause/resume/retry/cancel、checkpoint |
 | Worker | `FOR UPDATE SKIP LOCKED` 领取任务、心跳、租约恢复、run token 阻止过期 Worker 写入 |
 | Context Compiler | Identity / Goal / State / Plan / Memory / Computer / Recent Actions / Artifacts / Tools / Policy，裁剪可选内容 |
 | Agent Runtime | Pi Durable 持久会话、工具反馈、子 Agent、压缩；旧任务兼容 DeepAgents / structured |
@@ -138,7 +138,9 @@ GitHub Actions 自动检查 main push / PR，并支持手动触发：Python 检�
 
 ## Windows Desktop
 
-`apps/desktop` 是 Tauri 2 + React + TypeScript 客户端，包含 Dashboard、Chat、Tasks、Computer、Files、Memory、Settings。支持 Kernel 连接、Windows 系统凭据保存、持久会话、任务管理、审批、接管/交还与产物下载。
+`apps/desktop` 是 Tauri 2 + React + TypeScript 客户端，包含 Dashboard、统一会话工作台、Files、Memory、Settings。支持 Kernel 连接、Windows 系统凭据保存、持久会话、多轮执行、运行中补充要求、审批、接管/交还与产物下载。
+
+Chat 与 Task 已统一为会话入口；Task 保留为底层执行记录。详见 [统一会话与执行架构](docs/unified-conversations.md)。
 
 安装与开发步骤见 [Windows Desktop 文档](docs/desktop-windows.md)。Windows x64 的 NSIS/MSI 安装包由 [Desktop CI](../../actions/workflows/desktop.yml) 构建。配置真实云端电脑之前，可使用明确标记的示例模式查看界面。
 

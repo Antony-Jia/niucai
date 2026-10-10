@@ -8,7 +8,7 @@ from sqlalchemy import select
 from niucai.control.progress import clear_wait
 from niucai.control.tasks import ComputerRequired, Conflict, require
 from niucai.domain.schemas import ActionSpec
-from niucai.storage.db import Action, Approval, Artifact, Audit, Computer, Task, emit, now
+from niucai.storage.db import Action, Approval, Artifact, Audit, Computer, Message, Task, emit, now
 
 tracer = trace.get_tracer("niucai.actions")
 
@@ -17,7 +17,7 @@ class ActionGateway:
     def __init__(self, db, settings, adapter):
         self.db, self.settings, self.adapter = db, settings, adapter
 
-    def propose(self, task_id, token, spec, key):
+    def propose(self, task_id, token, spec, key, input_sequence=None):
         spec = TypeAdapter(ActionSpec).validate_python(spec).model_dump(mode="json")
         with self.db.sessions.begin() as s:
             task = require(s, Task, task_id, lock=True)
@@ -27,6 +27,15 @@ class ActionGateway:
                 if existing.task_id != task_id or existing.spec != spec:
                     raise Conflict("idempotency key reused with a different request")
                 return existing
+            if input_sequence is not None:
+                latest = s.scalar(
+                    select(Message.sequence)
+                    .where(Message.task_id == task.id, Message.role == "user")
+                    .order_by(Message.sequence.desc())
+                    .limit(1)
+                )
+                if latest != input_sequence:
+                    raise ValueError("user instructions changed; reconsider the action")
             kind = spec["type"]
             if kind == "shell.exec" and not self.settings.allow_shell:
                 raise PermissionError("shell execution disabled by kernel policy")
@@ -42,6 +51,7 @@ class ActionGateway:
                 spec=spec,
                 risk=risk,
                 status="WAITING_APPROVAL" if risk == "HIGH" else "PROPOSED",
+                result={"input_sequence": input_sequence} if input_sequence is not None else {},
             )
             s.add(action)
             s.flush()
@@ -143,12 +153,20 @@ class ActionGateway:
                     computer.state = {**computer.state, **result}
                     computer.status = "ONLINE"
                 if "path" in result and action.spec["type"] in {"files.write", "browser.screenshot"}:
-                    s.add(
-                        Artifact(
-                            task_id=task.id,
-                            path=result["path"],
-                            media_type=result.get("media_type", "text/plain"),
-                        )
+                    artifact = Artifact(
+                        task_id=task.id,
+                        path=result["path"],
+                        media_type=result.get("media_type", "text/plain"),
+                    )
+                    s.add(artifact)
+                    s.flush()
+                    emit(
+                        s,
+                        "artifact.created",
+                        task.id,
+                        artifact_id=artifact.id,
+                        path=artifact.path,
+                        media_type=artifact.media_type,
                     )
             except Conflict:
                 # No executor call took place; safe to reconsider after resume.

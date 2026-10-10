@@ -10,6 +10,7 @@ import type {
   Task,
   Approval,
   ConnectionInput,
+  Timeline,
 } from "./types";
 import { demoRequest, resetDemo } from "./demo";
 
@@ -107,6 +108,32 @@ export const api = {
     request<{ image: string }>(`/api/artifacts/${id}/preview`),
   events: () => request<KernelEvent[]>("/api/events/recent?limit=100"),
   conversations: () => request<Conversation[]>("/api/conversations"),
+  createConversation: (computerId?: string) =>
+    request<Conversation>("/api/conversations", "POST", {
+      computer_id: computerId || null,
+    }),
+  sendMessage: (id: string, content: string, clientId: string) =>
+    request<{
+      conversation: Conversation;
+      messages: Message[];
+      task: Task;
+    }>(`/api/conversations/${id}/messages`, "POST", {
+      content,
+      client_id: clientId,
+    }),
+  timeline: async (id: string): Promise<Timeline> => {
+    let after = 0;
+    const items: Timeline["items"] = [];
+    while (true) {
+      const page = await request<Timeline>(
+        `/api/conversations/${id}/timeline?after=${after}&limit=200`,
+      );
+      items.push(...page.items);
+      if (!page.has_more) return { ...page, items };
+      if (page.next_cursor <= after) throw new Error("会话时间线游标未前进");
+      after = page.next_cursor;
+    }
+  },
   messages: (id: string) =>
     request<Message[]>(`/api/conversations/${id}/messages`),
   chat: (content: string, conversationId?: string) =>

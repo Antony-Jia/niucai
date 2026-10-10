@@ -9,7 +9,7 @@ import {
   Search,
   ChevronRight,
 } from "lucide-react";
-import { api } from "../lib/api";
+import { api, changeComputerControl } from "../lib/api";
 import { useApp, useCommand, useData } from "../lib/state";
 import {
   Badge,
@@ -199,7 +199,7 @@ export function TaskDetail({
   task: Task;
   stale?: boolean;
 }) {
-  const { stream, demo, synchronizing } = useApp();
+  const { stream, demo, synchronizing, notify } = useApp();
   const cache = useQueryClient();
   const actions = useData(["actions", task.id], () => api.actions(task.id));
   const computers = useData(["computers"], api.computers);
@@ -224,12 +224,18 @@ export function TaskDetail({
   );
   const [cancel, setCancel] = useState(false);
   const status = task.status as TaskStatus;
-  const progress = taskProgress(
-    task,
-    actions.data,
-    approvals.data,
-    computers.data?.find((c) => c.id === task.computer_id),
+  const computer = computers.data?.find((c) => c.id === task.computer_id);
+  const releaseComputer = useCommand(
+    () =>
+      changeComputerControl(
+        computer!.id,
+        computer!.control === "HUMAN" ? "hand-back" : "resume",
+        notify,
+      ),
+    "电脑已交还 Agent；若任务已暂停，请点击恢复",
   );
+  const computerBlocked = !!computer && computer.control !== "AGENT";
+  const progress = taskProgress(task, actions.data, approvals.data, computer);
   const offline =
     stale ||
     actions.isError ||
@@ -237,7 +243,11 @@ export function TaskDetail({
     computers.isError ||
     (!demo && (synchronizing || /连接中|重连|中断|未连接|失效/.test(stream)));
   const busy =
-    command.isPending || assign.isPending || reconcile.isPending || offline;
+    command.isPending ||
+    assign.isPending ||
+    reconcile.isPending ||
+    releaseComputer.isPending ||
+    offline;
   const allows = (operation: TaskOperation) =>
     progress.allowed_operations.includes(operation);
   return (
@@ -301,16 +311,24 @@ export function TaskDetail({
           </div>
         )}
       <div className="button-row">
+        {computerBlocked && !["COMPLETED", "CANCELLED"].includes(status) && (
+          <button
+            disabled={busy}
+            onClick={() => releaseComputer.mutate(undefined)}
+          >
+            {computer?.control === "HUMAN" ? "交还 Agent" : "恢复执行电脑"}
+          </button>
+        )}
         {allows("pause") && (
           <button disabled={busy} onClick={() => command.mutate("pause")}>
             <Pause size={14} />
             暂停
           </button>
         )}
-        {allows("resume") && (
+        {(allows("resume") || (status === "PAUSED" && computerBlocked)) && (
           <button
             className="primary"
-            disabled={busy}
+            disabled={busy || !allows("resume")}
             onClick={() => command.mutate("resume")}
           >
             <Play size={14} />
@@ -337,7 +355,14 @@ export function TaskDetail({
       {command.isPending && (
         <p role="status">正在提交操作，等待 Kernel 确认…</p>
       )}
-      <ErrorNotice error={command.error || assign.error || reconcile.error} />
+      <ErrorNotice
+        error={
+          command.error ||
+          assign.error ||
+          reconcile.error ||
+          releaseComputer.error
+        }
+      />
       <TaskResult key={task.id} task={task} actions={actions.data || []} />
       {!task.progress &&
         !["COMPLETED", "CANCELLED", "FAILED"].includes(status) &&

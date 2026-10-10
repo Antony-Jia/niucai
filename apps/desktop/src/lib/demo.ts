@@ -83,8 +83,26 @@ export function resetDemo() {
       task_id: null,
     },
   ];
-  conversations = [];
-  messages = [];
+  conversations = tasks.map((t) => ({
+    id: `conversation-${t.id}`,
+    title: t.title,
+    computer_id: t.computer_id,
+    created_at: stamp,
+    updated_at: stamp,
+  }));
+  tasks.forEach((t, i) => {
+    t.conversation_id = conversations[i].id;
+  });
+  messages = tasks.map((t) => ({
+    id: `message-${t.id}`,
+    conversation_id: t.conversation_id!,
+    task_id: t.id,
+    role: "user",
+    content: t.goal,
+    status: "COMPLETED",
+    created_at: stamp,
+    sequence: 1,
+  }));
   approvals = [
     {
       id: "demo-approval",
@@ -223,42 +241,84 @@ export async function demoRequest(
         created_at: stamp,
       },
     ] as KernelEvent[];
+  if (route === "/api/conversations" && method === "POST") {
+    const c: Conversation = {
+      id: crypto.randomUUID(),
+      title: "新会话",
+      created_at: stamp,
+      updated_at: stamp,
+      computer_id: data?.computer_id || null,
+    };
+    conversations.unshift(c);
+    return structuredClone(c);
+  }
   if (route === "/api/conversations") return structuredClone(conversations);
-  if (route.startsWith("/api/conversations/"))
-    return structuredClone(
-      messages.filter((m) => m.conversation_id === route.split("/")[3]),
-    );
-  if (route === "/api/chat" && data) {
-    let c = conversations.find((c) => c.id === data.conversation_id);
-    if (!c) {
-      c = {
+  if (/^\/api\/conversations\/[^/]+\/timeline$/.test(route)) {
+    const cid = route.split("/")[3];
+    return {
+      items: messages
+        .filter((m) => m.conversation_id === cid)
+        .map((m, i) => ({
+          id: `message:${m.id}`,
+          cursor: i + 1,
+          type: "conversation.message_created",
+          task_id: m.task_id,
+          created_at: m.created_at,
+          data: {},
+          message: structuredClone(m),
+        })),
+      next_cursor: messages.length,
+      has_more: false,
+      tasks: structuredClone(tasks.filter((t) => t.conversation_id === cid)),
+      artifacts: [],
+    };
+  }
+  if (/^\/api\/conversations\/[^/]+\/messages$/.test(route)) {
+    const cid = route.split("/")[3];
+    if (method === "GET")
+      return structuredClone(messages.filter((m) => m.conversation_id === cid));
+    if (data) {
+      const c = conversations.find((c) => c.id === cid)!;
+      const existing = messages.find(
+        (m) => m.conversation_id === cid && m.client_id === data.client_id,
+      );
+      if (existing)
+        return {
+          conversation: c,
+          messages: [existing],
+          task: tasks.find((t) => t.id === existing.task_id),
+        };
+      let t = tasks.find(
+        (t) =>
+          t.conversation_id === cid &&
+          !["COMPLETED", "CANCELLED"].includes(t.status),
+      );
+      if (!t) {
+        t = task(
+          crypto.randomUUID(),
+          data.content.slice(0, 70),
+          "PENDING",
+          data.content,
+        );
+        t.conversation_id = cid;
+        t.computer_id = c.computer_id || null;
+        tasks.unshift(t);
+        c.title = t.title;
+      }
+      const m: Message = {
         id: crypto.randomUUID(),
-        title: data.content.slice(0, 30),
-        created_at: stamp,
-      };
-      conversations.unshift(c);
-    }
-    const newMessages: Message[] = [
-      {
-        id: crypto.randomUUID(),
-        conversation_id: c.id,
+        conversation_id: cid,
+        task_id: t.id,
+        sequence: messages.filter((m) => m.conversation_id === cid).length + 1,
+        client_id: data.client_id,
         role: "user",
         content: data.content,
         status: "COMPLETED",
         created_at: stamp,
-      },
-      {
-        id: crypto.randomUUID(),
-        conversation_id: c.id,
-        role: "assistant",
-        content:
-          "这是桌面示例，不调用真实模型。连接 Kernel 后，你可以在这里讨论目标，或将明确的目标交给 Agent 执行。",
-        status: "COMPLETED",
-        created_at: stamp,
-      },
-    ];
-    messages.push(...newMessages);
-    return { conversation: c, messages: newMessages };
+      };
+      messages.push(m);
+      return structuredClone({ conversation: c, messages: [m], task: t });
+    }
   }
   throw new Error("示例模式暂不支持此操作");
 }

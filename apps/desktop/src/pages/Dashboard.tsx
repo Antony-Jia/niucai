@@ -88,7 +88,7 @@ export function Dashboard() {
         description="把目标交给 Agent，随时查看进度，也随时接管。"
       >
         <button className="primary" onClick={() => setPage("tasks")}>
-          新建任务 <ArrowRight size={16} />
+          新建会话 <ArrowRight size={16} />
         </button>
       </Header>
       {!connected ? (
@@ -131,7 +131,7 @@ export function Dashboard() {
                     className="text-button"
                     onClick={() => setPage("tasks")}
                   >
-                    全部任务 <ArrowRight size={14} />
+                    会话工作台 <ArrowRight size={14} />
                   </button>
                 </div>
                 {tasks.isLoading ? (

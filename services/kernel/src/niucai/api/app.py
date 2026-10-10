@@ -106,7 +106,7 @@ def create_app(settings=None, db=None, chat_gateway=None):
 
     @app.post("/api/tasks", dependencies=auth, status_code=201)
     def create_task(request: TaskCreate):
-        return get_task(tasks.create(request).id)
+        return get_task(tasks.create(request, unified=True).id)
 
     @app.get("/api/tasks", dependencies=auth)
     def list_tasks(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):

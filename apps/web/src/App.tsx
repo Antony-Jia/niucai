@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   Home,
   MessageSquare,
-  ListTodo,
   Monitor,
   ShieldCheck,
   Menu,
@@ -12,7 +11,6 @@ import { useApp, useData } from "../../desktop/src/lib/state";
 import { api } from "../../desktop/src/lib/api";
 import { Dashboard, Approvals } from "../../desktop/src/pages/Dashboard";
 import { Chat } from "../../desktop/src/pages/Chat";
-import { Tasks } from "../../desktop/src/pages/Tasks";
 import { Files, MemoryPage } from "../../desktop/src/pages/FilesMemory";
 import { Modal } from "../../desktop/src/components/ui";
 import { Computer } from "./Computer";
@@ -21,13 +19,20 @@ import { useEvents } from "./events";
 import type { Page } from "../../desktop/src/lib/types";
 const nav = [
   { page: "dashboard", label: "首页", Icon: Home },
-  { page: "chat", label: "对话", Icon: MessageSquare },
-  { page: "tasks", label: "任务", Icon: ListTodo },
+  { page: "chat", label: "会话", Icon: MessageSquare },
   { page: "computer", label: "电脑", Icon: Monitor },
   { page: "approvals", label: "审批", Icon: ShieldCheck },
 ] as const;
 export function MobileApp() {
-  const { page, setPage, demo, connected, notice, notify } = useApp();
+  const {
+    page: storedPage,
+    setPage,
+    demo,
+    connected,
+    notice,
+    notify,
+  } = useApp();
+  const page = storedPage === "tasks" ? "chat" : storedPage;
   const [approvalsPage, setApprovalsPage] = useState(false);
   const [more, setMore] = useState(false);
   const [online, setOnline] = useState(navigator.onLine);
@@ -36,7 +41,7 @@ export function MobileApp() {
   const Component = {
     dashboard: Dashboard,
     chat: Chat,
-    tasks: Tasks,
+    tasks: Chat,
     computer: Computer,
     files: Files,
     memory: MemoryPage,

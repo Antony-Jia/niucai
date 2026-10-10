@@ -36,9 +36,19 @@ foreach ($port in @($LocalKernelPort, $LocalDesktopPort)) {
     }
 }
 
-$keyLines = @(& $scanExecutable -T 6 -t ed25519 $ServerAddress 2> (Join-Path $logDirectory "$TunnelName-keyscan.log") |
-    Where-Object { $_ -match '^\S+ ssh-ed25519 ' })
-if ($LASTEXITCODE -ne 0 -or $keyLines.Count -ne 1) { throw 'Unable to read server host key' }
+# Windows PowerShell 5 treats native stderr (including ssh-keyscan's normal
+# server banner) as an error record. Keep its diagnostics in the log and judge
+# success by exit code and the verified key, rather than terminating on a banner.
+$scanErrorPreference = $ErrorActionPreference
+try {
+    $ErrorActionPreference = 'Continue'
+    $keyLines = @(& $scanExecutable -T 6 -t ed25519 $ServerAddress 2> (Join-Path $logDirectory "$TunnelName-keyscan.log") |
+        Where-Object { $_ -match '^\S+ ssh-ed25519 ' })
+    $scanExitCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $scanErrorPreference
+}
+if ($scanExitCode -ne 0 -or $keyLines.Count -ne 1) { throw 'Unable to read server host key' }
 $keyBytes = [Convert]::FromBase64String(($keyLines[0] -split ' ')[2])
 $sha = [System.Security.Cryptography.SHA256]::Create()
 try {

@@ -40,12 +40,22 @@ function content(blocks: any): any {
 export function toGateway(context: TranscriptContext) {
   const collapsed = collapseSystemMessages(context);
   const messages: any[] = [];
+  const inputIds: string[] = [];
   const prompt = getCurrentSystemPrompt(context.messages);
   if (prompt) messages.push({ role: "system", content: prompt });
   for (const m of collapsed.messages) {
     if (m.role === "system") continue;
-    if (m.role === "user")
-      messages.push({ role: "user", content: content(m.content) });
+    if (m.role === "user") {
+      let value = content(m.content);
+      if (typeof value === "string") {
+        const marker = value.match(/^\[niucai\.input:([a-zA-Z0-9-]+)\]\n/);
+        if (marker?.[1]) {
+          inputIds.push(marker[1]);
+          value = value.slice(marker[0].length);
+        }
+      }
+      messages.push({ role: "user", content: value });
+    }
     if (m.role === "assistant") {
       const calls = m.content.filter((b) => b.type === "toolCall");
       const thinking = m.content
@@ -85,7 +95,11 @@ export function toGateway(context: TranscriptContext) {
       parameters: t.parameters,
     },
   }));
-  return { messages, ...(tools.length ? { tools } : {}) };
+  return {
+    messages,
+    ...(tools.length ? { tools } : {}),
+    ...(inputIds.length ? { inputIds } : {}),
+  };
 }
 
 export function kernelProvider(

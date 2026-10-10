@@ -62,6 +62,55 @@ async function show(value: Task, stale = false) {
 }
 
 describe("task progress and controls", () => {
+  it("explains a legacy queue blocked by human control", () => {
+    const value = task({ progress: undefined, status: "PENDING" });
+    const result = taskProgress(value, [], [], {
+      id: "demo-computer",
+      control: "HUMAN",
+    } as never);
+    expect(result.phase).toBe("WAITING_COMPUTER");
+    expect(result.message).toContain("请先交还 Agent");
+    expect(result.message).not.toContain("将自动开始");
+  });
+  it("keeps resume visible after pause and enables it after handing back the computer", async () => {
+    vi.spyOn(api, "approvals").mockResolvedValue([]);
+    vi.spyOn(api, "actions").mockResolvedValue([]);
+    let control = "HUMAN";
+    vi.spyOn(api, "computers").mockImplementation(
+      async () =>
+        [
+          {
+            id: "demo-computer",
+            name: "remote-main",
+            kind: "linux",
+            control,
+            status: "ONLINE",
+            state: {},
+          },
+        ] as never,
+    );
+    const handback = vi
+      .spyOn(api, "computerControl")
+      .mockImplementation(async () => {
+        control = "AGENT";
+        return { id: "demo-computer", control } as never;
+      });
+    await show(task({ progress: undefined, status: "PAUSED", checkpoint: {} }));
+    const release = await screen.findByRole("button", { name: "交还 Agent" });
+    const resume = screen.getByRole("button", { name: /^恢复$/ });
+    expect(resume).toBeDisabled();
+    expect(
+      screen.getByText(/任务已暂停；执行电脑由你控制/),
+    ).toBeInTheDocument();
+    fireEvent.click(release);
+    await waitFor(() =>
+      expect(handback).toHaveBeenCalledWith("demo-computer", "hand-back"),
+    );
+    await waitFor(() => expect(resume).toBeEnabled());
+    expect(
+      screen.queryByRole("button", { name: "交还 Agent" }),
+    ).not.toBeInTheDocument();
+  });
   it("explains prolonged queueing without inventing a failed server state", () => {
     render(
       <ProgressView

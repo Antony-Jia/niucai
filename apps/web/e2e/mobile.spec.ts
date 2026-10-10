@@ -39,9 +39,11 @@ test("Android demo navigation, layout and safe takeover", async ({
     path: `test-results/${info.project.name}-home.png`,
     fullPage: true,
   });
-  for (const name of ["对话", "任务", "电脑", "审批", "首页"]) {
+  for (const name of ["会话", "电脑", "审批", "首页"]) {
     await nav(page, name);
-    await expect(page.locator("h1")).toBeVisible();
+    await expect(
+      page.getByLabel("聊天内容").or(page.locator("h1")),
+    ).toBeVisible();
     await fits(page);
   }
   for (const name of ["文件与下载", "记忆", "登录与安装设置"]) {
@@ -76,43 +78,48 @@ test("real cookie session, task lifecycle, chat and logout", async ({
   expect(
     await page.evaluate(() => JSON.stringify({ ...localStorage })),
   ).not.toContain(token);
-  await nav(page, "任务");
-  await page.getByRole("button", { name: "新建任务", exact: true }).click();
-  const name = `Android 任务 ${Date.now()}`;
-  await page.getByLabel("任务名称").fill(name);
-  await page
-    .getByLabel("目标", { exact: true })
-    .fill("手机创建任务，关页后状态保持");
-  await page
-    .getByRole("button", { name: "交给 Agent 执行", exact: true })
-    .click();
-  await expect(page.locator(".task-detail h3")).toHaveText(name);
+  await nav(page, "会话");
+  const name = `Android 会话 ${Date.now()}`;
+  await page.getByLabel("聊天内容").fill(name);
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(
+    page.locator(".message p").getByText(name, { exact: true }),
+  ).toBeVisible();
   await page
     .locator(".task-detail")
     .getByRole("button", { name: "暂停", exact: true })
     .click();
-  await expect(page.locator(".task-detail .badge")).toHaveText("已暂停");
+  await expect(page.locator(".task-detail .badge").first()).toHaveText(
+    "已暂停",
+  );
   await page
     .locator(".task-detail")
     .getByRole("button", { name: "恢复", exact: true })
     .click();
-  await expect(page.locator(".task-detail .badge")).toHaveText("等待执行");
+  await expect(page.locator(".task-detail .badge").first()).toHaveText(
+    "等待执行",
+  );
   await page.reload();
-  await nav(page, "任务");
-  await expect(page.getByText(name, { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: new RegExp(name) }).click();
+  await nav(page, "会话");
+  await page.getByRole("button", { name, exact: true }).click();
+  await expect(
+    page.locator(".message p").getByText(name, { exact: true }),
+  ).toBeVisible();
+  await page.getByLabel("聊天内容").fill("补充要求，保留同一轮执行");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(
+    page
+      .locator(".message p")
+      .getByText("补充要求，保留同一轮执行", { exact: true }),
+  ).toBeVisible();
   await page
     .locator(".task-detail")
     .getByRole("button", { name: "停止任务", exact: true })
     .click();
   await page.getByRole("button", { name: "确认停止", exact: true }).click();
-  await expect(page.locator(".task-detail .badge")).toHaveText("已取消");
-  await nav(page, "对话");
-  await page.getByLabel("聊天内容").fill("你好，规划一下手机工作流");
-  await page.getByRole("button", { name: "发送消息" }).click();
-  await expect(
-    page.getByText("已记录你的目标。可创建 Task 持续执行。", { exact: true }),
-  ).toBeVisible();
+  await expect(page.locator(".task-detail .badge").first()).toHaveText(
+    "已取消",
+  );
   await fits(page);
   await nav(page, "电脑");
   await page.getByRole("button", { name: "接管电脑", exact: true }).click();

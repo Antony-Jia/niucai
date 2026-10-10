@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
-  MessageSquare,
-  ListTodo,
   Monitor,
   Folder,
   Brain,
@@ -14,8 +12,6 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useApp, useData } from "./lib/state";
 import { Dashboard } from "./pages/Dashboard";
-import { Tasks } from "./pages/Tasks";
-import { Chat } from "./pages/Chat";
 import { Workbench } from "./pages/Workbench";
 import { api } from "./lib/api";
 import { Files, MemoryPage } from "./pages/FilesMemory";
@@ -23,16 +19,14 @@ import { Settings } from "./pages/Settings";
 import type { Page } from "./lib/types";
 const navigation: { id: Page; label: string; icon: typeof Monitor }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "chat", label: "Chat", icon: MessageSquare },
-  { id: "tasks", label: "Tasks", icon: ListTodo },
-  { id: "computer", label: "Computer", icon: Monitor },
+  { id: "computer", label: "会话", icon: Monitor },
   { id: "files", label: "Files", icon: Folder },
   { id: "memory", label: "Memory", icon: Brain },
   { id: "settings", label: "Settings", icon: SettingsIcon },
 ];
 export function App() {
   const {
-    page,
+    page: storedPage,
     setPage,
     connected,
     demo,
@@ -42,8 +36,11 @@ export function App() {
     notice,
     notify,
   } = useApp();
+  const page =
+    storedPage === "chat" || storedPage === "tasks" ? "computer" : storedPage;
   const cache = useQueryClient();
   const tasks = useData(["tasks"], api.tasks);
+  const conversations = useData(["conversations"], api.conversations);
   const stale =
     !demo &&
     connected &&
@@ -55,7 +52,7 @@ export function App() {
         e.ctrlKey &&
         !e.altKey &&
         !e.metaKey &&
-        /^[1-7]$/.test(e.key) &&
+        /^[1-5]$/.test(e.key) &&
         !(e.target instanceof HTMLInputElement) &&
         !(e.target instanceof HTMLTextAreaElement)
       ) {
@@ -68,8 +65,8 @@ export function App() {
   }, [setPage]);
   const Current = {
     dashboard: Dashboard,
-    chat: Chat,
-    tasks: Tasks,
+    chat: Workbench,
+    tasks: Workbench,
     computer: Workbench,
     files: Files,
     memory: MemoryPage,
@@ -104,13 +101,12 @@ export function App() {
           ))}
         </nav>
         <div className="recent-sessions">
-          <div className="sidebar-section">RECENT TASKS</div>
-          {tasks.data?.slice(0, 8).map((t) => (
+          <div className="sidebar-section">RECENT CONVERSATIONS</div>
+          {conversations.data?.slice(0, 8).map((t) => (
             <button
               key={t.id}
               className={
-                (workspaceTask || tasks.data?.[0]?.id) === t.id &&
-                page === "computer"
+                workspaceTask === t.id && page === "computer"
                   ? "recent-session selected"
                   : "recent-session"
               }
@@ -121,11 +117,8 @@ export function App() {
             >
               <span>{t.title}</span>
               <small>
-                {t.status === "RUNNING"
-                  ? "● 运行中"
-                  : t.status === "WAITING_HUMAN"
-                    ? "等待你"
-                    : t.status}
+                {tasks.data?.find((task) => task.conversation_id === t.id)
+                  ?.status || "会话"}
               </small>
             </button>
           ))}

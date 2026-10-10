@@ -1,0 +1,116 @@
+name: niucai-local-unified
+
+x-kernel: &kernel
+  image: niucai-local-unified:20261010
+  build:
+    context: ../..
+    dockerfile: services/kernel/Dockerfile
+  env_file: ../../build-cache/local-unified/.env
+  environment:
+    NIUCAI_DATABASE_URL: postgresql+psycopg://niucai:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/niucai
+    NIUCAI_WORKSPACE: /workspace
+    NIUCAI_PI_STORAGE: /var/lib/niucai/pi
+    NIUCAI_MODEL_CONFIG_PATH: /app/models.yaml
+    NIUCAI_RUNTIME: pi
+    NIUCAI_ADAPTER: local
+    NIUCAI_BROWSER_CDP_URL: http://computer:9223
+    NIUCAI_COOKIE_SECURE: "false"
+    NIUCAI_COMPUTER_WEB_UPSTREAM: http://desktop-relay:6901
+    NIUCAI_COMPUTER_WEB_USER: kasm_user
+    NIUCAI_COMPUTER_WEB_PASSWORD: ${VNC_PW:?set VNC_PW}
+  volumes:
+    - workspace:/workspace
+    - pi_sessions:/var/lib/niucai/pi
+    - ../../services/kernel/models.yaml:/app/models.yaml:ro
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: niucai
+      POSTGRES_USER: niucai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U niucai -d niucai"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  migrate:
+    <<: *kernel
+    command: [uv, run, --no-sync, alembic, upgrade, head]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+  api:
+    <<: *kernel
+    command: [uv, run, --no-sync, uvicorn, niucai.api.app:app, --host, 0.0.0.0, --port, "8080"]
+    ports: ["127.0.0.1:38080:8080"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  worker:
+    <<: *kernel
+    command: [uv, run, --no-sync, python, -m, niucai.worker]
+    depends_on:
+      api:
+        condition: service_healthy
+      computer:
+        condition: service_healthy
+  computer:
+    image: niucai-local-computer:20261010
+    build:
+      context: ../../computer
+    shm_size: "1gb"
+    environment:
+      DISPLAY_NUM: ":1"
+      CDP_PORT: "9222"
+      RELAY_LISTEN_PORT: "9223"
+      RELAY_PUBLIC_HOSTPORT: computer:9223
+      VNC_PW: ${VNC_PW:?set VNC_PW}
+    volumes:
+      - workspace:/workspace
+      - browser_profile:/browser-profile
+      - downloads:/downloads
+      - desktop_home:/home/kasm-user
+      - ../../relay:/relay:ro
+    restart: unless-stopped
+  desktop-relay:
+    image: nginx:1.27-alpine
+    volumes:
+      - ../../relay/desktop-relay.conf:/etc/nginx/conf.d/default.conf:ro
+    ports: ["127.0.0.1:36901:6901"]
+    depends_on: [computer]
+    restart: unless-stopped
+  web:
+    image: niucai-local-web:20261010
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    volumes:
+      - ./local-test-nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./local-test-proof.html:/usr/share/nginx/html/local-test-proof.html:ro
+    ports: ["127.0.0.1:38000:80"]
+    depends_on:
+      api:
+        condition: service_healthy
+      desktop-relay:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  postgres:
+  workspace:
+  pi_sessions:
+  browser_profile:
+  downloads:
+  desktop_home:

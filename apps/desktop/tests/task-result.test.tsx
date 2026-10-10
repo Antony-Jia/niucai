@@ -80,7 +80,7 @@ it("loads task-scoped files and keeps downloads available when preview is unsupp
   expect(screen.getByText(/最后成功观测页面/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "预览截图" }));
   await screen.findByText(/截图预览不可用/);
-  fireEvent.click(screen.getByRole("button", { name: "下载", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: /^下载$/ }));
   await vi.waitFor(() => expect(download).toHaveBeenCalledWith("shot"));
   fireEvent.click(screen.getByRole("button", { name: "关闭预览" }));
   expect(screen.queryByText(/截图预览不可用/)).not.toBeInTheDocument();

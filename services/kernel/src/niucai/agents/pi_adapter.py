@@ -15,9 +15,10 @@ from hashlib import sha256
 from pydantic import TypeAdapter
 from sqlalchemy import select
 
+from niucai.control.conversations import ConversationManager
 from niucai.control.tasks import ComputerRequired, Conflict, require
 from niucai.domain.schemas import ActionSpec, Plan, Role
-from niucai.storage.db import Action, Task, emit
+from niucai.storage.db import Action, Message, Task, emit
 
 
 def inline_schema(schema):
@@ -46,6 +47,7 @@ class PiDurableRuntime:
 
     async def run(self, worker, task):
         token, task_id = task.run_token, task.id
+        inbox = ConversationManager(worker.db)
 
         def current():
             with worker.db.sessions() as session:
@@ -58,24 +60,42 @@ class PiDurableRuntime:
         workspace = worker.settings.workspace.resolve()
         if storage_root == workspace or workspace in storage_root.parents:
             raise ValueError("Pi session storage must be outside the agent workspace")
-        storage = storage_root / sha256(task_id.encode()).hexdigest()
+        scope = task.conversation_id if task.checkpoint.get("session_scope") == "conversation" else task_id
+        storage = storage_root / sha256(scope.encode()).hexdigest()
         storage.mkdir(parents=True, exist_ok=True, mode=0o700)
         lock = (storage / "writer.lock").open("a+")
         process = None
         serve = monitor = drain = None
+        handlers = set()
+        failure = asyncio.get_running_loop().create_future()
         try:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
                 raise Conflict("Pi session still has a writer; retry after its exit") from exc
-            if task.checkpoint.get("pi_submission_id") is not None:
+            needs_journal = task.checkpoint.get("pi_submission_id") is not None
+            if scope == task.conversation_id:
+                with worker.db.sessions() as session:
+                    needs_journal = needs_journal or bool(
+                        session.scalar(
+                            select(Task.id)
+                            .where(
+                                Task.conversation_id == task.conversation_id,
+                                Task.id != task_id,
+                                Task.checkpoint["session_scope"].as_string() == "conversation",
+                                Task.checkpoint["pi_submission_id"].as_string().is_not(None),
+                            )
+                            .limit(1)
+                        )
+                    )
+            if needs_journal:
                 journal = storage / "main.jsonl"
                 if not journal.is_file() or journal.stat().st_size == 0:
                     raise ValueError(
                         "Pi session storage missing; restore pi_sessions with the database before retry"
                     )
             package = worker.context.compile(task_id)
-            if not task.plan:
+            if not task.plan and task.checkpoint.get("session_scope") != "conversation":
                 worker.tasks.phase(task_id, token, "PLANNING")
                 plan = await self.gateway.structured(Role.PLANNER, package, Plan, task_id)
                 current()
@@ -106,7 +126,32 @@ class PiDurableRuntime:
                 "retryCount": task.retry_count,
                 "requestId": task.checkpoint.get("pi_request_id"),
                 "submissionId": task.checkpoint.get("pi_submission_id"),
+                "freshRound": task.checkpoint.get("session_scope") == "conversation"
+                and not task.checkpoint.get("pi_submission_id"),
             }
+            pending_messages = inbox.pending(task_id)
+            initial = pending_messages[0] if pending_messages else None
+            if initial and (not config["requestId"] or task.checkpoint.get("pi_continue_inbox")):
+                config.update(
+                    requestId=initial.id,
+                    submissionId=None,
+                    inputContent=initial.content,
+                    messageId=initial.id,
+                )
+            elif initial and initial.id == config["requestId"]:
+                config.update(inputContent=initial.content, messageId=initial.id)
+            for message in inbox.inputs(task_id):
+                if message.id == config["requestId"]:
+                    config.update(inputContent=message.content, messageId=message.id)
+            config["replayMessages"] = [
+                {"messageId": message.id, "content": message.content}
+                for message in inbox.inputs(task_id)
+                if message.id != config["requestId"]
+            ]
+            sent_ids = [message["messageId"] for message in config["replayMessages"]]
+            sent = {config["messageId"]} if config.get("messageId") else set()
+            sent.update(sent_ids)
+            ready = asyncio.Event()
             current()
             # Inheritance ensures a killed Python owner cannot release a live Node writer's lock.
             process = await asyncio.create_subprocess_exec(
@@ -128,6 +173,25 @@ class PiDurableRuntime:
                 nonlocal model_turns
                 value = current()
                 if method == "model.chat":
+                    with worker.db.sessions() as session:
+                        input_sequence = session.scalar(
+                            select(Message.sequence)
+                            .where(
+                                Message.task_id == task_id,
+                                Message.role == "user",
+                                Message.id.in_(params.get("inputIds", [])),
+                            )
+                            .order_by(Message.sequence.desc())
+                            .limit(1)
+                        )
+                        if input_sequence is None:
+                            # Old Pi sessions lack input envelopes; only their original goal is assumed seen.
+                            input_sequence = session.scalar(
+                                select(Message.sequence)
+                                .where(Message.task_id == task_id, Message.role == "user")
+                                .order_by(Message.sequence)
+                                .limit(1)
+                            )
                     if model_turns >= worker.settings.max_model_turns:
                         return {"wait": {"reason": "model turn budget exhausted"}}
                     model_turns += 1
@@ -142,6 +206,18 @@ class PiDurableRuntime:
                         **({"tools": params["tools"]} if params.get("tools") else {}),
                     )
                     current()
+                    # Persist the originating input revision in each Pi tool intent.
+                    # This stays correct when parent and child model calls overlap.
+                    for choice in data.get("choices", []):
+                        for call in choice.get("message", {}).get("tool_calls", []):
+                            if call.get("function", {}).get("name") == "execute_action":
+                                try:
+                                    arguments = json.loads(call["function"]["arguments"])
+                                    if input_sequence is not None:
+                                        arguments["_kernelSequence"] = input_sequence
+                                        call["function"]["arguments"] = json.dumps(arguments)
+                                except (ValueError, TypeError):
+                                    pass  # Preserve the provider's normal invalid-arguments failure path.
                     worker.tasks.phase(task_id, token, "PROCESSING")
                     return data
                 if method == "task.plan":
@@ -168,14 +244,26 @@ class PiDurableRuntime:
                 if method != "action.execute":
                     raise ValueError("unknown Pi bridge method")
                 key = f"{task_id}:pi:{sha256(str(params['toolTaskId']).encode()).hexdigest()}"
+                input_sequence = params.get("inputSequence")
                 with worker.db.sessions() as session:
                     existing = session.scalar(select(Action).where(Action.idempotency_key == key))
+                    latest = session.scalar(
+                        select(Message.sequence)
+                        .where(Message.task_id == task_id, Message.role == "user")
+                        .order_by(Message.sequence.desc())
+                        .limit(1)
+                    )
+                if not existing and input_sequence is not None and latest != input_sequence:
+                    return {
+                        "status": "DENIED",
+                        "error": "User changed instructions; reconsider after steering.",
+                    }
                 if not existing and value.current_step >= value.checkpoint.get(
                     "budget_limit", worker.settings.max_steps
                 ):
                     return {"wait": {"reason": "step budget exhausted"}}
                 try:
-                    action = worker.actions.propose(task_id, token, params["spec"], key)
+                    action = worker.actions.propose(task_id, token, params["spec"], key, input_sequence)
                 except ComputerRequired as exc:
                     return {"wait": {"reason": "computer required", "detail": str(exc)}}
                 except (PermissionError, ValueError) as exc:
@@ -200,21 +288,34 @@ class PiDurableRuntime:
                     )
                 return {"action_id": action.id, "status": action.status, "result": action.result}
 
+            async def respond(frame):
+                try:
+                    try:
+                        response = {"id": frame["id"], "result": await rpc(frame["method"], frame["params"])}
+                    except (ValueError, PermissionError) as exc:
+                        response = {"id": frame["id"], "error": str(exc)[:500]}
+                    process.stdin.write((json.dumps(response, ensure_ascii=False) + "\n").encode())
+                    await process.stdin.drain()
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as exc:
+                    if not failure.done():
+                        failure.set_exception(exc)
+
             async def service():
                 while line := await process.stdout.readline():
                     frame = json.loads(line)
                     if frame["type"] == "rpc":
-                        # A revoked lease must kill the child, not settle a Pi generation/tool as failed.
-                        try:
-                            response = {
-                                "id": frame["id"],
-                                "result": await rpc(frame["method"], frame["params"]),
-                            }
-                        except (ValueError, PermissionError) as exc:
-                            response = {"id": frame["id"], "error": str(exc)[:500]}
-                        process.stdin.write((json.dumps(response, ensure_ascii=False) + "\n").encode())
-                        await process.stdin.drain()
+                        # Keep reading admission acknowledgements during a model request.
+                        handler = asyncio.create_task(respond(frame))
+                        handlers.add(handler)
+                        handler.add_done_callback(handlers.discard)
+                    elif frame["type"] == "message_ack":
+                        await asyncio.to_thread(
+                            inbox.acknowledge, task_id, token, frame["messageId"], frame["submissionId"]
+                        )
                     elif frame["type"] == "session":
+                        ready.set()
                         value = current()
                         worker.tasks.update(
                             task_id,
@@ -225,6 +326,7 @@ class PiDurableRuntime:
                                 "pi_conversation_id": frame["conversationId"],
                                 "pi_submission_id": frame["submissionId"],
                                 "pi_request_id": frame["requestId"],
+                                "pi_continue_inbox": False,
                             },
                         )
                         with worker.db.sessions.begin() as session:
@@ -248,8 +350,27 @@ class PiDurableRuntime:
 
             async def watch_lease():
                 while True:
-                    await asyncio.sleep(0.25)
+                    await asyncio.sleep(0.1)
                     current()
+                    if not ready.is_set():
+                        continue
+                    for message in inbox.pending(task_id):
+                        if message.id not in sent:
+                            process.stdin.write(
+                                (
+                                    json.dumps(
+                                        {
+                                            "type": "input",
+                                            "messageId": message.id,
+                                            "content": message.content,
+                                        },
+                                        ensure_ascii=False,
+                                    )
+                                    + "\n"
+                                ).encode()
+                            )
+                            await process.stdin.drain()
+                            sent.add(message.id)
 
             async def drain_stderr():
                 # Drain without logging prompts, keys or tool output.
@@ -259,16 +380,16 @@ class PiDurableRuntime:
             serve = asyncio.create_task(service())
             monitor = asyncio.create_task(watch_lease())
             drain = asyncio.create_task(drain_stderr())
-            done, _ = await asyncio.wait({serve, monitor}, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait({serve, monitor, failure}, return_when=asyncio.FIRST_COMPLETED)
             for future in done:
-                if future is monitor:
+                if future is monitor or future is failure:
                     future.result()
             return serve.result()
         finally:
 
             async def cleanup():
                 try:
-                    for future in (serve, monitor, drain):
+                    for future in (serve, monitor, drain, failure, *handlers):
                         if future:
                             future.cancel()
                     if process:
@@ -278,7 +399,9 @@ class PiDurableRuntime:
                             except ProcessLookupError:
                                 pass
                         await process.wait()  # Keep storage locked until no child can write.
-                    await asyncio.gather(*(f for f in (serve, monitor, drain) if f), return_exceptions=True)
+                    await asyncio.gather(
+                        *(f for f in (serve, monitor, drain, failure, *handlers) if f), return_exceptions=True
+                    )
                 finally:
                     lock.close()
 

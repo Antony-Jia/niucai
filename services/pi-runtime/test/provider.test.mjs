@@ -73,6 +73,23 @@ test("round-trip transcript preserves reasoning, tool arguments, result and imag
   assert.equal(result.tools[0].function.name, "execute_action");
 });
 
+test("only inputs actually placed in the transcript contribute to the Kernel revision", () => {
+  const context = normalizeContext({
+    messages: [
+      {
+        role: "user",
+        content: "[niucai.input:message-one]\nOriginal request",
+        timestamp: 1,
+      },
+      assistant([{ type: "text", text: "working" }]),
+    ],
+  });
+  const result = toGateway(context);
+  assert.deepEqual(result.inputIds, ["message-one"]);
+  assert.equal(result.messages[0].content, "Original request");
+  assert.ok(!JSON.stringify(result.messages).includes("niucai.input"));
+});
+
 test("provider calls symbolic Kernel role and records usage without provider credentials", async () => {
   const models = createModels();
   models.setProvider(

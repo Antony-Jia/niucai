@@ -7,7 +7,7 @@ from niucai.domain.schemas import TaskCreate
 from niucai.storage.db import Action, Agent, Approval, Base, Computer, Database
 
 settings = Settings()
-if settings.database_url != "sqlite:///./e2e.db":
+if settings.database_url not in {"sqlite:///./e2e.db", "sqlite:///./unified-e2e.db"}:
     raise RuntimeError("mobile fixture requires the dedicated e2e.db")
 db = Database(settings.database_url)
 db.create_schema()

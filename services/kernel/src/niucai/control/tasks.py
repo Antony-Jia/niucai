@@ -4,7 +4,7 @@ from sqlalchemy import or_, select
 
 from niucai.control.progress import TERMINAL, clear_wait, task_progress
 from niucai.domain.schemas import TaskCreate
-from niucai.storage.db import Action, Agent, Computer, Task, TaskRun, emit, now, uid
+from niucai.storage.db import Action, Agent, Computer, Conversation, Message, Task, TaskRun, emit, now, uid
 
 
 class Conflict(Exception):
@@ -22,7 +22,13 @@ class ComputerRequired(ValueError):
 
 
 def require(session, model, ident, lock=False):
-    query = select(model).where(model.id == ident)
+    if lock and model is Task:
+        row = session.get(Task, ident)
+        if row and row.conversation_id:
+            from niucai.control.conversations import lock_conversation
+
+            lock_conversation(session, row.conversation_id)
+    query = select(model).where(model.id == ident).execution_options(populate_existing=True)
     if lock:
         query = query.with_for_update()
     row = session.scalar(query)
@@ -35,15 +41,25 @@ class TaskManager:
     def __init__(self, db, settings):
         self.db, self.settings = db, settings
 
-    def create(self, request: TaskCreate):
+    def create(self, request: TaskCreate, *, unified=False):
         with self.db.sessions.begin() as s:
             require(s, Agent, request.agent_id)
             if request.computer_id:
                 require(s, Computer, request.computer_id)
-            task = Task(**request.model_dump())
+            from niucai.control.conversations import ConversationManager, append_message
+
+            conversation = ConversationManager.create_in(
+                s, request.title, request.agent_id, request.computer_id
+            )
+            task = Task(
+                **request.model_dump(),
+                conversation_id=conversation.id,
+                checkpoint={"session_scope": "conversation", "runtime": "pi"} if unified else {},
+            )
             s.add(task)
             s.flush()
             emit(s, "task.created", task.id, title=task.title)
+            append_message(s, conversation, role="user", content=task.goal, task_id=task.id)
             return task
 
     def transition(self, task_id, operation):
@@ -116,6 +132,8 @@ class TaskManager:
             if computer.kind != "linux":
                 raise Conflict("browser tasks require a Linux computer")
             task.computer_id = computer_id
+            if task.conversation_id:
+                require(s, Conversation, task.conversation_id).computer_id = computer_id
             if task.checkpoint.get("reason") == "computer required":
                 task.checkpoint = {k: v for k, v in task.checkpoint.items() if k not in {"reason", "detail"}}
             emit(s, "task.computer_assigned", task.id, computer_id=computer_id)
@@ -180,6 +198,36 @@ class TaskManager:
                 journal = task.checkpoint.get("_progress")
                 if journal:
                     changes["checkpoint"] = {**changes["checkpoint"], "_progress": journal}
+            if (
+                changes.get("status") == "COMPLETED"
+                and task.checkpoint.get("session_scope") == "conversation"
+            ):
+                pending = s.scalar(
+                    select(Message.id)
+                    .where(Message.task_id == task.id, Message.role == "user", Message.delivered_at.is_(None))
+                    .limit(1)
+                )
+                if pending:
+                    # A message racing the final answer must get another execution opportunity.
+                    changes["status"] = "PENDING"
+                    changes["checkpoint"] = {
+                        **changes.get("checkpoint", task.checkpoint),
+                        "pi_continue_inbox": True,
+                    }
+            if changes.get("status") in {"COMPLETED", "PENDING"} and "result" in changes.get(
+                "checkpoint", {}
+            ):
+                if task.conversation_id:
+                    from niucai.control.conversations import append_message
+
+                    conversation = require(s, Conversation, task.conversation_id)
+                    append_message(
+                        s,
+                        conversation,
+                        role="assistant",
+                        task_id=task.id,
+                        content=str(changes["checkpoint"]["result"]),
+                    )
             for field, value in changes.items():
                 setattr(task, field, value)
             # Approval may be decided after execute() returns WAITING_APPROVAL

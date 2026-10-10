@@ -1339,6 +1339,13 @@ footer span:last-child {
   gap: 12px;
   padding: 22px 24px 18px;
 }
+.session-heading > div {
+  min-width: 0;
+}
+.session-heading > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
 .workspace-kicker {
   font-size: 9px;
   letter-spacing: 1.5px;
@@ -1627,10 +1634,25 @@ footer span:last-child {
   flex: 1;
   min-height: 150px;
   position: relative;
-  display: grid;
-  place-content: center;
+  display: flex;
+  flex-direction: column;
   color: #8493a8;
   font-size: 12px;
+}
+.embedded-desktop-toolbar {
+  flex: 0 0 auto;
+  padding: 10px 14px;
+  border-bottom: 1px solid #dce3ed;
+  background: #f8fafc;
+}
+.embedded-desktop-toolbar p {
+  margin: 6px 0;
+}
+.embedded-desktop-viewport {
+  flex: 1;
+  min-height: 150px;
+  display: grid;
+  place-content: center;
 }
 .workspace-resource-scroll {
   overflow: auto;
@@ -1797,4 +1819,70 @@ footer span:last-child {
   max-height: 400px;
   object-fit: contain;
   margin-top: 8px;
+}
+
+.unified-chat {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: 65vh;
+  gap: 16px;
+}
+.unified-chat.compact {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.conversation-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.conversation-main .session-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+}
+.conversation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-self: start;
+}
+.conversation-list button {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.conversation-execution {
+  border-top: 1px solid #dce5f1;
+  margin-top: 14px;
+  padding-top: 12px;
+}
+.conversation-execution summary {
+  cursor: pointer;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.timeline-event {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin: 8px 0;
+  color: #697c95;
+}
+.conversation-main .message p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 700px) {
+  .unified-chat {
+    display: flex;
+    flex-direction: column;
+  }
+  .conversation-list {
+    width: 100%;
+    max-height: 160px;
+    overflow: auto;
+  }
 }

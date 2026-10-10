@@ -5,7 +5,7 @@ Token 必须至少 32 字符。当前为单用户，不实现多租户。
 
 | Method | Path | 行为 |
 |---|---|---|
-| POST | /api/tasks | 创建独立任务 |
+| POST | /api/tasks | 创建会话及首轮执行 |
 | GET | /api/tasks | 列表，limit/offset |
 | GET | /api/tasks/{id} | 查询完整持久状态 |
 | POST | /api/tasks/{id}/pause | 暂停并撤销 run token |
@@ -68,12 +68,12 @@ WebSocket 在连接后 5 秒内发送：
 无效认证关闭 code=1008，Token 不放在 URL。
 
 系统级通知、Username/Password/TOTP 登录、设备 WSS 注册均为后续模块。
-V1 不把 Chat 消息自动转成 Task。
+Chat 已统一为异步会话消息入口，自动创建或加入当前执行。详见 [统一会话协议](unified-conversations.md)。
 
 
 ## Desktop 会话与文件
 
-- `POST /api/chat`：`{"content":"你好","conversation_id":null}`，返回 conversation 和这一轮两条 messages。executor 通过统一 Model Gateway 回复，Chat 无工具、无任务状态副作用。模型失败会保存 FAILED 回复；同会话已有 PENDING 回复时返回 409。
+- `POST /api/chat`：接受 content、conversation_id、computer_id 和可选 client_id，返回 HTTP 202 及 conversation、messages、task、accepted。只返回已保存用户消息；模型回答、工具、审批与产物通过持久事件和会话时间线读取。
 - `GET /api/conversations?limit=100`：最近会话。
 - `GET /api/conversations/{id}/messages?limit=200`：最近消息，按时间正序。
 - `GET /api/artifacts?limit=200`：最近产物元数据。

@@ -8,6 +8,7 @@ export type TaskStatus =
   | "CANCELLED";
 export interface Task {
   id: string;
+  conversation_id?: string | null;
   title: string;
   goal: string;
   status: TaskStatus;
@@ -93,6 +94,9 @@ export interface Conversation {
   id: string;
   title: string;
   created_at: string;
+  updated_at?: string;
+  agent_id?: string;
+  computer_id?: string | null;
 }
 export interface Message {
   id: string;
@@ -101,6 +105,26 @@ export interface Message {
   content: string;
   status: string;
   created_at: string;
+  sequence?: number;
+  task_id?: string | null;
+  client_id?: string | null;
+  delivered_at?: string | null;
+}
+export interface TimelineItem {
+  id: string;
+  cursor: number;
+  type: string;
+  task_id: string | null;
+  created_at: string;
+  data: Record<string, unknown>;
+  message?: Message;
+}
+export interface Timeline {
+  items: TimelineItem[];
+  next_cursor: number;
+  has_more: boolean;
+  tasks: Task[];
+  artifacts: Artifact[];
 }
 export interface Profile {
   computer_id?: string;

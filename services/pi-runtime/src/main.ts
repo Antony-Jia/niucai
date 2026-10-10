@@ -18,6 +18,8 @@ import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/n
 import { kernelProvider, type Rpc } from "./provider.js";
 
 const context = BACKGROUND_CONTEXT;
+const inputContent = (id: string, text: string) =>
+  `[niucai.input:${id}]\n${text}`;
 const lines = createInterface({ input: process.stdin });
 const pending = new Map<
   number,
@@ -29,6 +31,8 @@ const initialized = new Promise<any>((resolve) => {
   initialize = resolve;
 });
 let first = true;
+let acceptInput: ((frame: any) => Promise<void>) | undefined;
+let admission = Promise.resolve();
 function send(value: unknown) {
   process.stdout.write(JSON.stringify(value) + "\n");
 }
@@ -38,6 +42,19 @@ lines.on("line", (line) => {
     if (first) {
       first = false;
       initialize(frame);
+      return;
+    }
+    if (frame.type === "input") {
+      if (!acceptInput) return; // Closing writer: Kernel will redeliver without an acknowledgement.
+      admission = admission
+        .then(async () => {
+          if (!acceptInput) throw new Error("conversation is not initialized");
+          await acceptInput(frame);
+        })
+        .catch((error) => {
+          send({ type: "fatal", error: String(error) });
+          process.exitCode = 1;
+        });
       return;
     }
     const call = pending.get(frame.id);
@@ -97,13 +114,17 @@ async function main() {
     name: "execute_action",
     description:
       "Execute a typed computer action through Kernel policy, approval and audit. Read status and feedback before choosing the next action.",
-    parameters: Type.Object({ spec: config.actionSchema }),
+    parameters: Type.Object({
+      spec: config.actionSchema,
+      _kernelSequence: Type.Optional(Type.Integer()),
+    }),
     replay: "safe",
     executionMode: "sequential",
     execute: async (args, api) => {
       const result = await invoke("action.execute", {
         spec: args.spec,
         toolTaskId: api.taskId,
+        inputSequence: args._kernelSequence,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result) }],
@@ -261,15 +282,46 @@ async function main() {
       }
     }
     await root.configure({ instructions: config.prompt }, context);
+    // A cancelled round may still have durable pending tools. They cannot belong to the new round.
+    if (config.freshRound) await root.abort(context, { background: true });
+    const steers: any[] = [];
+    acceptInput = async (frame) => {
+      const input = await root.submit(
+        {
+          type: "input",
+          content: inputContent(frame.messageId, frame.content),
+          requestId: frame.messageId,
+          whenBusy: "steer",
+        },
+        context,
+      );
+      const status = (await input.status(context)).status;
+      if (status !== "done" && status !== "unanswered") steers.push(input);
+      send({
+        type: "message_ack",
+        messageId: frame.messageId,
+        submissionId: input.id,
+      });
+    };
     let requestId = config.requestId ?? `kernel:${config.taskId}`;
     let submission = await root.submit(
       {
         type: "input",
-        content: "Execute the task in the current Kernel context.",
+        content: config.messageId
+          ? inputContent(config.messageId, config.inputContent)
+          : "Execute the task in the current Kernel context.",
         requestId,
       },
       context,
     );
+    if (config.messageId)
+      send({
+        type: "message_ack",
+        messageId: config.messageId,
+        submissionId: submission.id,
+      });
+    for (const message of config.replayMessages ?? [])
+      await acceptInput(message);
     if (
       (await submission.status(context)).status === "unanswered" &&
       config.retryCount > 0
@@ -292,7 +344,14 @@ async function main() {
       requestId,
     });
     harness.resume();
-    const settled = await submission.wait(context);
+    let settled = await submission.wait(context);
+    let consumed = 0;
+    await admission;
+    while (consumed < steers.length) {
+      settled = await steers[consumed++].wait(context);
+      await admission;
+    }
+    acceptInput = undefined;
     if (settled.status === "done") {
       const answer = await root.commit(
         (tx) => tx.entry(AssistantEntry, settled.answer!),

@@ -60,16 +60,42 @@ export function taskProgress(
     if (pending) operations.push("approve", "deny");
     if (unknown) operations.push("reconcile");
   }
+  let phase: string = task.status;
+  let message = terminal
+    ? task.status === "COMPLETED"
+      ? "任务已完成"
+      : "任务已停止"
+    : task.status === "PENDING"
+      ? "任务已排队，将自动开始"
+      : task.status === "PAUSED"
+        ? "任务已暂停，可以恢复或停止"
+        : "当前 Kernel 未提供详细执行阶段";
+  let waitReason = terminal ? null : task.checkpoint.reason || null;
+  if (!terminal && task.status !== "FAILED") {
+    if (unknown) {
+      phase = "WAITING_RECONCILIATION";
+      message = "动作结果不确定，请先核对实际结果";
+    } else if (pending || task.checkpoint.reason === "WAITING_APPROVAL") {
+      phase = "WAITING_APPROVAL";
+      message = "等待你批准或拒绝动作，恢复任务不能代替审批";
+    } else if (computer && computer.control !== "AGENT") {
+      phase = "WAITING_COMPUTER";
+      waitReason =
+        computer.control === "HUMAN"
+          ? "COMPUTER_HUMAN_CONTROL"
+          : "COMPUTER_PAUSED";
+      message =
+        computer.control === "HUMAN"
+          ? "执行电脑由你控制，请先交还 Agent；任务不会自动开始"
+          : "执行电脑已暂停，请先恢复电脑";
+    }
+    if (task.status === "PAUSED" && phase !== "PAUSED")
+      message = "任务已暂停；" + message;
+  }
   return {
-    phase: task.status,
-    message: terminal
-      ? task.status === "COMPLETED"
-        ? "任务已完成"
-        : "任务已停止"
-      : task.status === "PENDING"
-        ? "任务已排队，将自动开始"
-        : "当前 Kernel 未提供详细执行阶段",
-    wait_reason: terminal ? null : task.checkpoint.reason || null,
+    phase,
+    message,
+    wait_reason: waitReason,
     last_progress_at: "",
     allowed_operations: operations,
     action_id: null,

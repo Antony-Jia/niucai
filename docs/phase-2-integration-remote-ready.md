@@ -12,6 +12,11 @@ Hermes 已交付并报告隔离 API/Worker 更新到 `niucai-integr-kernel:95b1d
 详细证据与自动验收脚本的解析缺口见 `phase-2-browser-fix-review-95b1daa.md`。
 以下 36e2183 信息保留为基线交付记录。
 
+2026-10-10 本机已独立完成隔离 API 与桌面入口核验，桌面 React 界面经真实 API
+完成任务、审批、暂停恢复、接管交还与断线重连。见
+`phase-2-client-integration-results-20261010.md`，其中明确区分浏览器界面与原生
+Windows WebView 验收范围；原生人工键鼠尚待手工核验。
+
 ## 已确认的交付对应关系
 
 - 反馈的归档 SHA256 与本地交付一致：`b8312f77c187e9a177f759c246fd03912286fc5bf1fee7dddc6c7269a656f62b`。

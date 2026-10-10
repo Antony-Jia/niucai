@@ -15,6 +15,7 @@ K1/K2 与 L1/L2 首批实现已进入源码，进度合同见 [API](api.md)；�
 
 ## 开发与部署
 
+- [远程环境安装、验收与排障手册](remote-environment-runbook.md)：重装入口，包含配置、镜像、桌面登录、任务等待、备份恢复及历史问题勘误。
 - [Windows 开发与启动](development-windows.md)
 - [远端部署与第一阶段基线](remote-deployment.md)
 - [架构](architecture.md)、[API](api.md)、[设备接入](device-integration.md)
@@ -22,3 +23,7 @@ K1/K2 与 L1/L2 首批实现已进入源码，进度合同见 [API](api.md)；�
 - [Pi Durable](pi-durable.md)、[验收](acceptance.md)、[CI](ci.md)
 
 历史机器记录、旧源码包和 Hermes 交付副本保留在开发者本机，不作为当前源码或部署指令。
+
+- [统一会话与执行架构](unified-conversations.md)：Chat/Task 合并、消息投递、Pi steering 与迁移。
+- [统一会话验收记录](unified-conversations-validation-20261010.md)：自动回归、真实模型与 Linux Chromium 验证及部署边界。
+- [本地 Docker 统一会话联调](local-unified-testing.md)：独立 API、Pi、PostgreSQL、Computer、VNC 和手机入口。

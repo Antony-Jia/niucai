@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-test("desktop demo renders all seven pages and takes control", async ({
+test("desktop demo renders unified pages and takes control", async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -11,16 +11,9 @@ test("desktop demo renders all seven pages and takes control", async ({
   ).toBeVisible();
   await expect(page.locator(".timeline-item")).toHaveCount(2);
   await page.screenshot({ path: "test-results/dashboard.png", fullPage: true });
-  for (const name of [
-    "Tasks",
-    "Chat",
-    "Files",
-    "Memory",
-    "Settings",
-    "Computer",
-  ]) {
+  for (const name of ["Files", "Memory", "Settings", "会话"]) {
     await page
-      .getByRole("button", { name: new RegExp(`^${name} [1-7]$`) })
+      .getByRole("button", { name: new RegExp(`^${name} [1-5]$`) })
       .click();
     await expect(page.locator("h1")).toBeVisible();
   }
@@ -41,11 +34,11 @@ test("three-column workspace selects tasks, creates goals and expands the deskto
 }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "体验示例", exact: true }).click();
-  await page.getByRole("button", { name: /^Computer 4$/ }).click();
+  await page.getByRole("button", { name: /^会话 2$/ }).click();
   const session = page.getByRole("region", { name: "任务与对话" });
   const desktop = page.getByRole("region", { name: "云端电脑面板" });
   await expect(session.getByRole("heading", { level: 1 })).toHaveText(
-    "调研 Agent Harness 的最新进展",
+    "开始一个新会话",
   );
   await expect(desktop.getByLabel("示例桌面画面")).toBeVisible();
   const left = await page.locator(".sidebar").boundingBox();
@@ -61,6 +54,7 @@ test("three-column workspace selects tasks, creates goals and expands the deskto
   await expect(session.getByRole("heading", { level: 1 })).toHaveText(
     "梳理项目架构",
   );
+  await session.locator(".conversation-execution summary").click();
   const result = session.getByRole("region", { name: "任务结果与文件" });
   await expect(
     result.getByText("已整理结果，文件保存在 workspace。"),
@@ -73,8 +67,9 @@ test("three-column workspace selects tasks, creates goals and expands the deskto
     path: "test-results/task-result.png",
     fullPage: true,
   });
-  await page.getByLabel("工作台任务目标").fill("在云端电脑整理项目资料");
-  await page.getByRole("button", { name: "创建工作台任务" }).click();
+  await session.getByRole("button", { name: "新建会话" }).click();
+  await page.getByLabel("聊天内容").fill("在云端电脑整理项目资料");
+  await page.getByRole("button", { name: "发送消息" }).click();
   await expect(session.getByRole("heading", { level: 1 })).toHaveText(
     "在云端电脑整理项目资料",
   );
@@ -93,7 +88,6 @@ test("three-column workspace selects tasks, creates goals and expands the deskto
   await expect(session).toBeHidden();
   await page.getByRole("button", { name: "还原工作台" }).click();
   await expect(session).toBeVisible();
-  await session.getByRole("button", { name: "对话", exact: true }).click();
   await expect(session.getByLabel("聊天内容")).toBeVisible();
 });
 
@@ -103,7 +97,7 @@ test("workspace fits the minimum Windows window and expands across its full widt
   await page.setViewportSize({ width: 900, height: 650 });
   await page.goto("/");
   await page.getByRole("button", { name: "体验示例", exact: true }).click();
-  await page.getByRole("button", { name: /^Computer 4$/ }).click();
+  await page.getByRole("button", { name: /^会话 2$/ }).click();
   const desktop = page.getByRole("region", { name: "云端电脑面板" });
   const initial = await desktop.boundingBox();
   expect(initial!.x + initial!.width).toBeLessThanOrEqual(901);
@@ -121,7 +115,7 @@ test("minimum workspace shows Kernel progress and separates approval from resume
   await page.setViewportSize({ width: 900, height: 650 });
   await page.goto("/");
   await page.getByRole("button", { name: "体验示例", exact: true }).click();
-  await page.getByRole("button", { name: /^Computer 4$/ }).click();
+  await page.getByRole("button", { name: /^会话 2$/ }).click();
   await page
     .locator(".recent-sessions")
     .getByRole("button", { name: /保存研究结论/ })
@@ -131,22 +125,26 @@ test("minimum workspace shows Kernel progress and separates approval from resume
   await page.evaluate(async () => {
     const modulePath = "/src/lib/state.tsx";
     const { queryClient } = await import(modulePath);
-    queryClient.setQueryData(["tasks"], (old: Array<Record<string, unknown>>) =>
-      old.map((t) =>
-        t.id === "demo-report"
-          ? {
-              ...t,
-              progress: {
-                phase: "WAITING_APPROVAL",
-                message: "等待你批准或拒绝动作，继续任务不能代替审批",
-                wait_reason: "APPROVAL_REQUIRED",
-                last_progress_at: "2026-10-07T04:00:00Z",
-                allowed_operations: ["pause", "cancel", "approve", "deny"],
-                action_id: "demo-action",
-              },
-            }
-          : t,
-      ),
+    queryClient.setQueryData(
+      ["timeline", "conversation-demo-report"],
+      (old: any) => ({
+        ...old,
+        tasks: old.tasks.map((t: any) =>
+          t.id === "demo-report"
+            ? {
+                ...t,
+                progress: {
+                  phase: "WAITING_APPROVAL",
+                  message: "等待你批准或拒绝动作，继续任务不能代替审批",
+                  wait_reason: "APPROVAL_REQUIRED",
+                  last_progress_at: "2026-10-07T04:00:00Z",
+                  allowed_operations: ["pause", "cancel", "approve", "deny"],
+                  action_id: "demo-action",
+                },
+              }
+            : t,
+        ),
+      }),
     );
   });
   const session = page.getByRole("region", { name: "任务与对话" });

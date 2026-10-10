@@ -1,8 +1,14 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { App } from "../src/App";
 import { Provider } from "../src/lib/state";
-import { request } from "../src/lib/api";
+import { api, request } from "../src/lib/api";
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => false,
   invoke: vi.fn(),
@@ -27,33 +33,25 @@ describe("Desktop workflows", () => {
     await explore();
     expect(await screen.findByText("正在执行")).toBeInTheDocument();
   });
-  it("creates a task with a goal, pauses it and resumes from persisted state", async () => {
+  it("starts execution from a message and pauses/resumes the same round", async () => {
     await explore();
-    nav("Tasks");
-    fireEvent.click(screen.getByRole("button", { name: "新建任务" }));
-    fireEvent.change(screen.getByLabelText("任务名称"), {
+    nav("会话");
+    fireEvent.change(screen.getByLabelText("聊天内容"), {
       target: { value: "核验 Windows 流程" },
     });
-    fireEvent.change(screen.getByLabelText("目标"), {
-      target: { value: "检查任务状态是否可以恢复" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "交给 Agent 执行" }));
-    await screen.findByText("任务已创建");
-    await waitFor(() =>
-      expect(screen.getAllByText("核验 Windows 流程")).toHaveLength(3),
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByText("核验 Windows 流程", { selector: ".message p" });
+    const session = screen.getByRole("region", { name: "统一会话" });
+    fireEvent.click(within(session).getByRole("button", { name: "暂停" }));
+    fireEvent.click(
+      await within(session).findByRole("button", { name: "恢复" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "暂停" }));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "恢复" })).toBeInTheDocument(),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "恢复" }));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "暂停" })).toBeInTheDocument(),
-    );
+    await within(session).findByRole("button", { name: "暂停" });
+    expect((await request<unknown[]>("/api/tasks")).length).toBe(4);
   });
   it("changes control ownership before showing desktop controls", async () => {
     await explore();
-    nav("Computer");
+    nav("会话");
     await screen.findByRole("button", { name: "接管电脑" });
     expect(
       screen.queryByRole("button", { name: "打开远程桌面" }),
@@ -63,25 +61,74 @@ describe("Desktop workflows", () => {
       await screen.findByRole("button", { name: "打开远程桌面" }),
     ).toBeDisabled();
     expect(screen.getByText("控制权在你手中")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "交还 Agent" }));
+    fireEvent.click(
+      within(screen.getByRole("region", { name: "云端电脑面板" })).getByRole(
+        "button",
+        { name: "交还 Agent" },
+      ),
+    );
     await screen.findByRole("button", { name: "接管电脑" });
   });
 });
 
-it("keeps chat separate from tasks until the user explicitly creates one", async () => {
+it("adds steering to the same conversation without another execution", async () => {
   await explore();
-  nav("Chat");
+  nav("会话");
   fireEvent.change(screen.getByLabelText("聊天内容"), {
     target: { value: "帮我整理 Windows 接入清单" },
   });
   fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
-  await screen.findByText("帮我整理 Windows 接入清单", { selector: "p" });
-  expect((await request<unknown[]>("/api/tasks")).length).toBe(3);
-  fireEvent.click(screen.getByRole("button", { name: "交给 Agent 执行" }));
-  await screen.findByText("任务已创建");
+  await screen.findByText("帮我整理 Windows 接入清单", {
+    selector: ".message p",
+  });
+  fireEvent.change(screen.getByLabelText("聊天内容"), {
+    target: { value: "只研究，不写文件" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+  await screen.findByText("只研究，不写文件", { selector: ".message p" });
   expect((await request<unknown[]>("/api/tasks")).length).toBe(4);
+  expect(
+    screen.queryByRole("button", { name: "交给 Agent 执行" }),
+  ).not.toBeInTheDocument();
   const created = await request<{ computer_id: string | null }[]>("/api/tasks");
   expect(created[0].computer_id).toBe("demo-computer");
+});
+
+it("keeps a new draft typed while the previous message is being acknowledged", async () => {
+  await explore();
+  nav("会话");
+  let release!: () => void;
+  const delayed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const original = api.sendMessage;
+  const admission = vi
+    .spyOn(api, "sendMessage")
+    .mockImplementation(async (...args) => {
+      const result = await original(...args);
+      await delayed;
+      return result;
+    });
+  try {
+    fireEvent.change(screen.getByLabelText("聊天内容"), {
+      target: { value: "先研究需求" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() => expect(admission).toHaveBeenCalledOnce());
+    fireEvent.change(screen.getByLabelText("聊天内容"), {
+      target: { value: "补充要求：保留历史文件" },
+    });
+    release();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "发送消息" })).toBeEnabled(),
+    );
+    expect(screen.getByLabelText("聊天内容")).toHaveValue(
+      "补充要求：保留历史文件",
+    );
+  } finally {
+    release();
+    admission.mockRestore();
+  }
 });
 
 it("removes a denied approval from the waiting queue", async () => {
@@ -97,10 +144,8 @@ it("removes a denied approval from the waiting queue", async () => {
 
 it("approves the selected task directly in Tasks", async () => {
   await explore();
-  nav("Tasks");
-  fireEvent.click(
-    await screen.findByRole("button", { name: /保存研究结论.*将研究结论/ }),
-  );
+  nav("会话");
+  fireEvent.click(await screen.findByRole("button", { name: /保存研究结论/ }));
   fireEvent.click(await screen.findByRole("button", { name: "批准执行" }));
   await waitFor(() =>
     expect(
@@ -112,10 +157,10 @@ it("approves the selected task directly in Tasks", async () => {
 
 it("does not show another task's approval in the selected detail", async () => {
   await explore();
-  nav("Tasks");
+  nav("会话");
   fireEvent.click(
     await screen.findByRole("button", {
-      name: /调研 Agent Harness.*比较三个开源/,
+      name: /调研 Agent Harness/,
     }),
   );
   expect(
