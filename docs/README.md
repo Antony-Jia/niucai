@@ -27,3 +27,5 @@ K1/K2 与 L1/L2 首批实现已进入源码，进度合同见 [API](api.md)；�
 - [统一会话与执行架构](unified-conversations.md)：Chat/Task 合并、消息投递、Pi steering 与迁移。
 - [统一会话验收记录](unified-conversations-validation-20261010.md)：自动回归、真实模型与 Linux Chromium 验证及部署边界。
 - [本地 Docker 统一会话联调](local-unified-testing.md)：独立 API、Pi、PostgreSQL、Computer、VNC 和手机入口。
+- [远程 Pi 执行节点 V1](remote-pi-nodes.md)：节点凭证、工作包授权、队列与租约、主 Pi 委派、双 Docker 节点模拟与恢复边界。
+- [多 Bot 协作方案（草案）](multi-bot-collaboration.md)：参考 Grok Bot 的 Bot 身份、异步交接、群聊、并发 Worker 与 Routine 分阶段设计，尚未实现。

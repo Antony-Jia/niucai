@@ -112,6 +112,10 @@ def task_progress(session, task):
             "model turn budget exhausted": ("MODEL_BUDGET_EXHAUSTED", "模型轮次预算已用尽，可继续当前会话"),
             "graph budget exhausted": ("GRAPH_BUDGET_EXHAUSTED", "推理预算已用尽，可继续当前会话"),
             "agent requested human": ("HUMAN_REQUESTED", "Agent 需要你的协助，处理后继续任务"),
+            "remote Pi approval required": (
+                "REMOTE_APPROVAL_REQUIRED",
+                "请在远程 Pi 页面授权工作包，然后继续主会话",
+            ),
         }
         code, message = waits.get(reason, ("HUMAN_REQUESTED", "任务等待人工处理，处理后可继续"))
         waiting("WAITING_HUMAN", code, message)
@@ -128,6 +132,7 @@ def task_progress(session, task):
             "EXECUTING_ACTION": "正在执行动作",
             "RECOVERING": "正在恢复上一次执行会话",
             "PROCESSING": "Agent 正在处理当前步骤",
+            "WAITING_REMOTE": "正在等待远程 Pi 子任务结果",
         }
         phase = journal.get("phase", "PROCESSING")
         result.update(

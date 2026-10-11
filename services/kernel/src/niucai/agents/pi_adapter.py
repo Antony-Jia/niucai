@@ -104,6 +104,9 @@ class PiDurableRuntime:
             prompt = (
                 package["policies"]
                 + " Use execute_action for every external computer/browser/file/shell operation. "
+                "When remote Pi tools are available, delegate bounded independent work packages with "
+                "remote_pi_submit and aggregate verified remote_pi_result outputs. Remote jobs require "
+                "human workspace-autonomy approval; do not claim success while they are queued or running. "
                 "Read tool feedback and adjust your approach in this session. FAILED permits correction; "
                 "UNKNOWN requires human inspection. Use update_plan to revise the plan, task to delegate, "
                 "and wait_for_human for login or clarification. A final answer completes the work. "
@@ -117,6 +120,7 @@ class PiDurableRuntime:
             profile = self.gateway.router.resolve(Role.EXECUTOR) if hasattr(self.gateway, "router") else None
             config = {
                 "taskId": task_id,
+                "remotePiEnabled": worker.settings.remote_pi_enabled,
                 "storage": str(storage),
                 "prompt": prompt,
                 "actionSchema": inline_schema(TypeAdapter(ActionSpec).json_schema()),
@@ -172,6 +176,48 @@ class PiDurableRuntime:
             async def rpc(method, params):
                 nonlocal model_turns
                 value = current()
+                if method.startswith("remote."):
+                    from fastapi.encoders import jsonable_encoder
+
+                    from niucai.control.remote import TERMINAL, RemoteManager
+
+                    remote = RemoteManager(worker.db, worker.settings)
+                    remote.enabled()
+                    if method == "remote.nodes":
+                        return jsonable_encoder(remote.nodes())
+                    if method == "remote.submit":
+                        from niucai.api.remote import JobCreate
+
+                        request = JobCreate(
+                            prompt=params["prompt"],
+                            allowed_nodes=params.get("allowed_nodes", []),
+                            idempotency_key=f"{task_id}:remote:{sha256(str(params['toolTaskId']).encode()).hexdigest()}",
+                            parent_task_id=task_id,
+                        )
+                        return jsonable_encoder(
+                            remote.submit(
+                                request.prompt, request.idempotency_key, request.allowed_nodes, task_id, token
+                            )
+                        )
+                    if method == "remote.result":
+                        for _ in range(20):
+                            current()
+                            job = await asyncio.to_thread(remote.get, params["job_id"])
+                            if job["parent_task_id"] != task_id:
+                                raise PermissionError("job belongs to another parent task")
+                            if job["status"] == "WAITING_APPROVAL":
+                                return {
+                                    "wait": {
+                                        "reason": "remote Pi approval required",
+                                        "remote_job_id": job["id"],
+                                    }
+                                }
+                            if job["status"] in TERMINAL | {"WAITING_APPROVAL", "LOST"}:
+                                return jsonable_encoder(job)
+                            worker.tasks.phase(task_id, token, "WAITING_REMOTE")
+                            await asyncio.sleep(1)
+                        return jsonable_encoder(job)
+                    raise ValueError("unknown remote bridge method")
                 if method == "model.chat":
                     with worker.db.sessions() as session:
                         input_sequence = session.scalar(

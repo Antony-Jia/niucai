@@ -26,6 +26,8 @@
 
 ## 项目结构
 
+远程 Pi 节点第一版：主 Pi 委派、独立节点凭证、工作包授权、队列与租约、事件与结果回传、多 Docker 模拟。默认关闭；使用与验证见 [远程 Pi 节点](docs/remote-pi-nodes.md)。
+
 ```text
 apps/desktop/      Windows 优先的 Tauri 2 + React 客户端
 apps/web/          Android 优先的 React PWA 手机控制端

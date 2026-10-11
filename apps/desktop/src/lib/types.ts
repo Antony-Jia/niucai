@@ -141,4 +141,11 @@ export interface ConnectionInput {
   rememberToken: boolean;
 }
 export type Page =
-  "dashboard" | "chat" | "tasks" | "computer" | "files" | "memory" | "settings";
+  | "remote"
+  | "dashboard"
+  | "chat"
+  | "tasks"
+  | "computer"
+  | "files"
+  | "memory"
+  | "settings";

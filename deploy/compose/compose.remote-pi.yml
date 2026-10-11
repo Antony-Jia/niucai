@@ -1,0 +1,102 @@
+name: niucai-remote-pi
+
+x-runner: &runner
+  image: niucai-pi-node:v1
+  build:
+    context: ../..
+    dockerfile: services/node-runner/Dockerfile
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  cap_add: [SETUID, SETGID, KILL, CHOWN, DAC_OVERRIDE]
+  security_opt: [no-new-privileges:true]
+  init: true
+  mem_limit: 512m
+  restart: unless-stopped
+  depends_on:
+    api:
+      condition: service_healthy
+  environment: &runner-env
+    NIUCAI_KERNEL_URL: http://api:8080
+    NIUCAI_PI_PROVIDER: demo
+    NIUCAI_PI_MODEL: demo-pi
+    NIUCAI_PI_BASE_URL: http://model:8081/v1
+    NIUCAI_PI_PROVIDER_KEY: simulation-only
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: niucai
+      POSTGRES_USER: niucai
+      POSTGRES_PASSWORD: ${REMOTE_DB_PASSWORD:?run remote-pi-demo.ps1 first}
+    volumes: [remote-db:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U niucai -d niucai]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  api:
+    image: niucai-remote-pi-kernel:v1
+    build:
+      context: ../..
+      dockerfile: services/kernel/Dockerfile
+    environment: &kernel-env
+      NIUCAI_DATABASE_URL: postgresql+psycopg://niucai:${REMOTE_DB_PASSWORD}@postgres:5432/niucai
+      NIUCAI_API_TOKEN: ${REMOTE_API_TOKEN:?run remote-pi-demo.ps1 first}
+      NIUCAI_REMOTE_PI_ENABLED: "true"
+      NIUCAI_REMOTE_LEASE_SECONDS: "15"
+      NIUCAI_COOKIE_SECURE: "false"
+      NIUCAI_WORKSPACE: /workspace
+      NIUCAI_OPENAI_API_KEY: simulation-only
+      NIUCAI_OPENAI_API_BASE_URL: http://model:8081/v1
+    command: [sh, -c, "uv run --no-sync alembic upgrade head && exec uv run --no-sync uvicorn niucai.api.app:app --host 0.0.0.0 --port 8080"]
+    ports: ["127.0.0.1:${REMOTE_API_PORT:-38180}:8080"]
+    volumes:
+      - remote-workspace:/workspace
+      - ../../services/kernel/src:/app/src:ro
+      - ../../services/kernel/migrations:/app/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+  worker:
+    image: niucai-remote-pi-kernel:v1
+    environment: *kernel-env
+    command: [uv, run, --no-sync, python, -m, niucai.worker]
+    volumes:
+      - remote-sessions:/var/lib/niucai/pi
+      - remote-workspace:/workspace
+      - ../../services/kernel/src:/app/src:ro
+    depends_on:
+      api:
+        condition: service_healthy
+  model:
+    image: niucai-remote-pi-kernel:v1
+    command: [uv, run, --no-sync, uvicorn, remote_pi_model:app, --host, 0.0.0.0, --port, "8081"]
+    volumes: ["./remote-pi-model.py:/app/remote_pi_model.py:ro"]
+  node-a:
+    <<: *runner
+    environment:
+      <<: *runner-env
+      NIUCAI_NODE_ID: ${REMOTE_NODE_A_ID:?run remote-pi-demo.ps1 first}
+      NIUCAI_NODE_TOKEN: ${REMOTE_NODE_A_TOKEN:?run remote-pi-demo.ps1 first}
+    volumes: [node-a-data:/data, "../../services/node-runner/runner.py:/opt/runner/runner.py:ro"]
+  node-b:
+    <<: *runner
+    environment:
+      <<: *runner-env
+      NIUCAI_NODE_ID: ${REMOTE_NODE_B_ID:?run remote-pi-demo.ps1 first}
+      NIUCAI_NODE_TOKEN: ${REMOTE_NODE_B_TOKEN:?run remote-pi-demo.ps1 first}
+    volumes: [node-b-data:/data, "../../services/node-runner/runner.py:/opt/runner/runner.py:ro"]
+
+volumes:
+  remote-db:
+  remote-workspace:
+  remote-sessions:
+  node-a-data:
+  node-b-data:

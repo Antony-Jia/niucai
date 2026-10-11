@@ -118,6 +118,10 @@ class TaskManager:
                     }
             if operation == "pause":
                 task.checkpoint = {**task.checkpoint, "paused_by_computer": False}
+            if operation in {"pause", "cancel"}:
+                from niucai.control.remote import cancel_children
+
+                cancel_children(s, task.id)
             emit(s, f"task.{operation}", task.id, status=destination)
             return task
 
@@ -264,7 +268,7 @@ class TaskManager:
             return task
 
     def phase(self, task_id, token, phase):
-        if phase not in {"PLANNING", "MODEL_REQUEST", "PROCESSING"}:
+        if phase not in {"PLANNING", "MODEL_REQUEST", "PROCESSING", "WAITING_REMOTE"}:
             raise ValueError("unsupported worker phase")
         with self.db.sessions.begin() as s:
             task = require(s, Task, task_id, lock=True)

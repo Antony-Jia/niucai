@@ -15,6 +15,7 @@ import { Files, MemoryPage } from "../../desktop/src/pages/FilesMemory";
 import { Modal } from "../../desktop/src/components/ui";
 import { Computer } from "./Computer";
 import { Settings } from "./Settings";
+import { RemotePi } from "../../desktop/src/pages/RemotePi";
 import { useEvents } from "./events";
 import type { Page } from "../../desktop/src/lib/types";
 const nav = [
@@ -46,6 +47,7 @@ export function MobileApp() {
     files: Files,
     memory: MemoryPage,
     settings: Settings,
+    remote: RemotePi,
   }[page];
   useEffect(() => {
     function update() {
@@ -178,6 +180,7 @@ export function MobileApp() {
           <div className="mobile-menu">
             <button onClick={() => go("files")}>文件与下载</button>
             <button onClick={() => go("memory")}>记忆</button>
+            <button onClick={() => go("remote")}>远程 Pi 节点与任务</button>
             <button onClick={() => go("settings")}>登录与安装设置</button>
           </div>
         </Modal>

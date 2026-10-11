@@ -237,6 +237,38 @@ async function main() {
     }),
   );
   registry.install(subagents);
+  if (config.remotePiEnabled) {
+    registry.install(defineExtension({ name: "niucai-remote-pi", tools: [
+      defineTool({
+        name: "remote_pi_nodes", description: "List remote Pi nodes, online state and capacity.",
+        parameters: Type.Object({}), replay: "safe", executionMode: "sequential",
+        execute: async () => ({ content: [{ type: "text", text: JSON.stringify(
+          await invoke("remote.nodes", {})
+        ) }] }),
+      }),
+      defineTool({
+        name: "remote_pi_submit",
+        description: "Delegate a bounded task to a remote Pi CLI. Returns a job ID; user must approve workspace autonomy before it runs. Submit independent jobs before waiting to allow parallel execution. Remote Pi has local file/shell tools but no Kernel credentials.",
+        parameters: Type.Object({
+          prompt: Type.String({ minLength: 1, maxLength: 16000 }),
+          allowed_nodes: Type.Optional(Type.Array(Type.String(), { maxItems: 32 })),
+        }),
+        replay: "safe", executionMode: "sequential",
+        execute: async (args, api) => ({ content: [{ type: "text", text: JSON.stringify(
+          await invoke("remote.submit", { ...args, toolTaskId: api.taskId })
+        ) }] }),
+      }),
+      defineTool({
+        name: "remote_pi_result",
+        description: "Read a delegated job's status, result and bounded file outputs. Waits up to 20 seconds for completion; aggregate results only after COMPLETED. WAITING_APPROVAL needs human approval; LOST needs node reconciliation, never launch a replacement automatically.",
+        parameters: Type.Object({ job_id: Type.String() }),
+        replay: "safe", executionMode: "sequential",
+        execute: async (args) => ({ content: [{ type: "text", text: JSON.stringify(
+          await invoke("remote.result", args)
+        ) }] }),
+      }),
+    ] }));
+  }
   const storage = await openNodeJsonlStorage(config.storage, context, {
     fsync: true,
   });

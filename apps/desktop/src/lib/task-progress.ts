@@ -12,6 +12,7 @@ export const phaseLabels: Record<string, string> = {
   PLANNING: "规划任务",
   MODEL_REQUEST: "等待模型",
   PROCESSING: "处理中",
+  WAITING_REMOTE: "等待远程 Pi",
   EXECUTING_ACTION: "执行动作",
   RECOVERING: "恢复会话",
   WAITING_APPROVAL: "等待审批",

@@ -85,6 +85,9 @@ def create_app(settings=None, db=None, chat_gateway=None):
     from niucai.api.computer_preview import preview_router
 
     app.include_router(preview_router(db, settings, auth))
+    from niucai.api.remote import remote_router
+
+    app.include_router(remote_router(db, settings, auth))
 
     @app.exception_handler(Missing)
     async def not_found(_, exc):

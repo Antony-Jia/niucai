@@ -197,6 +197,35 @@ class TaskRun(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class RemoteNode(Base):
+    __tablename__ = "remote_nodes"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    name: Mapped[str] = mapped_column(String(200))
+    token_hash: Mapped[str] = mapped_column(String(64))
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime)
+    capabilities: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class RemoteJob(Base):
+    __tablename__ = "remote_jobs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    parent_task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(200), unique=True)
+    prompt: Mapped[str] = mapped_column(Text)
+    allowed_nodes: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(30), default="WAITING_APPROVAL", index=True)
+    node_id: Mapped[str | None] = mapped_column(ForeignKey("remote_nodes.id"))
+    attempt_id: Mapped[str | None] = mapped_column(String(36))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime)
+    session_id: Mapped[str | None] = mapped_column(String(200))
+    event_sequence: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
 Index("ix_tasks_claim", Task.status, Task.lease_until, Task.created_at)
 Index(
     "uq_conversation_active_task",

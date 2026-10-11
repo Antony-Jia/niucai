@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     runtime_idle_timeout: float = Field(default=300, gt=0)
     allow_shell: bool = False
     auto_create_schema: bool = False
+    remote_pi_enabled: bool = False
+    remote_lease_seconds: int = Field(default=30, ge=5, le=300)
 
     cookie_secure: bool = True
     computer_web_url: str = "/computer/vnc.html"

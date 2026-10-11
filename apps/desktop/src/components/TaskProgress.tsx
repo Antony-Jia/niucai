@@ -18,6 +18,7 @@ export function TaskProgress({
     "PLANNING",
     "MODEL_REQUEST",
     "PROCESSING",
+    "WAITING_REMOTE",
     "RECOVERING",
     "EXECUTING_ACTION",
   ].includes(progress.phase);
