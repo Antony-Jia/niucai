@@ -9,6 +9,7 @@ from niucai.actions.gateway import ActionGateway
 from niucai.agents.selection import RuntimeRouter
 from niucai.config import Settings
 from niucai.context.compiler import ContextCompiler
+from niucai.control import report
 from niucai.control.progress import run_context
 from niucai.control.tasks import ComputerBusy, ComputerRequired, Conflict, TaskManager, require
 from niucai.domain.schemas import Decision
@@ -120,12 +121,17 @@ class Worker:
         token = task.run_token
         context_token = run_context.set((task.id, token))
         heartbeat = asyncio.create_task(self.heartbeat(task.id, token))
+        runtime = None
         try:
             runtime = (
                 self.runtime.select(self, task) if isinstance(self.runtime, RuntimeRouter) else self.runtime
             )
             if hasattr(runtime, "run"):
                 outcome = await runtime.run(self, task)
+                try:
+                    outcome = await report.build(self, runtime, task, outcome)
+                except Exception:  # 收尾报告是附加能力，失败时保留原结果。
+                    log.exception("task %s final report failed", task.id)
                 with self.db.sessions() as s:
                     current = require(s, Task, task.id)
                 await asyncio.to_thread(
@@ -237,12 +243,20 @@ class Worker:
             try:
                 with self.db.sessions() as s:
                     current = require(s, Task, task.id)
+                failed = {
+                    "status": "FAILED",
+                    "checkpoint": {
+                        **current.checkpoint,
+                        "error": type(exc).__name__,
+                        "detail": str(exc)[:500],
+                    },
+                }
+                try:
+                    failed = await report.build(self, runtime, task, failed)
+                except Exception:
+                    log.exception("task %s failure report failed", task.id)
                 await asyncio.to_thread(
-                    self.tasks.update,
-                    task.id,
-                    token,
-                    status="FAILED",
-                    checkpoint={**current.checkpoint, "error": type(exc).__name__, "detail": str(exc)[:500]},
+                    self.tasks.update, task.id, token, status="FAILED", checkpoint=failed["checkpoint"]
                 )
             except Conflict:
                 pass

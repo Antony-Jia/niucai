@@ -43,7 +43,10 @@ export function TaskResult({
       {typeof task.checkpoint.result === "string" && (
         <p className="preserve">{task.checkpoint.result}</p>
       )}
-      {terminal && !task.checkpoint.result && (
+      {!task.checkpoint.result && task.checkpoint.report?.summary && (
+        <p className="preserve">{task.checkpoint.report.summary}</p>
+      )}
+      {terminal && !task.checkpoint.result && !task.checkpoint.report?.summary && (
         <p className="muted">
           {task.status === "COMPLETED"
             ? "任务已完成，暂无文字摘要。"

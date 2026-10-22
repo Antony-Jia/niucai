@@ -379,6 +379,20 @@ class TaskManager:
                         task_id=task.id,
                         content=str(changes["checkpoint"]["result"]),
                     )
+            if "checkpoint" in changes and "report_message" in changes["checkpoint"]:
+                # 没有 result 的收尾（预算耗尽、失败）也要在会话里留下一条总结，且只写一次。
+                changes["checkpoint"] = dict(changes["checkpoint"])
+                message = changes["checkpoint"].pop("report_message")
+                if task.conversation_id and message:
+                    from niucai.control.conversations import append_message
+
+                    append_message(
+                        s,
+                        require(s, Conversation, task.conversation_id),
+                        role="assistant",
+                        task_id=task.id,
+                        content=str(message),
+                    )
             for field, value in changes.items():
                 setattr(task, field, value)
             item = s.scalar(select(WorkItem).where(WorkItem.task_id == task.id))

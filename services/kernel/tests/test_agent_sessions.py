@@ -171,12 +171,14 @@ async def test_step_budget_interrupt_resumes_pending_tool(setup):
     model = Model(
         call("one", {"type": "browser.snapshot"}),
         call("two", {"type": "browser.snapshot"}),
+        {"content": "已查看一次页面，预算用尽"},  # 预算耗尽时收尾报告的 summarizer 回复
         {"content": "done"},
     )
     computer = Computer()
     await run(db, settings, manager, model, computer)
     assert state(db, task.id).status == "WAITING_HUMAN"
     assert len(computer.calls) == 1
+    assert "已查看一次页面" in state(db, task.id).checkpoint["report"]["summary"]
     manager.transition(task.id, "resume")
     await run(db, settings, manager, model, computer)
     assert state(db, task.id).status == "COMPLETED"

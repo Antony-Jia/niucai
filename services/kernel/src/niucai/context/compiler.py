@@ -11,7 +11,9 @@ Only propose registered typed actions. The Kernel owns execution, permissions, a
 Never claim a side effect succeeded without a recorded successful result.
 Browser mutations require human approval. Unknown outcomes require human inspection.
 Use browser.snapshot before click/fill and use only refs from the latest snapshot.
-Finish with a concise factual result, or wait if login, clarification or manual inspection is needed."""
+Do not stop once information is found: finish with a result that answers the user's goal, states the key
+findings, and names any files produced or downloaded. Wait only if login, clarification or manual inspection
+is needed."""
 
 
 class ContextCompiler:
