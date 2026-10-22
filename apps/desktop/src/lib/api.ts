@@ -108,10 +108,27 @@ export const api = {
     request<{ image: string }>(`/api/artifacts/${id}/preview`),
   events: () => request<KernelEvent[]>("/api/events/recent?limit=100"),
   conversations: () => request<Conversation[]>("/api/conversations"),
-  createConversation: (computerId?: string) =>
-    request<Conversation>("/api/conversations", "POST", {
-      computer_id: computerId || null,
-    }),
+  createConversation: async (
+    computerId?: string,
+    agentId = "main",
+    groupIds: string[] = [],
+  ) => {
+    const conversation = await request<Conversation>(
+      "/api/conversations",
+      "POST",
+      {
+        computer_id: computerId || null,
+        agent_id: agentId,
+      },
+    );
+    if (groupIds.length > 1)
+      await request(
+        `/api/conversations/${conversation.id}/participants`,
+        "PUT",
+        { agent_ids: groupIds, coordinator: agentId },
+      );
+    return conversation;
+  },
   sendMessage: (id: string, content: string, clientId: string) =>
     request<{
       conversation: Conversation;

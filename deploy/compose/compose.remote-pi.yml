@@ -45,6 +45,9 @@ services:
       NIUCAI_DATABASE_URL: postgresql+psycopg://niucai:${REMOTE_DB_PASSWORD}@postgres:5432/niucai
       NIUCAI_API_TOKEN: ${REMOTE_API_TOKEN:?run remote-pi-demo.ps1 first}
       NIUCAI_REMOTE_PI_ENABLED: "true"
+      NIUCAI_MULTI_BOT_ENABLED: ${REMOTE_MULTI_BOT_ENABLED:-false}
+      NIUCAI_WORKER_SLOTS: ${REMOTE_WORKER_SLOTS:-1}
+      NIUCAI_HANDOFF_MAX_HOPS: "8"
       NIUCAI_REMOTE_LEASE_SECONDS: "15"
       NIUCAI_COOKIE_SECURE: "false"
       NIUCAI_WORKSPACE: /workspace

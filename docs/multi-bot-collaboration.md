@@ -1,10 +1,12 @@
 # 多 Bot 协作方案（参考 Grok Bot）
 
-状态：**方案草案，未实现**。文中的表、字段、工具和接口都是拟议设计。
+状态：**B1–B5 代码已实现，部分实机验收待完成**。实现范围、测试结果、启用配置及 PostgreSQL/远程节点验证边界见 [2026-10-11 验收记录](multi-bot-validation-20261011.md)。
 
 目标：在不改变"Kernel 拥有状态与执行权"这一原则的前提下，把当前的单一 `main` Agent 扩展为多个持久化、有名字、有职责的 Bot。Bot 之间可以异步交接、在群聊中协作、并行执行，也可以按计划定时工作。
 
 修订：2026-10-11，补充异步等待、协作工作项、群聊调度、权限及恢复规则。Bot 是持久化身份，不要求常驻进程，也不与 VPS 一一绑定；Pi 会话负责推理，VPS / 本地节点提供执行资源。原发起 Bot 不必在每次阶段交接后同步恢复。
+
+修订：2026-10-11（二），B2 拆为 B2a（并行委派与等待）和 B2b（阶段转交与路由）；补充远程 Job 父状态、Pi outcome、审批误唤醒、电脑占用状态和 SQLite 多槽位约束；预算第一版改为硬上限；工作项与执行会话固定一对一；依赖表推迟。
 
 ## 1. 参考模型：Grok Bot 怎么协作
 
@@ -36,11 +38,22 @@
 
 结论：Bot 的身份、交接、群聊、并发 Worker、Routine 都没有实现。不过消息收件箱、Pi steering、审批、租约恢复、远程节点这些基础都已具备，多 Bot 可以在现有机制之上增量实现，不需要重写。
 
-复用边界：当前 `ConversationManager.pending/inputs/acknowledge` 只处理 `role=user`；`send` 遇到已有 Task 时会撤销动作提案。Task 完成前的收件箱检查、Pi Adapter 的输入版本检查也依赖用户消息。新增 Bot 输入必须一起修改这些链路，不能仅新增 `role=bot` 后调用原 `send`。现有审批恢复还可能将 `WAITING_HUMAN` 改为 `PENDING`，因此 Bot 等待需要独立状态和恢复条件。
+复用边界：当前 `ConversationManager.pending/inputs/acknowledge` 只处理 `role=user`；`send` 遇到已有 Task 时会撤销动作提案。Task 完成前的收件箱检查、Pi Adapter 的输入版本检查也依赖用户消息。新增 Bot 输入必须一起修改这些链路，不能仅新增 `role=bot` 后调用原 `send`。
+
+其它必须同步修改的现有约束：
+
+| 位置 | 现状 | 对多 Bot 的影响 |
+|---|---|---|
+| `actions/gateway.py` 审批决定 | 任务处于 `WAITING_HUMAN` 且无其它未决审批时，一律改为 `PENDING`，不检查等待原因 | 等待人工回复、等待远程 Pi 的任务现在就可能被误唤醒；Bot 等待需要独立状态 `WAITING_BOT`，且审批恢复只处理 `reason=WAITING_APPROVAL` 的任务。该修复在 B2a 一并完成 |
+| `control/remote.py` 领取与心跳 | 父任务状态只接受 `RUNNING` / `WAITING_HUMAN`（心跳另含 `PENDING`） | 父任务进入 `WAITING_BOT` 后，其远程 Job 会被停止或无法领取，必须加入允许集合 |
+| `agents/pi_adapter.py` outcome | 只接受 `COMPLETED` / `FAILED` / `WAITING_HUMAN` | `bot_wait` 需要 `WAITING_BOT` outcome，`TRANSFER` 需要阶段转交 outcome；`pi-runtime/src/main.ts` 同步增加等待与恢复工具 |
+| `control/computers.py` 电脑占用 | `PENDING/RUNNING/PAUSED/WAITING_HUMAN` 视为占用 | 明确 `WAITING_BOT` 不占用电脑 |
+| `worker.py` 电脑不可用 | 转为 `WAITING_HUMAN`（`computer required`） | B4 的排队语义只在多 Bot 开关开启时生效，单 Bot 行为不变 |
+| `control/tasks.py`、`control/progress.py` | pause / resume / cancel 允许状态与进度展示不含新状态 | 增加 `WAITING_BOT` 的允许操作与等待原因展示 |
 
 ## 3. 设计原则
 
-1. **Bot 间的消息走 Kernel 收件箱，Bot 之间不直接通信。** 每条交接都是一条持久化的 `Message`，可回放、可去重、可审计。
+1. **Bot 间的通信经过 Kernel，Bot 之间不直接通信。** 交接以 `handoffs` 记录为准，可回放、可去重、可审计；`Message` 只负责投递和展示。
 2. **发送与等待分离。** 投递工作后立即返回；需要汇总时显式等待。Kernel 在现有 Worker 调度链路上增加工作项准入和唤醒，不让等待中的 Pi 占用执行槽位。
 3. **一个工作项只有一个负责人。** 不同工作项可以并行；展示群聊与执行会话分离，同一执行会话仍只有一个未结束的 Task。
 4. **审批与接管只属于人。** Bot 不能替人批准动作，也不能批准其他 Bot 的动作；审批请求总是回到会话中，由人处理。
@@ -79,22 +92,32 @@
 
 ### B2 Bot 间异步交接（核心）
 
+B2 分两步交付，先验证最难的等待、唤醒与恢复链路，再增量增加转交：
+
+| 子阶段 | 范围 | 目标场景 |
+|---|---|---|
+| **B2a 并行委派** | Workflow / WorkItem 最小字段、`handoffs`（仅 `DELEGATE`）、`bot_list` / `bot_send` / `bot_wait(all)` / `bot_reply`、`WAITING_BOT` 状态、收件箱扩展、Pi outcome 扩展、远程 Job 父状态、审批误唤醒修复、Workflow 级硬上限 | A 发给 B、C，等待两者结果后汇总 |
+| **B2b 阶段转交** | `TRANSFER`、固定允许路由、修改轮次、`bot_wait(any)`、Artifact 版本与跨节点传输、Workflow 最终阶段判定 | Research→Writer→Reviewer，Reviewer 可退回 Writer 修改 |
+
+下文标注 `[B2b]` 的内容不属于 B2a。
+
 #### B2.1 最小协作数据模型
 
 一个协作任务不等于一个 Pi Task。Task 表示某个执行会话的运行生命周期；WorkItem 表示持久化的阶段工作；Workflow 表示整体目标。
 
 | 表 | 最小字段与约束 |
 |---|---|
-| `workflows` | `id`、`origin_conversation_id`、`owner_agent_id`、`status`（`ACTIVE/PAUSED/COMPLETED/FAILED/CANCELLED`）、授权范围、允许路由、预算、最大修改轮次、`version`、时间戳 |
-| `work_items` | `id`、`workflow_id`、`parent_work_item_id?`、`assignee_agent_id`、`conversation_id`、`task_id?`、目标及输出要求、输入/输出 Artifact 引用、`status`（`QUEUED/RUNNING/WAITING_BOT/WAITING_HUMAN/COMPLETED/FAILED/CANCELLED`）、`version`、时间戳 |
-| `work_item_dependencies` | `work_item_id`、`depends_on_work_item_id`；组合唯一，禁止循环依赖，只引用同一 Workflow 的工作项 |
-| `handoffs` | `id`、`workflow_id`、`from_work_item_id`、`to_work_item_id`、双方 Agent/Conversation ID、`from_task_id`、`to_task_id?`、`caused_by_handoff_id?`、`kind`（`DELEGATE/TRANSFER`）、`expects_reply`、`status`（`SENT/ACCEPTED/REPLIED/COMPLETED/FAILED/CANCELLED/TIMED_OUT`）、`hop`、唯一 `idempotency_key`、回复、截止时间、失败原因、时间戳 |
+| `workflows` | `id`、`origin_conversation_id`、`owner_agent_id`、`status`（`ACTIVE/PAUSED/COMPLETED/FAILED/CANCELLED`）、授权范围、硬上限（交接总数、模型轮次、时长）、`version`、时间戳；`[B2b]` 允许路由、最大修改轮次 |
+| `work_items` | `id`、`workflow_id`、`parent_work_item_id?`、`assignee_agent_id`、`conversation_id`（唯一）、`task_id?`、目标及输出要求、`wait`（JSON：等待的 handoff ID、`mode`、Pi 工具调用 ID）、`status`（`QUEUED/RUNNING/WAITING_BOT/WAITING_HUMAN/COMPLETED/FAILED/CANCELLED`）、`version`、时间戳；`[B2b]` 输入/输出 Artifact 引用 |
+| `handoffs` | `id`、`workflow_id`、`from_work_item_id`、`to_work_item_id`、双方 Agent/Conversation ID、`from_task_id`、`to_task_id?`、`caused_by_handoff_id?`、`kind`（B2a 仅 `DELEGATE`；`[B2b]` `TRANSFER`）、`expects_reply`、`status`（`SENT/ACCEPTED/REPLIED/COMPLETED/FAILED/CANCELLED/TIMED_OUT`）、`hop`、唯一 `idempotency_key`、回复、截止时间、失败原因、时间戳 |
+
+第一版不建 `work_item_dependencies` 表：等待条件只由 `bot_wait` 产生，保存在等待方工作项的 `wait` 字段中，按 handoff 状态判定。看板或 DAG 编排需要显式依赖时再引入该表。
 
 `ACCEPTED` 只表示已绑定接收工作项和 Task，不表示完成；RUNNING 等执行进度以 WorkItem / Task 为准。`REPLIED` 表示已提交回复，`COMPLETED` 表示不要求回复的接收工作已完成。每个工作项最多一个未结束执行 Task，数据库准入与租约保证唯一执行者，文件锁只保护 Pi transcript。
 
 `messages` 增加 `sender_agent_id?`、`handoff_id?`、`workflow_id?`、`work_item_id?`、`routine_id?`、`source`（`USER/BOT/ROUTINE`）和 `kind`（`INSTRUCTION/ASSIGNMENT/RESULT/NOTICE`）。`role=bot` 可作为存储与展示标记，进入模型时转换为有明确来源的数据内容，不向模型 API 直接传入自定义 role，也不升级为 system 指令。Routine 输入同样不拥有 system 权限。
 
-单 Bot 普通会话保持现有路径。协作执行使用独立会话，默认按工作项创建，不能把所有 A→B 请求塞进一个长期直连会话。相关会话通过 Workflow 关联，用户可以在一个视图中查看；Bot 的长期角色记忆独立保留。
+单 Bot 普通会话保持现有路径。协作执行使用独立会话，**工作项与执行会话固定一对一**（`work_items.conversation_id` 唯一），不复用、不共享，也不能把所有 A→B 请求塞进一个长期直连会话。这样直接沿用"同会话最多一个未结束 Task"的约束和现有按 Conversation ID 定位 Pi 存储的方式（`session_scope=conversation`），无需新增定位规则。相关会话通过 Workflow 关联，用户可以在一个视图中查看；Bot 的长期角色记忆独立保留。
 
 #### B2.2 工具与两种协作模式
 
@@ -103,36 +126,41 @@
 | 工具 | 参数 | 行为 |
 |---|---|---|
 | `bot_list` | 无 | 返回允许协作的 Bot、启用状态、排队和运行数量；身份不要求有常驻进程 |
-| `bot_send` | `to`、`content`、`kind`、`expects_reply`、`attachments?` | 创建工作项和交接，立即返回 ID；`expects_reply` 不会挂起发起方 |
-| `bot_wait` | `handoff_ids`、`mode=all/any` | 已满足时立即返回结果；否则持久化等待依赖，进入 `WAITING_BOT` 并释放执行资源 |
-| `bot_reply` | `handoff_id`、`content`、`attachments?` | 验证接收者身份和有效执行，原子保存回复及对应工作项的完成结果 |
+| `bot_send` | `to`、`content`、`kind`、`expects_reply`、`attachments?`（`[B2b]`） | 创建工作项和交接，立即返回 ID；`expects_reply` 不会挂起发起方。B2a 的 `kind` 只接受 `DELEGATE` |
+| `bot_wait` | `handoff_ids`、`mode`（B2a 仅 `all`；`[B2b]` `any`） | 已满足时立即返回结果；否则持久化等待条件，返回 `WAITING_BOT` outcome 并释放执行资源 |
+| `bot_reply` | `handoff_id`、`content`、`attachments?`（`[B2b]`） | 验证接收者身份和有效执行，原子保存回复及对应工作项的完成结果 |
 
-- **并行委派：** A 向 B、C 发送 `DELEGATE` 工作，继续自己的工作，最后 `bot_wait(all)` 汇总。发起方保持原工作项责任。
-- **阶段转交：** Research 向 Writer 发送 `TRANSFER`，同一事务保存当前阶段输出、完成当前工作项并创建下一工作项。Writer 可以转交 Reviewer；原 Research 不必恢复。Reviewer 通过后结束流程，或按允许路由创建修改工作项。第一版限定路由和修改轮次，不做任意 Bot 网状自动协作。
-- `TRANSFER` 必须使用 `expects_reply=false`，并提交当前阶段输出和下一阶段输出要求；Kernel 通过独立 outcome 结束当前 Task，不让原 Pi 在转交后继续产生操作。`DELEGATE` 不完成发起工作项。显式回复和最终回答都进入同一幂等完成流程，Task 与 WorkItem 同步收尾，避免工作项已完成但原执行仍可写入。
-- Workflow 完成由 Kernel 验证：有指定的最终工作项成功、必需依赖已完成、无未结束工作项；仅某个 Bot 输出最终回答不代表整个 Workflow 完成。结果投递到起始会话并展示，默认不唤醒原发起 Bot；需要汇总时显式创建汇总工作项。
+- **并行委派（B2a）：** A 向 B、C 发送 `DELEGATE` 工作，继续自己的工作，最后 `bot_wait(all)` 汇总。发起方保持原工作项责任。
+- **阶段转交 `[B2b]`：** Research 向 Writer 发送 `TRANSFER`，同一事务保存当前阶段输出、完成当前工作项并创建下一工作项。Writer 可以转交 Reviewer；原 Research 不必恢复。Reviewer 通过后结束流程，或按允许路由创建修改工作项。第一版限定路由和修改轮次，不做任意 Bot 网状自动协作。
+- `[B2b]` `TRANSFER` 必须使用 `expects_reply=false`，并提交当前阶段输出和下一阶段输出要求；Kernel 通过独立 outcome 结束当前 Task，不让原 Pi 在转交后继续产生操作。`DELEGATE` 不完成发起工作项。显式回复和最终回答都进入同一幂等完成流程，Task 与 WorkItem 同步收尾，避免工作项已完成但原执行仍可写入。
+- Workflow 完成由 Kernel 验证。B2a：根工作项完成且无未结束工作项；`[B2b]` 增加指定最终工作项成功的判定。仅某个 Bot 输出最终回答不代表整个 Workflow 完成。结果投递到起始会话并展示，默认不唤醒原发起 Bot；需要汇总时显式创建汇总工作项。
 
 #### B2.3 投递、等待与恢复
 
 1. Kernel 在同一数据库事务中创建工作项、handoff、输入消息与事件，校验幂等载荷。Worker 通过数据库领取可运行工作，不依赖进程内通知。采用至少一次投递与接收去重，不声称模型或外部动作恰好执行一次。
 2. 扩展收件箱的 pending、inputs、acknowledge、完成前未消费消息检查，以及 Pi Adapter 的版本检查。用户指令版本与协作结果分别记录；只有用户的指令变更执行现有提案失效策略，Bot RESULT 不自动撤销已审批动作。
 3. 新工作进入独立执行会话。相关 RESULT 可注入其所属运行中的会话；ASSIGNMENT 不作为另一工作项的 steering。发给 PAUSED 会话的结果可以落库，但不能自动恢复。
-4. `bot_wait` 持久化工具调用身份、依赖集合和 `all/any` 条件。Task / WorkItem 进入 `WAITING_BOT`，Pi 子进程结束、单写者锁与 Worker 槽位释放；电脑资源按有效所有者检查后释放。`any` 满足时不会自动取消其余交接，余下结果仍保留在工作项中。
+4. `bot_wait` 持久化工具调用身份、等待的 handoff 集合和 `all/any` 条件（写入工作项 `wait` 字段）。Task / WorkItem 进入 `WAITING_BOT`，Pi 子进程结束、单写者锁与 Worker 槽位释放；电脑资源按有效所有者检查后释放。`[B2b]` `any` 满足时不会自动取消其余交接，余下结果仍保留在工作项中。
+   - Pi 运行时：`main.ts` 新增 `bot_wait` 持久化工具，参照现有 `task.wait` 的等待与恢复写法；Pi Adapter 的 outcome 允许集合增加 `WAITING_BOT`（`[B2b]` 再增加阶段转交 outcome），并把等待条件写入 checkpoint。
+   - 远程 Job：`control/remote.py` 领取与心跳的父任务允许状态加入 `WAITING_BOT`，父任务等待 Bot 期间其远程工作包继续执行。
 5. 回复事务校验当前租约、接收 Agent、绑定工作项和交接状态；同时保存结果消息并检查等待条件。回复可以先于等待到达，进入等待的事务也必须再次检查已存在结果，避免丢失唤醒。
-6. 依赖满足后，仅将确实等待这些依赖的 Task 恢复为 `PENDING`，由 Pi 持久化工具恢复返回结果。统一恢复守卫还检查 Workflow 暂停、全局停止、待审批和 UNKNOWN 动作；审批决定只解除对应审批，不能解除 Bot 等待。
+6. 依赖满足后，仅将确实等待这些依赖的 Task 恢复为 `PENDING`，由 Pi 持久化工具恢复返回结果。统一恢复守卫还检查 Workflow 暂停、全局停止、待审批和 UNKNOWN 动作；审批决定只解除对应审批，不能解除 Bot 等待。`actions/gateway.py` 的审批恢复改为只处理 `status=WAITING_HUMAN` 且 `reason=WAITING_APPROVAL` 的任务，同时修复现有"等待人工回复 / 远程 Pi 的任务被审批误唤醒"的问题；该修复不依赖多 Bot 开关。
 7. 失败、取消或超时也是终态结果，满足等待完成条件并返回明确失败信息，不作为成功聚合。接收方最终完成却未调用 `bot_reply` 时，Kernel 使用其记录的最终结果补齐回复；执行失败则写入 FAILED。无回复要求的交接标记 COMPLETED。
 
 #### B2.4 取消、权限与产物
 
 - 交接幂等键使用 `task_id:pi:hash(tool task id)`；回复和转交也需幂等，重放时核对内容与 Artifact 版本。旧租约不得回复；已取消、超时的交接拒绝迟到成功，保留审计。
-- `hop` 由因果交接继承并加一，不接受模型自报；Workflow 级总交接数、预算、时限和修改轮次防止通过新工作项重置限制。默认最大跳数 4，仅适合短链；长链需显式配置。限制同一对 Bot 的频率。
+- `hop` 由因果交接继承并加一，不接受模型自报；默认最大跳数 4，仅适合短链，长链需显式配置。限制同一对 Bot 的频率。
+- 第一版只用 Workflow 级硬上限：交接总数、所有工作项累计的模型调用轮次、总时长，超限后 Workflow 进入 `FAILED` 并取消未结束工作项。计数在准入事务中递增，新建工作项无法重置限制。按 Token 预留与结算需要 Model Gateway 增加预留机制，推迟到后续版本；`[B2b]` 增加修改轮次上限。
 - 取消根协作任务等价于取消 Workflow，级联工作项、交接和关联远程 Job，撤销执行租约并终止进程。取消一个 DELEGATE 分支只影响其拥有的子树；TRANSFER 的生命周期属于 Workflow，不随已完成的前一阶段自动取消。暂停保存结果但停止新执行，恢复需人工操作。取消生效前已发生的外部副作用不会回滚。
 - 用户可查看执行会话并插话；普通消息仅影响该工作项，取消整个流程使用明确的 Workflow 操作。整体拥有者、阶段负责人和当前执行者分别展示。
 - 工作项结果引用可供相关 Bot 读取，展示消息不会自动创建新 Task。没有调用 `bot_wait` 的发起方不因每条回复自动唤醒；已完成会话只保存结果，需要继续推理时创建显式后续工作项。避免异步通知变成无条件回复循环。
-- Attachment 只接受授权 Artifact 引用（ID、内容哈希/版本、媒体类型），Kernel 检查同一 Workflow 的访问范围。跨 VPS 使用受控下载/回传，不传本地绝对路径作为共享文件。输入版本固定，输出形成新版本；并发修改使用版本比较，冲突必须显式处理。
+- `[B2b]` Attachment 只接受授权 Artifact 引用（ID、内容哈希/版本、媒体类型），Kernel 检查同一 Workflow 的访问范围。跨 VPS 使用受控下载/回传，不传本地绝对路径作为共享文件。输入版本固定，输出形成新版本；并发修改使用版本比较，冲突必须显式处理。
 - 时间线记录 `handoff.sent/accepted/replied/completed/failed/cancelled/timed_out` 和工作项变更；多个展示会话引用同一事件 ID，避免重复投递触发新执行。
 
-验收：A 先发送 B、C 再等待汇总；Research→Writer→Reviewer 无需原发起 Bot 每步恢复；回复早于等待也能继续；旧租约及非接收方不能回复；崩溃重放不重复创建工作项；超时、取消、审批和 UNKNOWN 不产生误唤醒。
+B2a 验收：A 先发送 B、C 再 `bot_wait(all)` 汇总；回复早于等待也能继续；旧租约及非接收方不能回复；崩溃重放不重复创建工作项；超时、取消、审批和 UNKNOWN 不产生误唤醒；父任务 `WAITING_BOT` 期间其远程 Job 不被停止；硬上限超出时 Workflow 失败并级联取消。
+
+B2b 验收：Research→Writer→Reviewer 无需原发起 Bot 每步恢复；Reviewer 退回修改受轮次上限约束；`any` 等待返回首个结果且其余结果保留；Artifact 版本冲突被显式拒绝。
 
 ### B3 群聊
 
@@ -153,13 +181,14 @@
 现有 Worker 串行执行，多个 Bot 同时工作时会互相排队。
 
 - Worker 增加 `NIUCAI_WORKER_SLOTS`（默认 1，保持现有行为）。主循环维护最多 N 个 `run_claimed` 协程，每个槽位独立领取任务（`FOR UPDATE SKIP LOCKED` 已经支持）。
+- 数据库为 SQLite 且 `WORKER_SLOTS>1` 时，Worker 启动直接报错退出；SQLite 只支持单槽位调试。
 - 领取事务只处理准入与租约，不跨模型或网络等待。明确锁顺序并覆盖互相交接场景；同时操作两个会话时按稳定 ID 顺序加锁，防止 A→B 与 B→A 死锁。检查现有同步数据库与适配器调用，避免它们阻塞整个异步循环；不能仅用 `create_task` 就宣称具备实际并发。
 - Pi 单写者锁（每个执行会话一个 flock）保护文件写入；工作项唯一执行、Task 租约和旧执行 fencing 由数据库负责。恢复时先确认旧 Pi 子进程退出并释放锁，再启动新写者。
-- 电脑互斥沿用 `Computer.active_task_id`：电脑忙的任务留在 `PENDING` 队列，进度显示 `computer_busy`，不占用 Worker 槽位，不错误地变为 `WAITING_HUMAN`。结束或等待 Bot 时按当前有效所有者释放电脑；恢复后重新领取。纯推理与远程委派默认不绑定 Computer，确需电脑时再准入，避免仅有默认电脑配置就占住资源。
+- 电脑互斥沿用 `Computer.active_task_id`：多 Bot 开关开启时，电脑忙的任务留在 `PENDING` 队列，进度显示 `computer_busy`，不占用 Worker 槽位，不变为 `WAITING_HUMAN`；开关关闭时保留 `worker.py` 现有的 `WAITING_HUMAN`（`computer required`）行为。`control/computers.py` 的占用状态集合不包含 `WAITING_BOT`。结束或等待 Bot 时按当前有效所有者释放电脑；恢复后重新领取。纯推理与远程委派默认不绑定 Computer，确需电脑时再准入，避免仅有默认电脑配置就占住资源。
 - 后续可选：每个 Bot 绑定独立的 Computer（多个 KasmVNC 容器），对应 Grok Bot 的"每个 Bot 一块屏幕"。本方案不包含多屏幕。
 - 编码类重任务继续交给远程 Pi 节点，使用 B1 的 `allowed_nodes` 与权限检查。Bot 执行槽位、电脑和远程节点是三种资源，分别排队。V1 远程 Job 仍保留工作包人工审批；异步完成唤醒需要明确关联当前等待依赖，不能自动解除审批。单节点也可串行完成多 Bot 流程。
 
-验收：在 `WORKER_SLOTS=3` 时，两个纯推理任务和一个电脑任务同时推进；电脑任务互斥；等待 Bot 不占槽位；队列长期等待可见；kill Worker 后旧进程退出、租约和 Pi 单写者恢复正确。单槽位也能完成异步链式转交。
+验收：在 `WORKER_SLOTS=3`（PostgreSQL）时，两个纯推理任务和一个电脑任务同时推进；电脑任务互斥；等待 Bot 不占槽位；队列长期等待可见；kill Worker 后旧进程退出、租约和 Pi 单写者恢复正确。单槽位也能完成并行委派汇总（B2b 后含链式转交）；SQLite 多槽位配置被拒绝；关闭多 Bot 开关时单 Bot 电脑等待行为不变。
 
 ### B5 Routine 与工作看板
 
@@ -175,13 +204,17 @@
 
 | 类别 | 新增 |
 |---|---|
-| 表 | `workflows`、`work_items`、`work_item_dependencies`、`handoffs`、`conversation_participants`、`routines`、`routine_runs`；消息来源及关联字段、`memories.agent_id`、Artifact 版本元数据；持久化全局停止状态 |
+| 表 | `workflows`、`work_items`、`handoffs`、`conversation_participants`、`routines`、`routine_runs`；消息来源及关联字段、`memories.agent_id`、Artifact 版本元数据；持久化全局停止状态 |
 | REST | `/api/agents*`、`/api/workflows*`（含 pause/resume/cancel）、`/api/work-items*`、`/api/conversations/{id}/participants`、`/api/handoffs?workflow_id=&conversation_id=`、`/api/routines*`、`POST /api/agents/stop-all`、`POST /api/agents/resume-all` |
 | Pi 工具 | `bot_list`、`bot_send`、`bot_wait`、`bot_reply`、`board_list`、`board_update` |
 | 事件 | `agent.updated`、`workflow.*`、`work_item.*`、`handoff.sent/accepted/replied/completed/failed/cancelled/timed_out`、`routine.fired/skipped`、`agents.stopped/resumed` |
-| 配置 | `NIUCAI_MULTI_BOT_ENABLED`（默认 false）、`NIUCAI_HANDOFF_MAX_HOPS`、`NIUCAI_HANDOFF_MAX_PER_WORKFLOW`、`NIUCAI_HANDOFF_TIMEOUT_SECONDS`、`NIUCAI_WORKER_SLOTS`、`NIUCAI_ROUTINES_ENABLED` |
+| 配置 | `NIUCAI_MULTI_BOT_ENABLED`（默认 false）、`NIUCAI_HANDOFF_MAX_HOPS`、`NIUCAI_HANDOFF_MAX_PER_WORKFLOW`、`NIUCAI_WORKFLOW_MAX_MODEL_TURNS`、`NIUCAI_WORKFLOW_MAX_SECONDS`、`NIUCAI_HANDOFF_TIMEOUT_SECONDS`、`NIUCAI_WORKER_SLOTS`（SQLite 仅允许 1）、`NIUCAI_ROUTINES_ENABLED` |
 
-新增 Task 状态 `WAITING_BOT`；状态查询、进度、客户端类型、允许操作、租约回收、审批恢复和父子远程 Job 校验都需同步覆盖。禁止仅修改数据库字段而遗漏调用方。
+新增 Task 状态 `WAITING_BOT`，必须同步覆盖的调用方（禁止仅修改数据库字段而遗漏）：
+
+- Kernel：`domain/schemas.py` 状态枚举；`control/tasks.py` pause / resume / cancel 允许集合；`control/progress.py` 进度与允许操作；`control/computers.py` 占用集合（不含）；`control/remote.py` 父任务允许集合（包含）；`actions/gateway.py` 审批恢复（不处理）；`agents/pi_adapter.py` outcome 集合；`worker.py` 租约回收。
+- Pi 运行时：`services/pi-runtime/src/main.ts` 的 `bot_wait` 工具与恢复。
+- 客户端：`apps/desktop/src/lib/types.ts`、`task-progress.ts` 及 PWA 对应类型与展示。
 
 `stop-all` 在事务中持久化停止闸门，并取消所有未结束协作 Workflow、Bot 执行和关联远程 Job；同时阻止新交接、自动恢复和 Routine 准入。所有写入入口及 claim 都检查闸门，避免停止与新任务竞态。等待执行进程退出后才报告资源释放完成；远程失联继续显示未确认停止，不伪造完成。`resume-all` 只解除闸门，不重建已取消任务，不自动补发停机积压；恢复仅允许人操作。该闸门影响所有受管 Bot（含 main），普通人工查看、审批和管理仍可用。
 
@@ -190,32 +223,33 @@
 ## 6. 推荐顺序与依赖
 
 ```text
-B1 身份与权限 ──► B2 工作项与异步交接 ──► B4 并发验收
-                                            │
-                                            ▼
-                                         B3 群聊 ──► B5 Routine / 看板
+B1 身份与权限 ──► B2a 并行委派与等待 ──► B4 并发验收 ──► B2b 阶段转交
+                                                              │
+                                                              ▼
+                                                           B3 群聊 ──► B5 Routine / 看板
 ```
 
-推荐按 **B1 → B2 → B4 → B3 → B5** 实施。最小可用版本是 **B1 + B2 + B4（SLOTS=2）**，同时覆盖并行委派汇总和 Research→Writer→Reviewer 阶段转交。B3 是展示增强，不能作为交接正确性的前置条件；B5 看板复用 B2 工作项。先用三个逻辑 Bot、两个模拟节点验证闭环，无需先配置三台 VPS。
+推荐按 **B1 → B2a → B4 → B2b → B3 → B5** 实施。最小可用版本是 **B1 + B2a + B4（SLOTS=2）**，覆盖"A 发给 B、C，并行推进后汇总"，并验证等待、唤醒、恢复这条最难的链路。B2b 在其上增量增加 Research→Writer→Reviewer 阶段转交。审批误唤醒修复不依赖多 Bot 开关，可随 B2a 提前合入。B3 是展示增强，不能作为交接正确性的前置条件；B5 看板复用 B2 工作项。先用三个逻辑 Bot、两个模拟节点验证闭环，无需先配置三台 VPS。
 
 ## 7. 测试与验收
 
-- 单元测试：Agent Schema 和通配符权限、记忆作用域、委派权限交集、交接身份与幂等载荷、因果跳数、预算与修改轮次、群路由和 Artifact 访问。
-- 流程测试（SQLite 与 PostgreSQL）：并行发送再 all/any 等待、链式 TRANSFER、分支失败和超时、根取消与分支取消、暂停后迟到回复、接收方完成未显式回复、审批与 UNKNOWN 守卫、不同 Workflow 会话隔离。
+- 单元测试：Agent Schema 和通配符权限、记忆作用域、委派权限交集、交接身份与幂等载荷、因果跳数、Workflow 硬上限、群路由；`[B2b]` 修改轮次和 Artifact 访问。
+- 流程测试（SQLite 与 PostgreSQL）：并行发送再 all 等待、分支失败和超时、根取消与分支取消、暂停后迟到回复、接收方完成未显式回复、审批与 UNKNOWN 守卫、不同 Workflow 会话隔离、父任务 `WAITING_BOT` 时远程 Job 持续执行；`[B2b]` any 等待与链式 TRANSFER。
+- 回归：等待人工回复、等待远程 Pi 的任务在其它审批决定后保持 `WAITING_HUMAN`，不被误唤醒（修复现有行为）；多 Bot 开关关闭时单 Bot 全部既有测试通过。
 - 恢复与竞态：分别在发送事务提交后、等待状态提交前后、回复提交后但唤醒前、Pi 收件确认前后中断；重放不得重复创建工作项，不得丢失回复，旧租约不能提交结果。数据库提交与 Pi JSONL 不构成一个事务，依靠稳定消息 ID、确认和重放恢复。
 - PostgreSQL 实际并发验证：多个 Worker 同时领取、A→B 与 B→A 交接、回复与取消竞争、回复与等待竞争、电脑互斥、版本冲突、全局停止与准入竞争。SQLite 不能作为行锁及 SKIP LOCKED 正确性的证据。
 - Pi 运行时测试：`npm test --prefix services/pi-runtime` 覆盖新工具的 replay-safe 行为。
-- 联调：扩展 `deploy/compose/remote-pi-demo.ps1` 的确定性模型，验证 A→B/C→A 汇总，以及 Research→Writer→Reviewer→Writer 修改→Reviewer 通过；验证无空闲节点时排队、单槽位链式推进、kill Worker 恢复。写入 `build-cache/multi-bot/verification.json`，记录 Workflow/WorkItem/Task/Job ID、结果与 Artifact 版本。模拟模型只能证明协议和恢复，不证明真实模型的协作质量。
+- 联调：扩展 `deploy/compose/remote-pi-demo.ps1` 的确定性模型，B2a 验证 A→B/C→A 汇总，B2b 验证 Research→Writer→Reviewer→Writer 修改→Reviewer 通过；验证无空闲节点时排队、单槽位链式推进、kill Worker 恢复。写入 `build-cache/multi-bot/verification.json`，记录 Workflow/WorkItem/Task/Job ID、结果与 Artifact 版本。模拟模型只能证明协议和恢复，不证明真实模型的协作质量。
 - Routine：时区边界、漏跑只补最近一次、重叠运行跳过、并发领取去重、停机闸门；群聊：发言投影不执行、负责人等待不阻塞成员、审批机密不进入摘要。
 - 验收记录按惯例新增 `multi-bot-validation-YYYYMMDD.md`。
 
 ## 8. 风险与待定问题
 
-1. **成本失控**：除了跳数，还需按 Workflow / Bot 设置预算。复用 Model Gateway usage 时新增归属；并发请求前预留预算，完成后结算。远程 Pi V1 不经过同一计量入口，需先补 usage 回传或采用保守工作包次数和时限，不宣称统一 Token 硬上限已经生效。
+1. **成本失控**：第一版只用 Workflow 级硬上限（交接总数、模型调用轮次、总时长）。Model Gateway 目前只在调用后记录 usage，没有预留与结算；按 Workflow / Bot 的 Token 预算需要新增 usage 归属和请求前预留，放到后续版本。远程 Pi V1 不经过同一计量入口，需先补 usage 回传或采用保守工作包次数和时限，不宣称统一 Token 硬上限已经生效。
 2. **会话与数据恢复**：旧单 Bot Pi 路径不迁移，新增工作项使用新会话；恢复仍需配套备份 PostgreSQL、pi_sessions 和 Artifact 存储。数据库租约失效不代表旧进程已退出。
 3. **共享资源的信任边界**：共享电脑包含登录状态；工具白名单不隔离账号与文件。远程 Pi V1 节点内也不是逐工作项强隔离。需要更强隔离时使用独立 Computer / 节点，不能把逻辑 Bot 私有记忆等同于完整运行环境隔离。
 4. **已确定的第一版选择**：执行会话用户可见、允许插话；`@everyone` 依次创建并处理去重工作项；看板内置；固定允许路由、限定修改轮次；事件触发 Routine 暂不实现。
-5. **实施前需在 Schema 中固化**：授权工作包的具体范围、Artifact 跨节点传输接口、预算默认值、Workflow 最终阶段判定与超时值。实现者不能靠提示词推断这些准入规则。
+5. **实施前需在 Schema 中固化**：授权工作包的具体范围、硬上限与超时默认值；`[B2b]` Artifact 跨节点传输接口、Workflow 最终阶段判定。实现者不能靠提示词推断这些准入规则。
 
 ## 9. 本方案不做
 

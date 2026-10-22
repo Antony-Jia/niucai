@@ -6,6 +6,7 @@ export const statuses: Record<TaskStatus, string> = {
   PENDING: "等待执行",
   RUNNING: "执行中",
   WAITING_HUMAN: "等待你确认",
+  WAITING_BOT: "等待协作",
   PAUSED: "已暂停",
   COMPLETED: "已完成",
   FAILED: "执行失败",

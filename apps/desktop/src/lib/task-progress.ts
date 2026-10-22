@@ -19,6 +19,7 @@ export const phaseLabels: Record<string, string> = {
   WAITING_RECONCILIATION: "等待核对",
   WAITING_COMPUTER: "等待电脑",
   WAITING_HUMAN: "等待协助",
+  WAITING_BOT: "等待协作结果",
   PAUSED: "已暂停",
   COMPLETED: "已完成",
   CANCELLED: "已停止",
@@ -48,7 +49,7 @@ export function taskProgress(
     (computer && computer.control !== "AGENT");
   if (!terminal) {
     operations.push("cancel");
-    if (["PENDING", "RUNNING", "WAITING_HUMAN"].includes(task.status))
+    if (["PENDING", "RUNNING", "WAITING_HUMAN", "WAITING_BOT"].includes(task.status))
       operations.push("pause");
     if (["PAUSED", "WAITING_HUMAN"].includes(task.status) && !blocked)
       operations.push("resume");

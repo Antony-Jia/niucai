@@ -130,6 +130,17 @@ export async function demoRequest(
 ): Promise<unknown> {
   const data = body as Record<string, string> | null;
   const route = path.split("?")[0];
+  if (route === "/api/collaboration/status")
+    return { enabled: false, stopped: false, worker_slots: 1 };
+  if (route === "/api/agents")
+    return [
+      {
+        id: "main",
+        name: "Main Agent",
+        definition: { tools: ["*"], enabled: true },
+      },
+    ];
+  if (/^\/api\/conversations\/[^/]+\/participants$/.test(route)) return [];
   if (route === "/api/tasks" && method === "GET") return structuredClone(tasks);
   if (route === "/api/tasks" && data) {
     const t = task(crypto.randomUUID(), data.title, "PENDING", data.goal);

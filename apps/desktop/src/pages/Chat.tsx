@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Plus } from "lucide-react";
-import { api } from "../lib/api";
+import { api, request } from "../lib/api";
+import type { Bot } from "./Bots";
 import { useApp, useCommand, useData } from "../lib/state";
 import { ConnectionEmpty, ErrorNotice, Badge } from "../components/ui";
 import { TaskDetail } from "./Tasks";
@@ -19,8 +20,23 @@ export function Chat({
   const { connected, synchronizing } = useApp();
   const conversations = useData(["conversations"], api.conversations);
   const computers = useData(["computers"], api.computers);
-  const [localId, setLocalId] = useState<string | null>(null);
+  const bots = useData(["bots"], () => request<Bot[]>("/api/agents"));
+  const collaboration = useData(["collaboration-status"], () =>
+    request<{ enabled: boolean }>("/api/collaboration/status"),
+  );
+  const [agentId, setAgentId] = useState("main");
+  const [groupIds, setGroupIds] = useState<string[]>(["main"]);
+  const [localId, setLocalId] = useState<string | null>(() => {
+    const requested = sessionStorage.getItem("niucai.open-conversation");
+    sessionStorage.removeItem("niucai.open-conversation");
+    return requested;
+  });
   const id = conversationId === undefined ? localId : conversationId;
+  const participants = useData(["participants", id], () =>
+    id
+      ? request<{ agent_id: string }[]>(`/api/conversations/${id}/participants`)
+      : Promise.resolve([]),
+  );
   const select = (value: string | null) =>
     onConversation ? onConversation(value) : setLocalId(value);
   const [content, setContent] = useState("");
@@ -28,7 +44,9 @@ export function Chat({
   const executionComputer =
     selectedComputer ??
     computerId ??
-    computers.data?.find((c) => c.kind === "linux")?.id;
+    (collaboration.data?.enabled
+      ? undefined
+      : computers.data?.find((c) => c.kind === "linux")?.id);
   const timeline = useData(["timeline", id], () =>
     id ? api.timeline(id) : Promise.resolve(null),
   );
@@ -50,10 +68,20 @@ export function Chat({
     )
       retry.current = { content: text, id, clientId: crypto.randomUUID() };
     const attempt = retry.current;
+    let targetComputer = selectedComputer ?? computerId;
+    if (!id && !attempt.createdId && !targetComputer) {
+      const status =
+        collaboration.data ??
+        (await request<{ enabled: boolean }>("/api/collaboration/status"));
+      if (!status.enabled) {
+        const available = computers.data ?? (await api.computers());
+        targetComputer = available.find((c) => c.kind === "linux")?.id;
+      }
+    }
     const target =
       id ||
       attempt.createdId ||
-      (await api.createConversation(executionComputer)).id;
+      (await api.createConversation(targetComputer, agentId, groupIds)).id;
     attempt.createdId = target;
     const result = await api.sendMessage(target, text, attempt.clientId);
     return result;
@@ -93,6 +121,72 @@ export function Chat({
         </aside>
       )}
       <section className="conversation-main" aria-label="统一会话">
+        {!id && (
+          <label>
+            负责 Bot{" "}
+            <select
+              value={agentId}
+              onChange={(e) => {
+                setAgentId(e.target.value);
+                setGroupIds((current) => [
+                  ...new Set([...current, e.target.value]),
+                ]);
+              }}
+            >
+              {bots.data
+                ?.filter(
+                  (b) =>
+                    !b.definition.archived && b.definition.enabled !== false,
+                )
+                .map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+            </select>
+          </label>
+        )}
+        {!id && collaboration.data?.enabled && (
+          <fieldset>
+            <legend>群聊成员（可选，最多 6 位）</legend>
+            {bots.data
+              ?.filter(
+                (b) => !b.definition.archived && b.definition.enabled !== false,
+              )
+              .map((b) => (
+                <label key={b.id} style={{ marginRight: 12 }}>
+                  <input
+                    type="checkbox"
+                    disabled={b.id === agentId}
+                    checked={groupIds.includes(b.id)}
+                    onChange={(e) =>
+                      setGroupIds((current) =>
+                        e.target.checked
+                          ? [...current, b.id]
+                          : current.filter((value) => value !== b.id),
+                      )
+                    }
+                  />
+                  {b.name}
+                </label>
+              ))}
+          </fieldset>
+        )}
+        {content.endsWith("@") && (
+          <div>
+            {[
+              ...(participants.data?.map((p) => p.agent_id) ?? []),
+              "everyone",
+            ].map((mention) => (
+              <button
+                key={mention}
+                onClick={() => setContent((value) => value + mention + " ")}
+              >
+                @{mention}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="session-scroll">
           <ErrorNotice error={timeline.error} />
           {!id && (
@@ -105,7 +199,13 @@ export function Chat({
             item.message ? (
               <div key={item.id} className={`message ${item.message.role}`}>
                 <div className="message-label">
-                  {item.message.role === "user" ? "你" : "niucai"}
+                  {item.message.role === "user"
+                    ? "你"
+                    : bots.data?.find(
+                    (b) => b.id === item.message?.sender_agent_id,
+                      )?.name ||
+                      item.message.sender_agent_id ||
+                      "niucai"}
                 </div>
                 <p>{item.message.content || "回复已中断"}</p>
                 {item.message.status === "INTERRUPTED" && (

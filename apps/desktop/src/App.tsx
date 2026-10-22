@@ -17,6 +17,7 @@ import { api } from "./lib/api";
 import { Files, MemoryPage } from "./pages/FilesMemory";
 import { Settings } from "./pages/Settings";
 import { RemotePi } from "./pages/RemotePi";
+import { Bots } from "./pages/Bots";
 import type { Page } from "./lib/types";
 const navigation: { id: Page; label: string; icon: typeof Monitor }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -24,6 +25,7 @@ const navigation: { id: Page; label: string; icon: typeof Monitor }[] = [
   { id: "files", label: "Files", icon: Folder },
   { id: "memory", label: "Memory", icon: Brain },
   { id: "remote", label: "远程 Pi", icon: Monitor },
+  { id: "bots", label: "Bots", icon: Brain },
   { id: "settings", label: "Settings", icon: SettingsIcon },
 ];
 export function App() {
@@ -74,6 +76,7 @@ export function App() {
     memory: MemoryPage,
     settings: Settings,
     remote: RemotePi,
+    bots: Bots,
   }[page];
   return (
     <div

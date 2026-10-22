@@ -2,6 +2,7 @@ export type TaskStatus =
   | "PENDING"
   | "RUNNING"
   | "WAITING_HUMAN"
+  | "WAITING_BOT"
   | "PAUSED"
   | "COMPLETED"
   | "FAILED"
@@ -27,8 +28,20 @@ export interface Task {
     result?: string;
     reason?: string;
     detail?: string;
+    report?: TaskReport;
     [key: string]: unknown;
   };
+}
+export interface TaskReport {
+  status: string;
+  reason?: string | null;
+  summary?: string;
+  visited: string[];
+  files: { id: string; path: string; media_type: string }[];
+  written: string[];
+  downloads: { command: string; exit_code: number | null }[];
+  actions: number;
+  failures: string[];
 }
 export type TaskOperation =
   | "pause"
@@ -101,7 +114,8 @@ export interface Conversation {
 export interface Message {
   id: string;
   conversation_id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "bot";
+  sender_agent_id?: string | null;
   content: string;
   status: string;
   created_at: string;
@@ -127,6 +141,7 @@ export interface Timeline {
   artifacts: Artifact[];
 }
 export interface Profile {
+  kernel_instance_id?: string;
   computer_id?: string;
   base_url: string;
   computer_url: string;
@@ -141,6 +156,7 @@ export interface ConnectionInput {
   rememberToken: boolean;
 }
 export type Page =
+  | "bots"
   | "remote"
   | "dashboard"
   | "chat"
