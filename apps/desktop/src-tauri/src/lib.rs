@@ -1,3 +1,4 @@
+mod managed;
 mod transport;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,6 +12,8 @@ struct Profile {
     base_url: String,
     computer_url: String,
     remember_token: bool,
+    #[serde(default)]
+    kernel_instance_id: String,
 }
 #[derive(Serialize)]
 struct ProfileView {
@@ -103,10 +106,10 @@ fn view(profile: Profile, has_token: bool) -> ProfileView {
     }
 }
 #[tauri::command]
-fn load_profile(
+async fn load_profile(
     window: tauri::Webview,
     app: tauri::AppHandle,
-    state: State<KernelState>,
+    state: State<'_, KernelState>,
 ) -> Result<ProfileView, String> {
     trusted(&window)?;
     let profile: Profile = fs::read(profile_path(&app)?)
@@ -114,17 +117,33 @@ fn load_profile(
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
     let token = if profile.remember_token {
-        remembered(&profile.base_url)
+        remembered(if profile.kernel_instance_id.is_empty() {
+            &profile.base_url
+        } else {
+            &profile.kernel_instance_id
+        })
     } else {
         None
     };
     if let Some(token) = token.as_ref() {
         if validate_url(&profile.base_url).is_ok() {
-            *state.connection.lock().unwrap() = Some(Credentials {
+            let credentials = Credentials {
                 base: profile.base_url.clone(),
                 token: token.clone(),
                 computer_url: profile.computer_url.clone(),
-            });
+            };
+            if !profile.kernel_instance_id.is_empty() {
+                let identity =
+                    transport::request(&credentials, "/api/kernel/identity", "GET", Value::Null)
+                        .await;
+                if let Ok(identity) = identity {
+                    if identity["kernel_instance_id"].as_str() != Some(&profile.kernel_instance_id)
+                    {
+                        return Err("控制中心实例身份变化，请重新连接并核验".into());
+                    }
+                }
+            }
+            *state.connection.lock().unwrap() = Some(credentials);
         }
     }
     Ok(view(profile, token.is_some()))
@@ -150,7 +169,18 @@ async fn connect_kernel(
             .as_ref()
             .filter(|c| c.base == base)
             .map(|c| c.token.clone())
-            .or_else(|| remembered(&base))
+            .or_else(|| {
+                let saved: Option<Profile> = fs::read(profile_path(&app).ok()?)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+                saved.filter(|p| p.base_url == base).and_then(|p| {
+                    remembered(if p.kernel_instance_id.is_empty() {
+                        &p.base_url
+                    } else {
+                        &p.kernel_instance_id
+                    })
+                })
+            })
             .ok_or("请填写 API Token")?
     } else {
         input.token
@@ -164,9 +194,18 @@ async fn connect_kernel(
         computer_url: input.computer_url.clone(),
     };
     transport::request(&credentials, "/api/computers", "GET", Value::Null).await?;
+    let identity =
+        transport::request(&credentials, "/api/kernel/identity", "GET", Value::Null).await?;
+    let instance_id = identity["kernel_instance_id"]
+        .as_str()
+        .ok_or("Kernel 未提供实例身份，请升级")?
+        .to_string();
+    if identity["protocol_version"].as_u64() != Some(2) {
+        return Err("Kernel 协议版本不兼容".into());
+    }
     #[cfg(windows)]
     if input.remember_token {
-        credential_entry(&base)?
+        credential_entry(&instance_id)?
             .set_password(&token)
             .map_err(|_| "无法保存到 Windows 凭据管理器")?;
     }
@@ -175,12 +214,13 @@ async fn connect_kernel(
         return Err("此版本只在 Windows 支持保存凭据；请取消保存选项".into());
     }
     if !input.remember_token {
-        forget(&base)?;
+        forget(&instance_id)?;
     }
     let profile = Profile {
         base_url: base,
         computer_url: input.computer_url,
         remember_token: input.remember_token,
+        kernel_instance_id: instance_id,
     };
     save_profile(&app, &profile)?;
     stop(&state);
@@ -198,13 +238,22 @@ fn disconnect_kernel(
     stop(&state);
     close_remote(&app)?;
     if let Some(c) = state.connection.lock().unwrap().take() {
-        forget(&c.base)?;
+        let saved: Option<Profile> = fs::read(profile_path(&app)?)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        let instance_id = saved.map(|p| p.kernel_instance_id).unwrap_or_default();
+        forget(if instance_id.is_empty() {
+            &c.base
+        } else {
+            &instance_id
+        })?;
         save_profile(
             &app,
             &Profile {
                 base_url: c.base,
                 computer_url: c.computer_url,
                 remember_token: false,
+                kernel_instance_id: instance_id,
             },
         )?;
     }
@@ -483,6 +532,104 @@ async fn download_artifact(
     fs::write(&target, bytes).map_err(|_| "无法保存文件")?;
     Ok(Some(target.to_string_lossy().to_string()))
 }
+#[tauri::command]
+async fn save_resource_package(
+    window: tauri::Webview,
+    app: tauri::AppHandle,
+    node_id: String,
+    bytes: Vec<u8>,
+) -> Result<Option<String>, String> {
+    trusted(&window)?;
+    if node_id.len() != 36
+        || !node_id
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() || ch == '-')
+        || bytes.len() > 1024 * 1024
+        || !bytes.starts_with(b"PK\x03\x04")
+    {
+        return Err("无效资源配置包".into());
+    }
+    let target = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_file_name(format!("niucai-node-{node_id}.zip"))
+            .blocking_save_file()
+            .and_then(|file| file.into_path().ok())
+    })
+    .await
+    .map_err(|_| "无法打开保存对话框")?;
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    fs::write(&target, bytes).map_err(|_| "无法保存配置包")?;
+    Ok(Some(target.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+async fn managed_kernel(
+    window: tauri::Webview,
+    app: tauri::AppHandle,
+    state: State<'_, KernelState>,
+    source: String,
+    action: String,
+    model_key: Option<String>,
+) -> Result<String, String> {
+    trusted(&window)?;
+    if action == "credential" {
+        return Err("凭据不通过前端返回".into());
+    }
+    let action_for_script = action.clone();
+    let source_for_script = source.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        managed::run(&source_for_script, &action_for_script, model_key.as_deref())
+    })
+    .await
+    .map_err(|_| "受管操作被中断")??;
+    if ["install", "start", "rebuild"].contains(&action.as_str()) {
+        let token =
+            tauri::async_runtime::spawn_blocking(move || managed::run(&source, "credential", None))
+                .await
+                .map_err(|_| "无法读取本机凭据")??
+                .trim()
+                .to_string();
+        connect_kernel(
+            window,
+            app,
+            state,
+            ConnectionInput {
+                base_url: "http://127.0.0.1:8080".into(),
+                computer_url: String::new(),
+                token,
+                remember_token: true,
+            },
+        )
+        .await?;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn install_managed_runner(
+    window: tauri::Webview,
+    state: State<'_, KernelState>,
+    source: String,
+    input: Value,
+) -> Result<String, String> {
+    trusted(&window)?;
+    let credentials = connection(&state)?;
+    if credentials.base != "http://127.0.0.1:8080" {
+        return Err("自动安装仅用于本机受管 Kernel；其他拓扑使用配置包".into());
+    }
+    let identity =
+        transport::request(&credentials, "/api/kernel/identity", "GET", Value::Null).await?;
+    if identity["kernel_instance_id"] != input["kernelInstanceId"] {
+        return Err("Kernel 实例身份变化，请重新配置节点".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || managed::runner(&source, input))
+        .await
+        .map_err(|_| "Runner 安装被中断")?
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -498,7 +645,10 @@ pub fn run() {
             toggle_computer_fullscreen,
             start_events,
             stop_events,
-            download_artifact
+            download_artifact,
+            save_resource_package,
+            managed_kernel,
+            install_managed_runner
         ])
         .run(tauri::generate_context!())
         .expect("niucai desktop failed to start");
@@ -519,6 +669,7 @@ mod tests {
             base_url: "https://example.com".into(),
             computer_url: String::new(),
             remember_token: true,
+            kernel_instance_id: "test-instance".into(),
         })
         .unwrap();
         assert!(!serialized.contains("secret-token"));

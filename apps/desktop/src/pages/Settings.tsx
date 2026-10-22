@@ -3,6 +3,7 @@ import { Check, Link2, LockKeyhole, Unplug } from "lucide-react";
 import { native } from "../lib/api";
 import { useApp } from "../lib/state";
 import { Header } from "../components/ui";
+import { KernelManager } from "../components/KernelManager";
 export function Settings() {
   const {
     profile,
@@ -41,9 +42,10 @@ export function Settings() {
       <Header
         eyebrow="CONNECTION SETTINGS"
         title="连接你的 Kernel。"
-        description="桌面负责控制和查看，模型与任务继续由云端 Kernel 管理。"
+        description="桌面负责管理；Kernel 可在本机、局域网或 VPS 运行。"
       />
       <div className="settings-grid">
+        <KernelManager />
         <section className="panel">
           <div className="section-heading">
             <h2>

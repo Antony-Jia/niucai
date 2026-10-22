@@ -1,0 +1,4 @@
+services:
+  model:
+    command: [uv, run, --no-sync, uvicorn, kernel_anywhere_model:app, --host, 0.0.0.0, --port, "8081"]
+    volumes: ["./kernel-anywhere-model.py:/app/kernel_anywhere_model.py:ro"]

@@ -1,0 +1,71 @@
+name: niucai-managed
+x-kernel: &kernel
+  image: niucai-kernel:kernel-anywhere-v2
+  build:
+    context: ../..
+    dockerfile: services/kernel/Dockerfile
+  labels: {com.niucai.managed: "kernel-v2"}
+  environment: &environment
+    NIUCAI_DATABASE_URL: postgresql+psycopg://niucai:${POSTGRES_PASSWORD:?managed password required}@postgres:5432/niucai
+    NIUCAI_API_TOKEN: ${NIUCAI_API_TOKEN:?managed token required}
+    NIUCAI_OPENAI_API_KEY: ${NIUCAI_OPENAI_API_KEY:-}
+    NIUCAI_OPENAI_API_BASE_URL: ${NIUCAI_OPENAI_API_BASE_URL:-https://openrouter.ai/api/v1}
+    NIUCAI_MODEL_CONFIG_PATH: /app/models.yaml
+    NIUCAI_WORKSPACE: /workspace
+    NIUCAI_PI_STORAGE: /var/lib/niucai/pi
+    NIUCAI_REMOTE_PI_ENABLED: "true"
+    NIUCAI_MULTI_BOT_ENABLED: "true"
+    NIUCAI_WORKER_SLOTS: "3"
+  volumes:
+    - workspace:/workspace
+    - pi_sessions:/var/lib/niucai/pi
+    - ../../services/kernel/models.yaml:/app/models.yaml:ro
+  networks: [managed]
+  restart: unless-stopped
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    labels: {com.niucai.managed: "kernel-v2"}
+    environment:
+      POSTGRES_DB: niucai
+      POSTGRES_USER: niucai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?managed password required}
+    volumes: [postgres:/var/lib/postgresql/data]
+    networks: [managed]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U niucai -d niucai"]
+      interval: 3s
+      retries: 30
+    restart: unless-stopped
+  migrate:
+    <<: *kernel
+    command: [uv, run, --no-sync, alembic, upgrade, head]
+    restart: "no"
+    depends_on:
+      postgres: {condition: service_healthy}
+  api:
+    <<: *kernel
+    command: [uv, run, --no-sync, uvicorn, niucai.api.app:app, --host, 0.0.0.0, --port, "8080"]
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 3s
+      retries: 30
+  worker:
+    <<: *kernel
+    command: [uv, run, --no-sync, python, -m, niucai.worker]
+    depends_on:
+      api: {condition: service_healthy}
+networks:
+  managed:
+    name: niucai-managed
+    labels: {com.niucai.managed: "kernel-v2"}
+volumes:
+  postgres:
+    labels: {com.niucai.managed: "kernel-v2"}
+  workspace:
+    labels: {com.niucai.managed: "kernel-v2"}
+  pi_sessions:
+    labels: {com.niucai.managed: "kernel-v2"}
