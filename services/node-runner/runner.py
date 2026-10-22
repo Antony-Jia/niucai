@@ -1,13 +1,16 @@
 """Linux node service. Owns one isolated Pi CLI process group, not model reasoning."""
 
 import asyncio
+import base64
 import contextlib
 import fcntl
 import json
 import os
+import re
 import signal
 import tempfile
 import time
+from hashlib import sha256
 from pathlib import Path
 
 import httpx
@@ -52,6 +55,13 @@ class Runner:
         self.lock = (self.control / "runner.lock").open("a+")
         fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         self.node_id = os.environ["NIUCAI_NODE_ID"]
+        identity_file = self.root / "kernel-identity.json"
+        self.identity_file = identity_file
+        self.kernel_instance_id = os.environ.get("NIUCAI_KERNEL_INSTANCE_ID") or (
+            json.loads(identity_file.read_text()).get("kernel_instance_id")
+            if identity_file.exists()
+            else None
+        )
         self.prefix = f"/api/remote/runner/{self.node_id}"
         self.client = httpx.AsyncClient(
             base_url=os.environ["NIUCAI_KERNEL_URL"].rstrip("/"),
@@ -82,7 +92,12 @@ class Runner:
                                     "maxTokens": 4096,
                                     "reasoning": False,
                                     "input": ["text"],
-                                    "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                                    "cost": {
+                                        "input": 0,
+                                        "output": 0,
+                                        "cacheRead": 0,
+                                        "cacheWrite": 0,
+                                    },
                                 }
                             ],
                         }
@@ -113,7 +128,10 @@ class Runner:
                 },
             },
         )
-        await self.post(f"/jobs/{record['id']}/finish", {"attempt_id": record["attempt_id"], **result})
+        await self.post(
+            f"/jobs/{record['id']}/finish",
+            {"attempt_id": record["attempt_id"], **result},
+        )
         self.ledger.unlink()
 
     def pi_environment(self):
@@ -169,7 +187,10 @@ class Runner:
         heartbeat = None
         stopped = asyncio.Event()
         sequence = 0
-        outcome = {"status": "FAILED", "result": {"error": "Pi did not produce a final answer"}}
+        outcome = {
+            "status": "FAILED",
+            "result": {"error": "Pi did not produce a final answer"},
+        }
         last_lease = time.monotonic()
         lease_seconds = 5
 
@@ -177,12 +198,26 @@ class Runner:
             nonlocal last_lease, lease_seconds
             while True:
                 try:
-                    await self.post("/heartbeat", {"executor": "pi", "available": True, "version": "1.1.0"})
+                    await self.post(
+                        "/heartbeat",
+                        {
+                            "executor": "pi",
+                            "available": True,
+                            "version": "1.1.0",
+                            "protocol_version": 2,
+                            "kernel_instance_id": self.kernel_instance_id,
+                            "features": ["artifact-v2", "managed-workspace"],
+                            "node_model": {"provider": self.provider, "model": self.model},
+                        },
+                    )
                     response = await self.post(base + "/heartbeat", {"attempt_id": attempt})
                     if response["stop"]:
                         stopped.set()
                         return
-                    last_lease, lease_seconds = time.monotonic(), response["lease_seconds"]
+                    last_lease, lease_seconds = (
+                        time.monotonic(),
+                        response["lease_seconds"],
+                    )
                 except httpx.HTTPError:
                     # Stop well before the last acknowledged lease expires.
                     if time.monotonic() - last_lease >= max(1, lease_seconds - 6):
@@ -193,7 +228,12 @@ class Runner:
         async def progress(kind, data):
             nonlocal sequence
             sequence += 1
-            payload = {"attempt_id": attempt, "sequence": sequence, "kind": kind, "data": data}
+            payload = {
+                "attempt_id": attempt,
+                "sequence": sequence,
+                "kind": kind,
+                "data": data,
+            }
             for count in range(3):
                 try:
                     await self.post(base + "/events", payload)
@@ -213,7 +253,10 @@ class Runner:
                 if kind == "response" and not frame.get("success", True):
                     raise RuntimeError(str(frame.get("error", "Pi RPC command rejected"))[:500])
                 if kind == "response" and frame.get("command") == "get_state":
-                    await progress("session", {"session_id": frame.get("data", {}).get("sessionId", ident)})
+                    await progress(
+                        "session",
+                        {"session_id": frame.get("data", {}).get("sessionId", ident)},
+                    )
                 elif kind == "message_end" and frame.get("message", {}).get("role") == "assistant":
                     message = frame["message"]
                     failed = message.get("stopReason") in {"error", "aborted"}
@@ -221,7 +264,11 @@ class Runner:
                         b["text"] for b in message.get("content", []) if b.get("type") == "text"
                     )
                     await progress(
-                        "assistant", {"text": answer[:4000], "stop_reason": message.get("stopReason")}
+                        "assistant",
+                        {
+                            "text": answer[:4000],
+                            "stop_reason": message.get("stopReason"),
+                        },
                     )
                 elif kind in {"tool_execution_start", "tool_execution_end"}:
                     await progress(
@@ -250,6 +297,34 @@ class Runner:
             if first["stop"]:
                 raise RuntimeError("execution permission revoked before launch")
             lease_seconds = first["lease_seconds"]
+            heartbeat = asyncio.create_task(renew())
+            for reference in job.get("input_artifacts", []):
+                if stopped.is_set():
+                    raise RuntimeError("artifact download cancelled")
+                if not re.fullmatch(r"[a-zA-Z0-9-]{1,36}", reference["id"]):
+                    raise RuntimeError("invalid input artifact id")
+                inputs = workspace / "inputs"
+                inputs.mkdir(exist_ok=True)
+                os.chown(inputs, self.uid, self.uid)
+                path = inputs / reference["id"]
+                digest, size = sha256(), 0
+                async with self.client.stream(
+                    "GET",
+                    self.prefix + base + "/artifacts/" + reference["id"],
+                    params={"attempt_id": attempt},
+                ) as response:
+                    response.raise_for_status()
+                    with path.open("wb") as output:
+                        async for content in response.aiter_bytes():
+                            size += len(content)
+                            if size > 20 * 1024 * 1024 or stopped.is_set():
+                                raise RuntimeError("input artifact exceeds limit or cancelled")
+                            digest.update(content)
+                            output.write(content)
+                if digest.hexdigest() != reference["content_hash"]:
+                    path.unlink(missing_ok=True)
+                    raise RuntimeError("input artifact hash mismatch")
+                os.chown(path, self.uid, self.uid)
             process = await asyncio.create_subprocess_exec(
                 *args,
                 cwd=workspace,
@@ -263,7 +338,6 @@ class Runner:
             )
             record.update(pid=process.pid, process_start=process_start(process.pid))
             atomic_json(self.ledger, record)
-            heartbeat = asyncio.create_task(renew())
             process.stdin.write((json.dumps({"type": "get_state", "id": "state"}) + "\n").encode())
             process.stdin.write(
                 (
@@ -272,7 +346,16 @@ class Runner:
                             "type": "prompt",
                             "id": attempt,
                             "message": "Work in the assigned workspace. Return evidence and file outputs.\n"
-                            + job["prompt"],
+                            + "Bot role and delivery configuration:\n"
+                            + json.dumps(job.get("config_snapshot", {}), ensure_ascii=False)
+                            + "\n"
+                            + job["prompt"]
+                            + (
+                                "\nAuthorized input artifact IDs are materialized under inputs/. "
+                                + json.dumps(job["input_artifacts"])
+                                if job.get("input_artifacts")
+                                else ""
+                            ),
                         }
                     )
                     + "\n"
@@ -290,7 +373,10 @@ class Runner:
                 if reader in done:
                     await reader
                 elif stopped.is_set():
-                    outcome = {"status": "CANCELLED", "result": {"error": "cancelled or lease revoked"}}
+                    outcome = {
+                        "status": "CANCELLED",
+                        "result": {"error": "cancelled or lease revoked"},
+                    }
                 else:
                     raise TimeoutError("remote Pi job execution timeout")
             finally:
@@ -304,14 +390,80 @@ class Runner:
                 # Even on success stop background descendants before releasing the slot.
                 await kill_group(process.pid)
                 await process.wait()
+            if outcome["status"] == "COMPLETED" and not job.get("artifact_transport"):
+                # Standalone jobs and older Kernels only accept the bounded inline file result.
+                outcome["result"]["files"] = self.collect_files(workspace)
+            elif outcome["status"] == "COMPLETED":
+                try:
+                    outcome["result"]["files"] = await self.upload_files(workspace, base, attempt, stopped)
+                except Exception as exc:
+                    outcome = {
+                        "status": "FAILED",
+                        "result": {"error": f"artifact delivery failed: {type(exc).__name__}"},
+                    }
             if heartbeat:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
-            if outcome["status"] == "COMPLETED":
-                outcome["result"]["files"] = self.collect_files(workspace)
             record["finish"] = outcome
             atomic_json(self.ledger, record)
         await self.finish_ledger()
+
+    async def upload_files(self, workspace, base, attempt, stopped):
+        outputs, budget, visited = [], 100 * 1024 * 1024, 0
+        for directory, dirs, files in os.walk(workspace, followlinks=False):
+            dirs[:] = sorted(
+                d
+                for d in dirs
+                if not d.startswith(".") and d != "inputs" and not (Path(directory) / d).is_symlink()
+            )
+            for name in sorted(files):
+                visited += 1
+                if visited > 256 or len(outputs) >= 16:
+                    return outputs
+                path = Path(directory) / name
+                if name.startswith(".") or path.is_symlink() or not path.is_file():
+                    continue
+                if not path.resolve().is_relative_to(workspace.resolve()):
+                    continue
+                size = path.stat().st_size
+                if size > 20 * 1024 * 1024 or size > budget:
+                    raise RuntimeError("output file exceeds configured transport quota")
+                relative = str(path.relative_to(workspace))
+                filename = re.sub(r"[^a-zA-Z0-9._ -]", "_", name)[:150]
+                filename = sha256(relative.encode()).hexdigest()[:12] + "-" + filename
+                digest = sha256()
+                with path.open("rb") as stream:
+                    for content in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(content)
+                upload = await self.post(
+                    base + "/uploads",
+                    {
+                        "attempt_id": attempt,
+                        "filename": filename,
+                        "size": size,
+                        "content_hash": digest.hexdigest(),
+                        "media_type": "application/octet-stream",
+                    },
+                )
+                offset = upload["received"]
+                with path.open("rb") as stream:
+                    stream.seek(offset)
+                    while content := stream.read(upload["chunk_bytes"]):
+                        if stopped.is_set():
+                            raise RuntimeError("artifact upload cancelled")
+                        response = await self.client.put(
+                            self.prefix + base + "/uploads/" + upload["id"],
+                            content=content,
+                            params={"attempt_id": attempt, "offset": offset},
+                        )
+                        response.raise_for_status()
+                        offset = response.json()["received"]
+                ref = await self.post(
+                    base + "/uploads/" + upload["id"] + "/finalize", {"attempt_id": attempt}
+                )
+                outputs.append({"path": relative, "bytes": size, "artifact": ref})
+                budget -= size
+        return outputs
 
     @staticmethod
     def collect_files(workspace):
@@ -346,21 +498,48 @@ class Runner:
             entry = {"path": relative, "bytes": size}
             if size <= min(16000, budget):
                 try:
-                    entry["text"] = path.read_text(encoding="utf-8")
+                    content = path.read_bytes()
+                    entry["base64"] = base64.b64encode(content).decode("ascii")
+                    entry["content_hash"] = sha256(content).hexdigest()
+                    try:
+                        entry["text"] = content.decode("utf-8")
+                        entry["media_type"] = "text/plain"
+                    except UnicodeError:
+                        entry["media_type"] = "application/octet-stream"
                     budget -= size
                 except (UnicodeError, OSError):
                     pass
             outputs.append(entry)
+        if len(json.dumps(outputs).encode()) > 180000:
+            for entry in outputs:
+                entry.pop("text", None)
+            while outputs and len(json.dumps(outputs).encode()) > 180000:
+                outputs.pop()
         return outputs
 
     async def run(self):
         async with self.client:
             while True:
                 try:
-                    await self.finish_ledger()
                     response = await self.post(
-                        "/heartbeat", {"executor": "pi", "available": True, "version": "1.1.0"}
+                        "/heartbeat",
+                        {
+                            "executor": "pi",
+                            "available": True,
+                            "version": "1.1.0",
+                            "protocol_version": 2,
+                            "kernel_instance_id": self.kernel_instance_id,
+                            "features": ["artifact-v2", "managed-workspace"],
+                            "node_model": {"provider": self.provider, "model": self.model},
+                        },
                     )
+                    identity = response.get("kernel_instance_id")
+                    if self.kernel_instance_id and identity != self.kernel_instance_id:
+                        raise RuntimeError("KERNEL_IDENTITY_MISMATCH: refuse old ledger and new jobs")
+                    if identity and not self.kernel_instance_id:
+                        self.kernel_instance_id = identity
+                        atomic_json(self.identity_file, {"kernel_instance_id": identity})
+                    await self.finish_ledger()
                     if response["enabled"]:
                         job = await self.post("/claim")
                         if job:
@@ -368,7 +547,13 @@ class Runner:
                             await self.execute(job)
                             continue
                 except httpx.HTTPError as exc:
-                    print(f"Kernel unavailable: {type(exc).__name__}", flush=True)
+                    code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                    print(
+                        "TOKEN_INVALID" if code == 401 else f"KERNEL_UNREACHABLE: {type(exc).__name__}",
+                        flush=True,
+                    )
+                except RuntimeError as exc:
+                    print(str(exc), flush=True)
                 await asyncio.sleep(1)
 
 

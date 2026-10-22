@@ -34,7 +34,18 @@ class Settings(BaseSettings):
     allow_shell: bool = False
     auto_create_schema: bool = False
     remote_pi_enabled: bool = False
+    multi_bot_enabled: bool = False
+    worker_slots: int = Field(default=1, ge=1, le=32)
+    handoff_max_hops: int = Field(default=4, ge=1, le=32)
+    handoff_max_per_workflow: int = Field(default=32, ge=1, le=1000)
+    workflow_max_model_turns: int = Field(default=200, ge=1)
+    workflow_max_seconds: int = Field(default=3600, ge=1)
+    handoff_timeout_seconds: int = Field(default=900, ge=1)
+    routines_enabled: bool = False
     remote_lease_seconds: int = Field(default=30, ge=5, le=300)
+    artifact_max_file_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
+    artifact_max_item_bytes: int = Field(default=100 * 1024 * 1024, ge=1)
+    artifact_upload_ttl_seconds: int = Field(default=3600, ge=60)
 
     cookie_secure: bool = True
     computer_web_url: str = "/computer/vnc.html"

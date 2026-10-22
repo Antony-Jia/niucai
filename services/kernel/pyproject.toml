@@ -16,6 +16,8 @@ dependencies = [
     "opentelemetry-sdk>=1.30,<2",
     "pgvector>=0.3,<1",
     "websockets>=15,<17",
+    "croniter>=6,<7",
+    "tzdata>=2025.2",
 ]
 [project.optional-dependencies]
 harness = ["deepagents>=0.7.20,<1", "langgraph>=1.2,<2", "langchain>=1.4,<2", "langchain-core>=1,<2", "langgraph-checkpoint>=4,<5"]

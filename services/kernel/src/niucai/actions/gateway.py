@@ -6,7 +6,7 @@ from pydantic import TypeAdapter
 from sqlalchemy import select
 
 from niucai.control.progress import clear_wait
-from niucai.control.tasks import ComputerRequired, Conflict, require
+from niucai.control.tasks import ComputerBusy, ComputerRequired, Conflict, require
 from niucai.domain.schemas import ActionSpec
 from niucai.storage.db import Action, Approval, Artifact, Audit, Computer, Message, Task, emit, now
 
@@ -20,8 +20,16 @@ class ActionGateway:
     def propose(self, task_id, token, spec, key, input_sequence=None):
         spec = TypeAdapter(ActionSpec).validate_python(spec).model_dump(mode="json")
         with self.db.sessions.begin() as s:
+            from niucai.control.bots import permitted
+            from niucai.control.collaboration import gate
+
+            if gate(s, shared=True).stopped:
+                raise Conflict("all Bots are stopped")
             task = require(s, Task, task_id, lock=True)
             self.check_task(task, token)
+            agent_policy = permitted(s, task, spec["type"])
+            if task.checkpoint.get("bot_reply_committed") or task.checkpoint.get("bot_transfer_committed"):
+                raise Conflict("work item has already replied")
             existing = s.scalar(select(Action).where(Action.idempotency_key == key))
             if existing:
                 if existing.task_id != task_id or existing.spec != spec:
@@ -39,8 +47,18 @@ class ActionGateway:
             kind = spec["type"]
             if kind == "shell.exec" and not self.settings.allow_shell:
                 raise PermissionError("shell execution disabled by kernel policy")
-            if kind.startswith("browser.") and not task.computer_id:
-                raise ComputerRequired("请为任务选择执行电脑，然后继续任务。")
+            if kind.startswith("browser."):
+                computer_id = task.computer_id or agent_policy.default_computer_id
+                if not computer_id:
+                    raise ComputerRequired("请为任务选择执行电脑，然后继续任务。")
+                computer = require(s, Computer, computer_id, lock=True)
+                if computer.active_task_id and computer.active_task_id != task.id:
+                    other = s.get(Task, computer.active_task_id)
+                    if other and other.status in {"PENDING", "RUNNING", "PAUSED", "WAITING_HUMAN"}:
+                        raise ComputerBusy("执行电脑忙，等待电脑资源释放")
+                if computer.control != "AGENT":
+                    raise ComputerRequired("请先交还或恢复执行电脑。")
+                task.computer_id, computer.active_task_id = computer_id, task.id
             # Semantic side effects cannot be inferred from DOM alone. Conservative V1 policy.
             risk = "HIGH" if kind in {"browser.click", "browser.fill", "files.write", "shell.exec"} else "LOW"
             action = Action(
@@ -76,6 +94,9 @@ class ActionGateway:
 
     def decide(self, approval_id, approved, note=""):
         with self.db.sessions.begin() as s:
+            from niucai.control.collaboration import gate, sync_human_wait
+
+            gate(s, shared=True)
             # Resolve foreign ids, then lock in task -> computer -> action order.
             approval = require(s, Approval, approval_id)
             action = require(s, Action, approval.action_id)
@@ -94,24 +115,34 @@ class ActionGateway:
             action.status = "APPROVED" if approved else "DENIED"
             s.add(Audit(action_id=action.id, outcome=action.status, data={"note": note}))
             emit(s, "action.approved" if approved else "action.denied", task.id, action_id=action.id)
-            if task.checkpoint.get("action_id") == action.id:
+            approval_wait = (
+                task.status == "WAITING_HUMAN" and task.checkpoint.get("reason") == "WAITING_APPROVAL"
+            )
+            if approval_wait and task.checkpoint.get("action_id") == action.id:
                 task.checkpoint = clear_wait(task.checkpoint)
             unresolved = s.scalar(
                 select(Action.id)
                 .where(Action.task_id == task.id, Action.status.in_(["WAITING_APPROVAL", "UNKNOWN"]))
                 .limit(1)
             )
-            if task.status == "WAITING_HUMAN" and not unresolved:
+            if approval_wait and not unresolved:
                 task.status = "PENDING"
                 emit(s, "task.resumed", task.id, reason="approval_decided")
+            sync_human_wait(s, task)
             return approval
 
     async def execute(self, action_id, token):
         # Journal intent before any side effect. Crash => UNKNOWN, never blind retry.
         with self.db.sessions.begin() as s:
+            from niucai.control.bots import permitted
+            from niucai.control.collaboration import gate
+
+            if gate(s, shared=True).stopped:
+                raise Conflict("all Bots are stopped")
             action = require(s, Action, action_id)
             task = require(s, Task, action.task_id, lock=True)
             self.check_task(task, token)
+            permitted(s, task, action.spec["type"])
             action = require(s, Action, action_id, lock=True)
             if action.status in {"SUCCEEDED", "FAILED", "DENIED", "WAITING_APPROVAL", "UNKNOWN"}:
                 return action
@@ -134,6 +165,11 @@ class ActionGateway:
             read_only = action.spec["type"] in {"browser.snapshot", "files.read"}
             try:
                 self.check_task(task, token)
+                permitted(s, task, action.spec["type"])
+                if task.checkpoint.get("bot_reply_committed") or task.checkpoint.get(
+                    "bot_transfer_committed"
+                ):
+                    raise Conflict("work item has already finished")
                 if computer and computer.kind != "linux":
                     raise PermissionError("Android adapter is not available in V1")
                 if computer and (computer.control != "AGENT" or computer.active_task_id != task.id):
@@ -158,6 +194,14 @@ class ActionGateway:
                         path=result["path"],
                         media_type=result.get("media_type", "text/plain"),
                     )
+                    if self.settings.multi_bot_enabled:
+                        from niucai.control.artifacts import snapshot
+
+                        source = (self.settings.workspace / result["path"]).resolve()
+                        if source.is_relative_to(self.settings.workspace.resolve()) and source.is_file():
+                            artifact = snapshot(
+                                s, self.settings, task.id, source.read_bytes(), artifact.media_type
+                            )
                     s.add(artifact)
                     s.flush()
                     emit(

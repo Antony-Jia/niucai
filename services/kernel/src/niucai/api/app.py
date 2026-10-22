@@ -50,8 +50,25 @@ def create_app(settings=None, db=None, chat_gateway=None):
         if settings.auto_create_schema:
             db.create_schema()
         with db.sessions.begin() as s:
+            from niucai.control.collaboration import gate
+
+            gate(s)
+            from niucai.control.instance import instance
+
+            instance(s)
             if s.get(Agent, "main") is None:
-                s.add(Agent(id="main", name="Main Agent", definition={"runtime": settings.runtime}))
+                s.add(
+                    Agent(
+                        id="main",
+                        name="Main Agent",
+                        definition={
+                            "runtime": settings.runtime,
+                            "tools": ["*"],
+                            "allowed_nodes": None,
+                            "memory_scope": "own+shared",
+                        },
+                    )
+                )
         yield
         db.engine.dispose()
 
@@ -88,6 +105,9 @@ def create_app(settings=None, db=None, chat_gateway=None):
     from niucai.api.remote import remote_router
 
     app.include_router(remote_router(db, settings, auth))
+    from niucai.api.bots import bot_router
+
+    app.include_router(bot_router(db, settings, auth))
 
     @app.exception_handler(Missing)
     async def not_found(_, exc):
@@ -101,11 +121,54 @@ def create_app(settings=None, db=None, chat_gateway=None):
 
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
+    @app.exception_handler(PermissionError)
+    async def forbidden(_, exc):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    @app.exception_handler(ValueError)
+    async def invalid(_, exc):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
     @app.get("/healthz")
     def health():
         with db.sessions() as s:
             s.execute(text("SELECT 1"))
         return {"status": "ok"}
+
+    @app.get("/api/kernel/identity", dependencies=auth)
+    def kernel_identity():
+        from niucai.control.instance import PROTOCOL_VERSION, instance
+
+        with db.sessions.begin() as s:
+            return {"kernel_instance_id": instance(s).instance_id, "protocol_version": PROTOCOL_VERSION}
+
+    @app.get("/api/kernel/diagnostics", dependencies=auth)
+    def kernel_diagnostics():
+        from sqlalchemy import inspect
+
+        from niucai.control.instance import diagnostics
+
+        if not inspect(db.engine).has_table("alembic_version"):
+            # create_schema is only a test/development path, never migration proof.
+            return {"api": "ready", "execution_ready": False,
+                    "migration": {"ready": False, "current": None}, "workers": []}
+        with db.sessions.begin() as s:
+            return diagnostics(s, settings)
+
+    @app.post("/api/kernel/admission/{operation}", dependencies=auth)
+    def kernel_admission(operation: Literal["drain", "resume"]):
+        from niucai.control.collaboration import gate
+        from niucai.control.instance import instance, migration_state
+
+        with db.sessions.begin() as s:
+            gate(s)
+            row = instance(s)
+            row.admission_enabled = int(operation == "resume")
+            return {"admission_enabled": bool(row.admission_enabled), **migration_state(s)}
 
     @app.post("/api/tasks", dependencies=auth, status_code=201)
     def create_task(request: TaskCreate):

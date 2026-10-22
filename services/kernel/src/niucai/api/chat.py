@@ -56,6 +56,10 @@ def chat_router(db, settings, auth, injected_gateway=None):
 
     @router.post("/api/conversations", status_code=201)
     def create(request: ConversationCreate):
+        if request.agent_id != "main" and not settings.multi_bot_enabled:
+            from niucai.control.tasks import Conflict
+
+            raise Conflict("multi Bot collaboration disabled")
         with db.sessions.begin() as session:
             return as_dict(manager.create_in(session, **request.model_dump()))
 
@@ -75,10 +79,20 @@ def chat_router(db, settings, auth, injected_gateway=None):
 
     @router.post("/api/conversations/{conversation_id}/messages", status_code=202)
     def send(conversation_id: str, request: MessageCreate):
+        if settings.multi_bot_enabled:
+            from niucai.control.groups import send_group
+
+            group = send_group(db, settings, conversation_id, request.content, request.client_id)
+            if group:
+                return response(group)
         return response(manager.send(conversation_id, request.content, request.client_id))
 
     @router.post("/api/chat", status_code=202)
     def chat(request: ChatCreate):
+        if request.conversation_id:
+            return send(
+                request.conversation_id, MessageCreate(content=request.content, client_id=request.client_id)
+            )
         return response(
             manager.send(
                 request.conversation_id, request.content, request.client_id, computer_id=request.computer_id

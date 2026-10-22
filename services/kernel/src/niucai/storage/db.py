@@ -28,6 +28,21 @@ class Base(DeclarativeBase):
     pass
 
 
+class KernelInstance(Base):
+    __tablename__ = "kernel_instance"
+    id: Mapped[str] = mapped_column(String(20), primary_key=True, default="singleton")
+    instance_id: Mapped[str] = mapped_column(String(36), default=uid)
+    admission_enabled: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class WorkerHealth(Base):
+    __tablename__ = "worker_health"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class HarnessCheckpoint(Base):
     __tablename__ = "harness_checkpoints"
     thread_id: Mapped[str] = mapped_column(String(200), primary_key=True)
@@ -81,6 +96,13 @@ class Message(Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime)
     submission_id: Mapped[str | None] = mapped_column(String(200))
     role: Mapped[str] = mapped_column(String(20))
+    sender_agent_id: Mapped[str | None] = mapped_column(String(100))
+    handoff_id: Mapped[str | None] = mapped_column(String(36))
+    workflow_id: Mapped[str | None] = mapped_column(String(36))
+    work_item_id: Mapped[str | None] = mapped_column(String(36))
+    routine_id: Mapped[str | None] = mapped_column(String(36))
+    source: Mapped[str] = mapped_column(String(20), default="USER")
+    kind: Mapped[str] = mapped_column(String(20), default="INSTRUCTION")
     content: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="COMPLETED")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
@@ -173,6 +195,7 @@ class Memory(Base):
     __tablename__ = "memories"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     kind: Mapped[str] = mapped_column(String(30))
+    agent_id: Mapped[str | None] = mapped_column(ForeignKey("agents.id"), index=True)
     content: Mapped[str] = mapped_column(Text)
     tags: Mapped[list] = mapped_column(JSON, default=list)
     task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"))
@@ -185,6 +208,8 @@ class Artifact(Base):
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
     path: Mapped[str] = mapped_column(Text)
     media_type: Mapped[str] = mapped_column(String(100))
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    content_hash: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -195,16 +220,132 @@ class TaskRun(Base):
     status: Mapped[str] = mapped_column(String(30), default="RUNNING")
     started_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime)
+    process_exited_at: Mapped[datetime | None] = mapped_column(DateTime)
+    exit_tracking_started_at: Mapped[datetime | None] = mapped_column(DateTime, default=now)
+
+
+class BotControl(Base):
+    __tablename__ = "bot_control"
+    id: Mapped[str] = mapped_column(String(20), primary_key=True, default="global")
+    stopped: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ToolReceipt(Base):
+    __tablename__ = "tool_receipts"
+    id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"))
+    payload: Mapped[dict] = mapped_column(JSON)
+    result: Mapped[dict] = mapped_column(JSON)
+
+
+class Workflow(Base):
+    __tablename__ = "workflows"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    origin_conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"))
+    owner_agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id"))
+    status: Mapped[str] = mapped_column(String(30), default="ACTIVE", index=True)
+    authorization: Mapped[dict] = mapped_column(JSON, default=dict)
+    limits: Mapped[dict] = mapped_column(JSON, default=dict)
+    routes: Mapped[list] = mapped_column(JSON, default=list)
+    handoff_count: Mapped[int] = mapped_column(Integer, default=0)
+    model_turns: Mapped[int] = mapped_column(Integer, default=0)
+    revision_count: Mapped[int] = mapped_column(Integer, default=0)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
+class WorkItem(Base):
+    __tablename__ = "work_items"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workflow_id: Mapped[str] = mapped_column(ForeignKey("workflows.id"), index=True)
+    parent_work_item_id: Mapped[str | None] = mapped_column(ForeignKey("work_items.id"))
+    assignee_agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id"))
+    definition_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    # NULL for a root started from an ordinary chat; that chat is not an execution session.
+    conversation_id: Mapped[str | None] = mapped_column(ForeignKey("conversations.id"), unique=True)
+    task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), unique=True)
+    goal: Mapped[str] = mapped_column(Text)
+    output_requirements: Mapped[str] = mapped_column(Text, default="")
+    wait: Mapped[dict] = mapped_column(JSON, default=dict)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    artifacts: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
+    labels: Mapped[list] = mapped_column(JSON, default=list)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
+class Handoff(Base):
+    __tablename__ = "handoffs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workflow_id: Mapped[str] = mapped_column(ForeignKey("workflows.id"), index=True)
+    from_work_item_id: Mapped[str] = mapped_column(ForeignKey("work_items.id"))
+    to_work_item_id: Mapped[str] = mapped_column(ForeignKey("work_items.id"))
+    from_agent_id: Mapped[str] = mapped_column(String(100))
+    to_agent_id: Mapped[str] = mapped_column(String(100))
+    from_conversation_id: Mapped[str] = mapped_column(String(36))
+    to_conversation_id: Mapped[str] = mapped_column(String(36))
+    from_task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"))
+    to_task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"))
+    caused_by_handoff_id: Mapped[str | None] = mapped_column(String(36))
+    kind: Mapped[str] = mapped_column(String(20), default="DELEGATE")
+    expects_reply: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(30), default="ACCEPTED", index=True)
+    hop: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(200), unique=True)
+    payload: Mapped[dict] = mapped_column(JSON)
+    reply: Mapped[dict] = mapped_column(JSON, default=dict)
+    deadline: Mapped[datetime] = mapped_column(DateTime)
+    human_wait_started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
+class ConversationParticipant(Base):
+    __tablename__ = "conversation_participants"
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(20))
+
+
+class Routine(Base):
+    __tablename__ = "routines"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id"))
+    conversation_id: Mapped[str | None] = mapped_column(ForeignKey("conversations.id"))
+    schedule: Mapped[str] = mapped_column(String(100))
+    timezone: Mapped[str] = mapped_column(String(100), default="Asia/Shanghai")
+    prompt: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class RoutineRun(Base):
+    __tablename__ = "routine_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    routine_id: Mapped[str] = mapped_column(ForeignKey("routines.id"))
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime)
+    workflow_id: Mapped[str | None] = mapped_column(ForeignKey("workflows.id"))
+    status: Mapped[str] = mapped_column(String(30))
+    __table_args__ = (UniqueConstraint("routine_id", "scheduled_at", name="uq_routine_schedule"),)
 
 
 class RemoteNode(Base):
     __tablename__ = "remote_nodes"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     name: Mapped[str] = mapped_column(String(200))
+    resource_type: Mapped[str] = mapped_column(
+        String(30), default="unspecified", server_default="unspecified"
+    )
     token_hash: Mapped[str] = mapped_column(String(64))
     enabled: Mapped[int] = mapped_column(Integer, default=1)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime)
     capabilities: Mapped[dict] = mapped_column(JSON, default=dict)
+    connection: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -214,6 +355,9 @@ class RemoteJob(Base):
     parent_task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), index=True)
     idempotency_key: Mapped[str] = mapped_column(String(200), unique=True)
     prompt: Mapped[str] = mapped_column(Text)
+    input_artifacts: Mapped[list] = mapped_column(JSON, default=list)
+    config_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    wait_state: Mapped[dict] = mapped_column(JSON, default=dict)
     allowed_nodes: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(30), default="WAITING_APPROVAL", index=True)
     node_id: Mapped[str | None] = mapped_column(ForeignKey("remote_nodes.id"))
@@ -234,6 +378,21 @@ Index(
     sqlite_where=Task.status.not_in(["COMPLETED", "CANCELLED"]),
     postgresql_where=Task.status.not_in(["COMPLETED", "CANCELLED"]),
 )
+
+
+class ArtifactUpload(Base):
+    __tablename__ = "artifact_uploads"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    job_id: Mapped[str] = mapped_column(ForeignKey("remote_jobs.id"), index=True)
+    attempt_id: Mapped[str] = mapped_column(String(36))
+    filename: Mapped[str] = mapped_column(String(200))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    media_type: Mapped[str] = mapped_column(String(100))
+    size: Mapped[int] = mapped_column(Integer)
+    received: Mapped[int] = mapped_column(Integer, default=0)
+    artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    __table_args__ = (UniqueConstraint("job_id", "attempt_id", "filename"),)
 
 
 class Database:

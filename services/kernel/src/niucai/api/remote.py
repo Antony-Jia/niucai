@@ -3,11 +3,45 @@ import secrets
 from hashlib import sha256
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from niucai.control.remote import RemoteManager
 from niucai.storage.db import RemoteNode
+
+
+def validate_connection(value):
+    from urllib.parse import urlsplit
+
+    if not value:
+        return  # Legacy nodes remain explicitly unverified.
+    if set(value) - {"mode", "runner_url", "management_url", "kernel_instance_id"}:
+        raise ValueError("unknown connection field")
+    mode = value.get("mode")
+    if mode not in {"compose", "private_network", "https", "ssh_reverse"}:
+        raise ValueError("invalid connection mode")
+    for key in ("runner_url", "management_url"):
+        url = urlsplit(value.get(key, ""))
+        if url.scheme not in {"http", "https"} or not url.hostname or url.username or url.password:
+            raise ValueError("connection requires credential-free HTTP/HTTPS URLs")
+        if url.query or url.fragment:
+            raise ValueError("connection URLs cannot contain query or fragment")
+        if key == "runner_url":
+            if mode == "ssh_reverse" and (url.scheme != "http" or url.hostname != "127.0.0.1"):
+                raise ValueError("SSH reverse mode requires HTTP on IPv4 loopback")
+            if mode == "https" and url.scheme != "https":
+                raise ValueError("public connection requires HTTPS")
+            if mode == "private_network":
+                import ipaddress
+
+                try:
+                    address = ipaddress.ip_address(url.hostname)
+                except ValueError as exc:
+                    raise ValueError("private network HTTP requires an explicit private IP") from exc
+                if not address.is_private or address.is_unspecified:
+                    raise ValueError("private network requires a private address")
+            if mode == "compose" and url.hostname != "api":
+                raise ValueError("managed Compose mode requires api service address")
 
 
 class JobCreate(BaseModel):
@@ -16,6 +50,7 @@ class JobCreate(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
     allowed_nodes: list[str] = Field(default_factory=list, max_length=32)
     parent_task_id: str | None = None
+    artifacts: list[dict] = Field(default_factory=list, max_length=16)
 
 
 class Attempt(BaseModel):
@@ -45,17 +80,51 @@ class Finished(Attempt):
         return self
 
 
+class UploadStart(Attempt):
+    filename: str = Field(min_length=1, max_length=200)
+    size: int = Field(ge=0)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    media_type: str = "application/octet-stream"
+
+
 def remote_router(db, settings, auth):
     router = APIRouter()
     manager = RemoteManager(db, settings)
 
     class NodeCreate(BaseModel):
+        model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
         name: str = Field(min_length=1, max_length=200)
+        resource_type: Literal["local_docker", "remote_vps", "unspecified"] = "unspecified"
+        connection: dict = Field(default_factory=dict)
+
+        @model_validator(mode="after")
+        def valid_connection(self):
+            validate_connection(self.connection)
+            return self
+
+    class NodeUpdate(BaseModel):
+        model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+        name: str | None = Field(default=None, min_length=1, max_length=200)
+        resource_type: Literal["local_docker", "remote_vps", "unspecified"] | None = None
+        enabled: bool | None = None
+        connection: dict | None = None
+
+        @model_validator(mode="after")
+        def not_null(self):
+            if any(getattr(self, key) is None for key in self.model_fields_set):
+                raise ValueError("updated fields cannot be null")
+            if self.connection is not None:
+                validate_connection(self.connection)
+            return self
 
     class Capabilities(BaseModel):
         executor: Literal["pi"] = "pi"
         available: bool
         version: str = Field(default="", max_length=100)
+        protocol_version: int | None = Field(default=None, ge=1)
+        kernel_instance_id: str | None = Field(default=None, max_length=36)
+        features: list[str] = Field(default_factory=list, max_length=32)
+        node_model: dict[str, str] = Field(default_factory=dict)
 
     def node_auth(node_id: str, authorization: str = Header(default="")):
         with db.sessions() as s:
@@ -70,8 +139,26 @@ def remote_router(db, settings, auth):
         return node_id
 
     @router.post("/api/remote/nodes", dependencies=auth, status_code=201)
-    def create_node(request: NodeCreate):
-        return manager.create_node(request.name)
+    def create_node(request: NodeCreate, response: Response):
+        response.headers["Cache-Control"] = "no-store"
+        return manager.create_node(request.name, request.resource_type, request.connection)
+
+    @router.get("/api/remote/config", dependencies=auth)
+    def config():
+        return {"enabled": settings.remote_pi_enabled}
+
+    @router.patch("/api/remote/nodes/{node_id}", dependencies=auth)
+    def update_node(node_id: str, request: NodeUpdate):
+        return manager.update_node(node_id, request.model_dump(exclude_unset=True))
+
+    @router.post("/api/remote/nodes/{node_id}/revoke", dependencies=auth)
+    def revoke_node(node_id: str):
+        return manager.revoke_node(node_id)
+
+    @router.post("/api/remote/nodes/{node_id}/rotate-token", dependencies=auth)
+    def rotate_token(node_id: str, response: Response):
+        response.headers["Cache-Control"] = "no-store"
+        return manager.rotate_token(node_id)
 
     @router.get("/api/remote/nodes", dependencies=auth)
     def nodes():
@@ -80,7 +167,11 @@ def remote_router(db, settings, auth):
     @router.post("/api/remote/jobs", dependencies=auth, status_code=201)
     def submit(request: JobCreate):
         return manager.submit(
-            request.prompt, request.idempotency_key, request.allowed_nodes, request.parent_task_id
+            request.prompt,
+            request.idempotency_key,
+            request.allowed_nodes,
+            request.parent_task_id,
+            artifacts=request.artifacts,
         )
 
     @router.get("/api/remote/jobs", dependencies=auth)
@@ -100,12 +191,18 @@ def remote_router(db, settings, auth):
         return manager.control(job_id, operation)
 
     @router.post("/api/remote/runner/{node_id}/heartbeat")
-    def node_heartbeat(request: Capabilities, node_id: str = Depends(node_auth)):
-        return manager.node_heartbeat(node_id, request.model_dump())
+    def node_heartbeat(
+        request: Capabilities, node_id: str = Depends(node_auth), authorization: str = Header()
+    ):
+        return manager.node_heartbeat(
+            node_id,
+            request.model_dump(exclude_none=True),
+            sha256(authorization.removeprefix("Bearer ").encode()).hexdigest(),
+        )
 
     @router.post("/api/remote/runner/{node_id}/claim")
-    def claim(node_id: str = Depends(node_auth)):
-        return manager.claim(node_id)
+    def claim(node_id: str = Depends(node_auth), authorization: str = Header()):
+        return manager.claim(node_id, sha256(authorization.removeprefix("Bearer ").encode()).hexdigest())
 
     @router.post("/api/remote/runner/{node_id}/jobs/{job_id}/heartbeat")
     def heartbeat(job_id: str, request: Attempt, node_id: str = Depends(node_auth)):
@@ -120,5 +217,48 @@ def remote_router(db, settings, auth):
     @router.post("/api/remote/runner/{node_id}/jobs/{job_id}/finish")
     def finish(job_id: str, request: Finished, node_id: str = Depends(node_auth)):
         return manager.finish(node_id, job_id, request.attempt_id, request.status, request.result)
+
+    @router.get("/api/remote/runner/{node_id}/jobs/{job_id}/artifacts/{artifact_id}")
+    def input_artifact(job_id: str, artifact_id: str, attempt_id: str, node_id: str = Depends(node_auth)):
+        from fastapi.responses import FileResponse
+
+        from niucai.control.artifact_transport import ArtifactTransport
+
+        path, media_type = ArtifactTransport(db, settings).download(node_id, job_id, attempt_id, artifact_id)
+        return FileResponse(path, media_type=media_type, headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/remote/runner/{node_id}/jobs/{job_id}/uploads", status_code=201)
+    def upload_start(job_id: str, request: UploadStart, node_id: str = Depends(node_auth)):
+        from niucai.control.artifact_transport import ArtifactTransport
+
+        return ArtifactTransport(db, settings).start(node_id, job_id, **request.model_dump())
+
+    @router.put("/api/remote/runner/{node_id}/jobs/{job_id}/uploads/{upload_id}")
+    async def upload_chunk(
+        job_id: str,
+        upload_id: str,
+        request: Request,
+        attempt_id: str,
+        offset: int = Query(ge=0),
+        node_id: str = Depends(node_auth),
+    ):
+        import asyncio
+
+        from niucai.control.artifact_transport import CHUNK_BYTES, ArtifactTransport
+
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > CHUNK_BYTES:
+                raise HTTPException(413, "chunk exceeds 1 MiB")
+            body.extend(chunk)
+        return await asyncio.to_thread(
+            ArtifactTransport(db, settings).chunk, node_id, job_id, attempt_id, upload_id, offset, bytes(body)
+        )
+
+    @router.post("/api/remote/runner/{node_id}/jobs/{job_id}/uploads/{upload_id}/finalize")
+    def upload_finalize(job_id: str, upload_id: str, request: Attempt, node_id: str = Depends(node_auth)):
+        from niucai.control.artifact_transport import ArtifactTransport
+
+        return ArtifactTransport(db, settings).finalize(node_id, job_id, request.attempt_id, upload_id)
 
     return router

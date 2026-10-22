@@ -3,7 +3,7 @@
 from sqlalchemy import select, update
 
 from niucai.control.tasks import Conflict, require
-from niucai.storage.db import Action, Agent, Approval, Audit, Computer, Conversation, Message, Task, emit, now
+from niucai.storage.db import Action, Approval, Audit, Computer, Conversation, Message, Task, emit, now
 
 
 def lock_conversation(session, ident):
@@ -52,7 +52,9 @@ class ConversationManager:
 
     @staticmethod
     def create_in(session, title="新会话", agent_id="main", computer_id=None):
-        require(session, Agent, agent_id)
+        from niucai.control.bots import active_agent
+
+        active_agent(session, agent_id)
         if computer_id:
             computer = require(session, Computer, computer_id)
             if computer.kind != "linux":
@@ -66,6 +68,14 @@ class ConversationManager:
         if not content.strip():
             raise Conflict("message must not be blank")
         with self.db.sessions.begin() as session:
+            from niucai.control.collaboration import gate
+
+            if gate(session).stopped:
+                raise Conflict("all Bots are stopped")
+            from niucai.control.instance import instance
+
+            if not instance(session).admission_enabled:
+                raise Conflict("Kernel is draining for migration")
             conversation = (
                 lock_conversation(session, ident)
                 if ident
@@ -91,6 +101,10 @@ class ConversationManager:
             if conversation.next_sequence == 0 and conversation.title == "新会话":
                 conversation.title = content[:80]
             if task is None:
+                from niucai.storage.db import WorkItem
+
+                if session.scalar(select(WorkItem.id).where(WorkItem.conversation_id == conversation.id)):
+                    raise Conflict("work item finished; create an explicit follow-up workflow")
                 task = Task(
                     title=content[:80],
                     goal=content,
@@ -103,6 +117,10 @@ class ConversationManager:
                 session.flush()
                 emit(session, "task.created", task.id, title=task.title)
             else:
+                if task.checkpoint.get("bot_reply_committed") or task.checkpoint.get(
+                    "bot_transfer_committed"
+                ):
+                    raise Conflict("work item already submitted its final result")
                 invalidate_proposals(session, task)
             message = append_message(
                 session, conversation, role="user", content=content, task_id=task.id, client_id=client_id
@@ -115,7 +133,13 @@ class ConversationManager:
             return list(
                 session.scalars(
                     select(Message)
-                    .where(Message.task_id == task_id, Message.role == "user", Message.delivered_at.is_(None))
+                    .where(
+                        Message.task_id == task_id,
+                        Message.conversation_id
+                        == select(Task.conversation_id).where(Task.id == task_id).scalar_subquery(),
+                        Message.role.in_(["user", "bot"]),
+                        Message.delivered_at.is_(None),
+                    )
                     .order_by(Message.sequence)
                 )
             )
@@ -125,7 +149,12 @@ class ConversationManager:
             return list(
                 session.scalars(
                     select(Message)
-                    .where(Message.task_id == task_id, Message.role == "user")
+                    .where(
+                        Message.task_id == task_id,
+                        Message.role.in_(["user", "bot"]),
+                        Message.conversation_id
+                        == select(Task.conversation_id).where(Task.id == task_id).scalar_subquery(),
+                    )
                     .order_by(Message.sequence)
                 )
             )
@@ -137,7 +166,7 @@ class ConversationManager:
             task = require(session, Task, task_id, lock=True)
             ActionGateway.check_task(task, token)
             message = require(session, Message, message_id)
-            if message.task_id != task_id or message.role != "user":
+            if message.task_id != task_id or message.role not in {"user", "bot"}:
                 raise Conflict("message does not belong to this execution")
             if message.delivered_at:
                 if message.submission_id != str(submission_id):

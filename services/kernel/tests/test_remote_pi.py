@@ -34,7 +34,9 @@ def test_queue_capacity_affinity_and_idempotency(setup):
     first = job(manager, "one", [a["id"]])
     second = job(manager, "two")
     third = job(manager, "three")
-    assert manager.claim(b["id"])["id"] == second["id"]
+    claimed = manager.claim(b["id"])
+    assert claimed["id"] == second["id"]
+    assert claimed["artifact_transport"] is False  # standalone jobs return inline files
     assert manager.claim(a["id"])["id"] == first["id"]
     assert manager.claim(a["id"]) is None
     assert manager.claim(b["id"]) is None

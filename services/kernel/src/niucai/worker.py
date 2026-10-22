@@ -10,7 +10,7 @@ from niucai.agents.selection import RuntimeRouter
 from niucai.config import Settings
 from niucai.context.compiler import ContextCompiler
 from niucai.control.progress import run_context
-from niucai.control.tasks import ComputerRequired, Conflict, TaskManager, require
+from niucai.control.tasks import ComputerBusy, ComputerRequired, Conflict, TaskManager, require
 from niucai.domain.schemas import Decision
 from niucai.models.gateway import ModelGateway, ModelRouter
 from niucai.storage.db import Action, Database, Task
@@ -26,6 +26,19 @@ def make_adapter(settings):
 
 class Worker:
     def __init__(self, db, settings, runtime, adapter):
+        if db.engine.dialect.name == "sqlite" and settings.worker_slots > 1:
+            raise ValueError("SQLite supports NIUCAI_WORKER_SLOTS=1 only")
+        if not settings.multi_bot_enabled:
+            from sqlalchemy import inspect, select
+
+            from niucai.storage.db import Workflow
+
+            if inspect(db.engine).has_table("workflows"):
+                with db.sessions() as session:
+                    if session.scalar(select(Workflow.id).where(Workflow.status == "ACTIVE").limit(1)):
+                        raise ValueError(
+                            "pause or stop active workflows before disabling multi Bot collaboration"
+                        )
         self.db, self.settings, self.runtime = db, settings, runtime
         self.tasks = TaskManager(db, settings)
         self.context = ContextCompiler(db, settings)
@@ -54,7 +67,8 @@ class Worker:
                     try:
                         with self.db.sessions() as s:
                             current = require(s, Task, task.id)
-                        self.tasks.update(
+                        await asyncio.to_thread(
+                            self.tasks.update,
                             task.id,
                             task.run_token,
                             status="FAILED",
@@ -70,6 +84,17 @@ class Worker:
                 execution.cancel()
                 monitor.cancel()
                 await asyncio.gather(execution, monitor, return_exceptions=True)
+
+                def confirm_exit():
+                    from niucai.storage.db import TaskRun, now
+
+                    with self.db.sessions.begin() as session:
+                        run = session.get(TaskRun, task.run_token)
+                        if run:
+                            run.exit_tracking_started_at = run.exit_tracking_started_at or now()
+                            run.process_exited_at = now()
+
+                await asyncio.to_thread(confirm_exit)
 
     async def watch_run(self, task_id, token):
         marker, changed_at = None, time.monotonic()
@@ -103,7 +128,8 @@ class Worker:
                 outcome = await runtime.run(self, task)
                 with self.db.sessions() as s:
                     current = require(s, Task, task.id)
-                self.tasks.update(
+                await asyncio.to_thread(
+                    self.tasks.update,
                     task.id,
                     token,
                     status=outcome["status"],
@@ -115,7 +141,8 @@ class Worker:
                     task = require(s, Task, task.id)
                     self.actions.check_task(task, token)
                 if task.current_step >= task.checkpoint.get("budget_limit", self.settings.max_steps):
-                    self.tasks.update(
+                    await asyncio.to_thread(
+                        self.tasks.update,
                         task.id,
                         token,
                         status="WAITING_HUMAN",
@@ -123,21 +150,25 @@ class Worker:
                     )
                     return
                 if not task.plan:
-                    self.tasks.phase(task.id, token, "PLANNING")
+                    await asyncio.to_thread(self.tasks.phase, task.id, token, "PLANNING")
                     plan = await runtime.plan(self.context.compile(task.id), task.id)
-                    task = self.tasks.update(task.id, token, plan=plan.model_dump(mode="json"))
+                    task = await asyncio.to_thread(
+                        self.tasks.update, task.id, token, plan=plan.model_dump(mode="json")
+                    )
                 if task.checkpoint.get("proposal"):
                     decision = Decision.model_validate(task.checkpoint["proposal"]).validate_action()
                 else:
-                    self.tasks.phase(task.id, token, "MODEL_REQUEST")
+                    await asyncio.to_thread(self.tasks.phase, task.id, token, "MODEL_REQUEST")
                     decision = await runtime.decide(self.context.compile(task.id), task.id)
-                    task = self.tasks.update(
+                    task = await asyncio.to_thread(
+                        self.tasks.update,
                         task.id,
                         token,
                         checkpoint={**task.checkpoint, "proposal": decision.model_dump(mode="json")},
                     )
                 if decision.kind != "action":
-                    self.tasks.update(
+                    await asyncio.to_thread(
+                        self.tasks.update,
                         task.id,
                         token,
                         status="COMPLETED" if decision.kind == "complete" else "WAITING_HUMAN",
@@ -148,19 +179,25 @@ class Worker:
                         },
                     )
                     return
-                action = self.actions.propose(
-                    task.id, token, decision.action.model_dump(mode="json"), f"{task.id}:{task.current_step}"
+                action = await asyncio.to_thread(
+                    self.actions.propose,
+                    task.id,
+                    token,
+                    decision.action.model_dump(mode="json"),
+                    f"{task.id}:{task.current_step}",
                 )
                 action = await self.actions.execute(action.id, token)
                 if action.status in {"WAITING_APPROVAL", "UNKNOWN"}:
-                    self.tasks.update(
+                    await asyncio.to_thread(
+                        self.tasks.update,
                         task.id,
                         token,
                         status="WAITING_HUMAN",
                         checkpoint={**task.checkpoint, "action_id": action.id, "reason": action.status},
                     )
                     return
-                self.tasks.update(
+                await asyncio.to_thread(
+                    self.tasks.update,
                     task.id,
                     token,
                     current_step=task.current_step + 1,
@@ -176,11 +213,20 @@ class Worker:
             try:
                 with self.db.sessions() as s:
                     current = require(s, Task, task.id)
-                self.tasks.update(
+                await asyncio.to_thread(
+                    self.tasks.update,
                     task.id,
                     token,
-                    status="WAITING_HUMAN",
-                    checkpoint={**current.checkpoint, "reason": "computer required", "detail": str(exc)},
+                    status="PENDING"
+                    if self.settings.multi_bot_enabled and isinstance(exc, ComputerBusy)
+                    else "WAITING_HUMAN",
+                    checkpoint={
+                        **current.checkpoint,
+                        "reason": "computer_busy"
+                        if self.settings.multi_bot_enabled and isinstance(exc, ComputerBusy)
+                        else "computer required",
+                        "detail": str(exc),
+                    },
                 )
             except Conflict:
                 pass
@@ -191,7 +237,8 @@ class Worker:
             try:
                 with self.db.sessions() as s:
                     current = require(s, Task, task.id)
-                self.tasks.update(
+                await asyncio.to_thread(
+                    self.tasks.update,
                     task.id,
                     token,
                     status="FAILED",
@@ -208,11 +255,49 @@ class Worker:
                 pass
 
     async def run_once(self):
-        task = self.tasks.claim()
+        task = await asyncio.to_thread(self.tasks.claim)
         if task is None:
             return False
         await self.run_claimed(task)
         return True
+
+    async def serve(self):
+        from niucai.control.collaboration import CollaborationManager
+
+        async def slot():
+            while True:
+                if not await self.run_once():
+                    await asyncio.sleep(self.settings.poll_seconds)
+
+        async def scheduler():
+            collaboration = CollaborationManager(self.db, self.settings)
+            from niucai.control.instance import worker_heartbeat
+            from niucai.storage.db import uid
+
+            worker_id = uid()
+            cleanup_tick = 0
+            while True:
+                await asyncio.to_thread(worker_heartbeat, self.db, self.settings, worker_id)
+                cleanup_tick += 1
+                if cleanup_tick % 60 == 0:
+                    from niucai.control.artifact_transport import ArtifactTransport
+
+                    await asyncio.to_thread(ArtifactTransport(self.db, self.settings).cleanup)
+                await asyncio.to_thread(collaboration.tick)
+                if self.settings.multi_bot_enabled and self.settings.routines_enabled:
+                    from niucai.control.routines import fire_due
+
+                    await asyncio.to_thread(fire_due, self.db, self.settings)
+                await asyncio.sleep(self.settings.poll_seconds)
+
+        runners = [asyncio.create_task(slot()) for _ in range(self.settings.worker_slots)]
+        runners.append(asyncio.create_task(scheduler()))
+        try:
+            await asyncio.gather(*runners)
+        finally:
+            for runner in runners:
+                runner.cancel()
+            await asyncio.gather(*runners, return_exceptions=True)
 
     def resolve_unknown(self, action_id, outcome):
         # Administrative resolution is deliberately separate from approval.
@@ -245,9 +330,7 @@ async def main():
     adapter = make_adapter(settings)
     worker = Worker(db, settings, runtime, adapter)
     try:
-        while True:
-            if not await worker.run_once():
-                await asyncio.sleep(settings.poll_seconds)
+        await worker.serve()
     finally:
         await gateway.close()
         if hasattr(adapter, "close"):

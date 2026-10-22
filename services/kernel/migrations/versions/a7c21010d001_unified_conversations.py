@@ -33,14 +33,15 @@ def upgrade():
         batch.create_unique_constraint("uq_message_sequence", ["conversation_id", "sequence"])
         batch.create_unique_constraint("uq_message_client", ["conversation_id", "client_id"])
 
-    from niucai.storage.db import Conversation, Event, Message, Task
-
     connection = op.get_bind()
+    # Reflect this revision's schema; current ORM may contain future columns.
+    metadata = sa.MetaData()
+    metadata.reflect(connection, only=["conversations", "messages", "tasks", "events"])
     conversations, messages, tasks, events = (
-        Conversation.__table__,
-        Message.__table__,
-        Task.__table__,
-        Event.__table__,
+        metadata.tables["conversations"],
+        metadata.tables["messages"],
+        metadata.tables["tasks"],
+        metadata.tables["events"],
     )
     for conversation in connection.execute(sa.select(conversations)).mappings().all():
         rows = (

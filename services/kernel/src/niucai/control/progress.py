@@ -49,7 +49,7 @@ def task_progress(session, task):
     computer = session.get(Computer, task.computer_id) if task.computer_id else None
     reason = task.checkpoint.get("reason")
     operations = ["cancel"]
-    if task.status in {"PENDING", "RUNNING", "WAITING_HUMAN"}:
+    if task.status in {"PENDING", "RUNNING", "WAITING_HUMAN", "WAITING_BOT"}:
         operations.insert(0, "pause")
     if not task.computer_id and task.status in {"PENDING", "PAUSED", "WAITING_HUMAN"}:
         operations.append("attach_computer")
@@ -106,6 +106,8 @@ def task_progress(session, task):
         )
     elif task.status == "PAUSED":
         waiting("PAUSED", "USER_PAUSED", "任务已暂停，可以继续或停止")
+    elif task.status == "WAITING_BOT":
+        waiting("WAITING_BOT", "BOT_DEPENDENCIES", "等待协作 Bot 的结果，执行资源已释放")
     elif task.status == "WAITING_HUMAN":
         waits = {
             "step budget exhausted": ("STEP_BUDGET_EXHAUSTED", "动作预算已用尽，继续将增加一轮动作预算"),
@@ -121,6 +123,8 @@ def task_progress(session, task):
         waiting("WAITING_HUMAN", code, message)
     elif task.status == "PENDING":
         result.update(phase="QUEUED", message="任务已排队，将自动开始")
+        if reason == "computer_busy":
+            waiting("QUEUED", "COMPUTER_BUSY", "执行电脑忙，资源释放后自动开始")
         if computer and computer.active_task_id and computer.active_task_id != task.id:
             other = session.get(Task, computer.active_task_id)
             if other and other.status == "RUNNING" and other.lease_until and other.lease_until > now():
