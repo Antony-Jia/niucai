@@ -21,6 +21,7 @@ def harness(request, monkeypatch):
     import sys
 
     if request.param == "pi":
+        pytest.importorskip("fcntl", reason="Pi writer locking requires Linux")
         from niucai.agents.pi_adapter import PiDurableRuntime
 
         monkeypatch.setattr(sys.modules[__name__], "DeepAgentRuntime", PiDurableRuntime)

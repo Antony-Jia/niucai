@@ -1,10 +1,14 @@
 """Pi-specific ownership, retry, budget and migration integration checks."""
 
 import asyncio
-import fcntl
 from hashlib import sha256
 
 import pytest
+
+pytest.importorskip("fcntl", reason="Pi writer locking requires Linux")
+
+import fcntl
+
 from sqlalchemy import select
 from test_agent_sessions import Computer, Model, call, state
 
