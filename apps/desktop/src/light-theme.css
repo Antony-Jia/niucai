@@ -360,3 +360,38 @@ footer {
   color: #927039;
   font-size: 12px;
 }
+.connection-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.connection-list li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #e2e7ee;
+  border-radius: 8px;
+}
+.connection-list li[data-active="true"] {
+  border-color: #5676a0;
+}
+.connection-list li > div:first-child {
+  display: grid;
+  min-width: 0;
+}
+.connection-list small {
+  color: #788597;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.connection-switch {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0;
+  font-size: 12px;
+}

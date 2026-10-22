@@ -4,6 +4,7 @@ import { native } from "../lib/api";
 import { useApp } from "../lib/state";
 import { Header } from "../components/ui";
 import { KernelManager } from "../components/KernelManager";
+import { ConnectionList } from "../components/Connections";
 export function Settings() {
   const {
     profile,
@@ -14,6 +15,7 @@ export function Settings() {
     notify,
     explore,
   } = useApp();
+  const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [computerUrl, setComputerUrl] = useState("");
   const [token, setToken] = useState("");
@@ -21,6 +23,7 @@ export function Settings() {
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     if (profile) {
+      setName(profile.name ?? "");
       setBaseUrl(profile.base_url);
       setComputerUrl(profile.computer_url);
       setRemember(profile.remember_token);
@@ -29,13 +32,26 @@ export function Settings() {
   async function submit() {
     setBusy(true);
     try {
-      await connectTo({ baseUrl, computerUrl, token, rememberToken: remember });
+      await connectTo({
+        baseUrl,
+        computerUrl,
+        token,
+        rememberToken: remember,
+        name: name.trim() || undefined,
+      });
       setToken("");
     } catch (e) {
       notify(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
+  }
+  function addConnection() {
+    setName("");
+    setBaseUrl("");
+    setComputerUrl("");
+    setToken("");
+    setRemember(true);
   }
   return (
     <>
@@ -46,6 +62,7 @@ export function Settings() {
       />
       <div className="settings-grid">
         <KernelManager />
+        <ConnectionList onAdd={addConnection} />
         <section className="panel">
           <div className="section-heading">
             <h2>
@@ -65,6 +82,15 @@ export function Settings() {
               void submit();
             }}
           >
+            <label>
+              连接名称
+              <input
+                value={name}
+                maxLength={40}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="例如：本机、公司服务器"
+              />
+            </label>
             <label>
               Kernel 地址
               <input

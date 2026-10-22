@@ -46,13 +46,15 @@ export function TaskResult({
       {!task.checkpoint.result && task.checkpoint.report?.summary && (
         <p className="preserve">{task.checkpoint.report.summary}</p>
       )}
-      {terminal && !task.checkpoint.result && !task.checkpoint.report?.summary && (
-        <p className="muted">
-          {task.status === "COMPLETED"
-            ? "任务已完成，暂无文字摘要。"
-            : "任务未完成，已生成的文件仍保留。"}
-        </p>
-      )}
+      {terminal &&
+        !task.checkpoint.result &&
+        !task.checkpoint.report?.summary && (
+          <p className="muted">
+            {task.status === "COMPLETED"
+              ? "任务已完成，暂无文字摘要。"
+              : "任务未完成，已生成的文件仍保留。"}
+          </p>
+        )}
       {typeof lastPage === "string" && (
         <p className="preserve">最后成功观测页面：{lastPage}</p>
       )}

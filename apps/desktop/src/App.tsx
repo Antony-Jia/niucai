@@ -18,6 +18,7 @@ import { Files, MemoryPage } from "./pages/FilesMemory";
 import { Settings } from "./pages/Settings";
 import { RemotePi } from "./pages/RemotePi";
 import { Bots } from "./pages/Bots";
+import { ConnectionSwitcher } from "./components/Connections";
 import type { Page } from "./lib/types";
 const navigation: { id: Page; label: string; icon: typeof Monitor }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -145,8 +146,11 @@ export function App() {
           <p>
             {demo
               ? "数据仅用于体验"
-              : profile?.base_url || "准备好时，连接你的电脑。"}
+              : profile?.name ||
+                profile?.base_url ||
+                "准备好时，连接你的电脑。"}
           </p>
+          <ConnectionSwitcher />
           <button className="text-button" onClick={() => setPage("settings")}>
             连接设置 <ChevronRight size={14} />
           </button>

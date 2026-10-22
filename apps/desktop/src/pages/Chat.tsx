@@ -202,7 +202,7 @@ export function Chat({
                   {item.message.role === "user"
                     ? "你"
                     : bots.data?.find(
-                    (b) => b.id === item.message?.sender_agent_id,
+                        (b) => b.id === item.message?.sender_agent_id,
                       )?.name ||
                       item.message.sender_agent_id ||
                       "niucai"}

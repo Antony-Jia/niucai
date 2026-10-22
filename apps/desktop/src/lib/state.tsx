@@ -17,16 +17,27 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  activateConnection,
   api,
   closeComputer,
   connect,
   disconnect,
   isDemo,
+  listConnections,
   loadProfile,
   native,
+  probeConnections,
+  removeConnection,
   setDemo,
 } from "./api";
-import type { ConnectionInput, KernelEvent, Page, Profile } from "./types";
+import type {
+  ConnectionInput,
+  ConnectionProbe,
+  KernelEvent,
+  Page,
+  Profile,
+} from "./types";
+import { connectionKey } from "./types";
 
 interface State {
   page: Page;
@@ -34,6 +45,11 @@ interface State {
   connected: boolean;
   demo: boolean;
   profile: Profile | null;
+  connections: Profile[];
+  probes: Record<string, ConnectionProbe>;
+  switchTo: (key: string) => Promise<void>;
+  removeSaved: (key: string) => Promise<void>;
+  probe: () => Promise<void>;
   stream: string;
   synchronizing: boolean;
   notice: string;
@@ -60,11 +76,28 @@ function StateProvider({ children }: { children: ReactNode }) {
   const [page, setPage] = useState<Page>("dashboard");
   const [connected, setConnected] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [connections, setConnections] = useState<Profile[]>([]);
+  const [probes, setProbes] = useState<Record<string, ConnectionProbe>>({});
   const [demo, setDemoState] = useState(false);
   const [stream, setStream] = useState("未连接");
   const [synchronizing, setSynchronizing] = useState(false);
   const [notice, notify] = useState("");
   const cache = useQueryClient();
+  const refreshConnections = useCallback(async () => {
+    try {
+      setConnections((await listConnections()).connections);
+    } catch {
+      /* 列表只是便利功能，失败不影响当前连接 */
+    }
+  }, []);
+  const probe = useCallback(async () => {
+    try {
+      const results = await probeConnections();
+      setProbes(Object.fromEntries(results.map((r) => [r.key, r])));
+    } catch {
+      setProbes({});
+    }
+  }, []);
   const disconnectFrom = useCallback(async () => {
     try {
       await disconnect();
@@ -75,8 +108,9 @@ function StateProvider({ children }: { children: ReactNode }) {
       setStream("未连接");
       setSynchronizing(false);
       setProfile((p) => (p ? { ...p, has_token: false } : null));
+      void refreshConnections();
     }
-  }, [cache]);
+  }, [cache, refreshConnections]);
   const connectTo = useCallback(
     async (input: ConnectionInput) => {
       const p = await connect(input);
@@ -88,8 +122,39 @@ function StateProvider({ children }: { children: ReactNode }) {
       setStream(native() ? "连接中" : "轮询同步");
       setSynchronizing(native());
       notify("已连接 Kernel");
+      void refreshConnections();
     },
-    [cache],
+    [cache, refreshConnections],
+  );
+  const switchTo = useCallback(
+    async (key: string) => {
+      const p = await activateConnection(key);
+      setDemo(false);
+      cache.clear();
+      setProfile(p);
+      setDemoState(false);
+      setConnected(true);
+      setStream(native() ? "连接中" : "轮询同步");
+      setSynchronizing(native());
+      notify(`已切换到 ${p.name || p.base_url}`);
+      void refreshConnections();
+    },
+    [cache, refreshConnections],
+  );
+  const removeSaved = useCallback(
+    async (key: string) => {
+      const removingActive = profile && connectionKey(profile) === key;
+      await removeConnection(key);
+      if (removingActive) {
+        cache.clear();
+        setConnected(false);
+        setStream("未连接");
+        setSynchronizing(false);
+        setProfile((p) => (p ? { ...p, has_token: false } : null));
+      }
+      await refreshConnections();
+    },
+    [cache, profile, refreshConnections],
   );
   function explore() {
     void closeComputer()
@@ -111,6 +176,7 @@ function StateProvider({ children }: { children: ReactNode }) {
       .then(async (p) => {
         if (!active) return;
         setProfile(p);
+        void refreshConnections();
         if (p.has_token) {
           try {
             await api.tasks();
@@ -133,7 +199,7 @@ function StateProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [refreshConnections]);
   useEffect(() => {
     if (!connected || demo || !native()) return;
     let stopped = false;
@@ -225,6 +291,11 @@ function StateProvider({ children }: { children: ReactNode }) {
         connected,
         demo,
         profile,
+        connections,
+        probes,
+        switchTo,
+        removeSaved,
+        probe,
         stream,
         synchronizing,
         notice,

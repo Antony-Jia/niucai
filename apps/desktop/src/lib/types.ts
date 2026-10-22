@@ -143,6 +143,7 @@ export interface Timeline {
 export interface Profile {
   kernel_instance_id?: string;
   computer_id?: string;
+  name?: string;
   base_url: string;
   computer_url: string;
   remember_token: boolean;
@@ -154,7 +155,19 @@ export interface ConnectionInput {
   computerUrl: string;
   token: string;
   rememberToken: boolean;
+  name?: string;
 }
+export interface ConnectionList {
+  active: string;
+  connections: Profile[];
+}
+export type ProbeStatus = "online" | "offline" | "auth" | "no_token";
+export interface ConnectionProbe {
+  key: string;
+  status: ProbeStatus;
+  error?: string | null;
+}
+export const connectionKey = (p: Profile) => p.kernel_instance_id || p.base_url;
 export type Page =
   | "bots"
   | "remote"

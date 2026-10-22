@@ -7,6 +7,8 @@ import type {
   Memory,
   Message,
   Profile,
+  ConnectionList,
+  ConnectionProbe,
   Task,
   Approval,
   ConnectionInput,
@@ -60,6 +62,23 @@ export async function connect(input: ConnectionInput): Promise<Profile> {
   if (browserBridge) return browserBridge.connect(input);
   if (!native()) throw new Error("连接真实服务器需要桌面客户端。");
   return invoke("connect_kernel", { input });
+}
+const noConnections: ConnectionList = { active: "", connections: [] };
+export async function listConnections(): Promise<ConnectionList> {
+  if (browserBridge || !native()) return noConnections;
+  return (
+    (await invoke<ConnectionList | null>("list_connections")) ?? noConnections
+  );
+}
+export async function activateConnection(key: string): Promise<Profile> {
+  return invoke("activate_connection", { key });
+}
+export async function removeConnection(key: string) {
+  await invoke("remove_connection", { key });
+}
+export async function probeConnections(): Promise<ConnectionProbe[]> {
+  if (browserBridge || !native()) return [];
+  return (await invoke<ConnectionProbe[] | null>("probe_connections")) ?? [];
 }
 export async function disconnect() {
   if (browserBridge) await browserBridge.disconnect();

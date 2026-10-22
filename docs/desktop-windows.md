@@ -20,7 +20,17 @@ Desktop 使用 Tauri 2 + React + TypeScript，优先支持 Windows 10/11 x64。K
 
 公网只允许 HTTPS/WSS；HTTP 只允许 localhost / 127.0.0.1 / ::1 调试。Kernel REST 请求通过 Rust 原生网络层发送，不需要开放 CORS。请求禁止跨源重定向，Token 不写进 URL、浏览器 localStorage 或远程桌面页面。远程桌面的登录由其独立认证入口完成。
 
-Windows 系统凭据条目的服务名为 `niucai.desktop`，账户名为 Kernel 源站哈希。Settings 的断开并清除凭据会删除当前连接的保存项。连接另一个源站时，旧源站保存项不会自动删除；可在 Windows 凭据管理器清理。
+Windows 系统凭据条目的服务名为 `niucai.desktop`，账户名为 Kernel 实例 ID 的哈希（旧版为源站哈希）。Settings 的断开并清除凭据会删除当前连接的保存项。
+
+### 多个 Kernel 连接
+
+客户端可同时保存多个 Kernel，例如本机受管 Kernel（`http://127.0.0.1:8080`）和通过 SSH 隧道访问的服务器（`http://127.0.0.1:18080`），并在两者之间切换。同一时刻只有一个“当前连接”，会话、任务和事件流都属于当前 Kernel；切换会清空前端缓存、重启事件流并关闭远程桌面窗口。
+
+- 连接列表保存在应用配置目录的 `connections.json`（只含名称、地址、实例 ID 与是否保存 Token，不含 Token）。旧版 `connection.json` 首次启动时自动迁入。以 Kernel 实例 ID 为键，同一 Kernel 换地址会更新原条目而不是新增。
+- Settings 的“已保存的连接”显示每个连接的状态（在线 / 无法访问 / Token 失效 / 未保存 Token），可切换、删除，或点“添加连接”填写新的名称、地址和 Token。侧边栏在保存了两个及以上连接时显示“切换 Kernel”。
+- 只能切换到已把 Token 保存到凭据管理器的连接；未保存的需在表单重新输入。切换时若服务器暂时不可达仍会切换并进入重连；若实例 ID 与保存值不一致则拒绝，防止地址被指向另一个 Kernel。
+- 删除连接会同时删除其凭据；“断开并清除凭据”只影响当前连接，其他连接保留。
+- 相关原生命令：`list_connections`、`activate_connection`、`remove_connection`、`probe_connections`；均仅主窗口可调用。
 
 ## 七个页面
 

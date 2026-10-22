@@ -49,7 +49,11 @@ export function taskProgress(
     (computer && computer.control !== "AGENT");
   if (!terminal) {
     operations.push("cancel");
-    if (["PENDING", "RUNNING", "WAITING_HUMAN", "WAITING_BOT"].includes(task.status))
+    if (
+      ["PENDING", "RUNNING", "WAITING_HUMAN", "WAITING_BOT"].includes(
+        task.status,
+      )
+    )
       operations.push("pause");
     if (["PAUSED", "WAITING_HUMAN"].includes(task.status) && !blocked)
       operations.push("resume");

@@ -14,6 +14,26 @@ struct Profile {
     remember_token: bool,
     #[serde(default)]
     kernel_instance_id: String,
+    #[serde(default)]
+    name: String,
+}
+#[derive(Default, Serialize, Deserialize)]
+struct Store {
+    #[serde(default)]
+    active: String,
+    #[serde(default)]
+    profiles: Vec<Profile>,
+}
+#[derive(Serialize)]
+struct ConnectionList {
+    active: String,
+    connections: Vec<ProfileView>,
+}
+#[derive(Serialize)]
+struct Probe {
+    key: String,
+    status: &'static str,
+    error: Option<String>,
 }
 #[derive(Serialize)]
 struct ProfileView {
@@ -29,6 +49,8 @@ struct ConnectionInput {
     computer_url: String,
     token: String,
     remember_token: bool,
+    #[serde(default)]
+    name: Option<String>,
 }
 #[derive(Default)]
 struct KernelState {
@@ -36,18 +58,60 @@ struct KernelState {
     events: Mutex<Option<tokio::task::JoinHandle<()>>>,
     remote_computer: Mutex<Option<String>>,
 }
-fn profile_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+fn profile_key(profile: &Profile) -> &str {
+    if profile.kernel_instance_id.is_empty() {
+        &profile.base_url
+    } else {
+        &profile.kernel_instance_id
+    }
+}
+fn default_name(base: &str) -> String {
+    match url::Url::parse(base)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+    {
+        Some(host) if matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]" | "::1") => {
+            "本机".into()
+        }
+        Some(host) => host,
+        None => base.to_string(),
+    }
+}
+// connections.json 保存多条连接（不含 Token）；旧版 connection.json 在首次读取时迁入。
+fn read_store(app: &tauri::AppHandle) -> Store {
+    let Ok(directory) = app.path().app_config_dir() else {
+        return Store::default();
+    };
+    if let Some(store) = fs::read(directory.join("connections.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Store>(&bytes).ok())
+    {
+        return store;
+    }
+    fs::read(directory.join("connection.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Profile>(&bytes).ok())
+        .filter(|p| !p.base_url.is_empty())
+        .map(|mut p| {
+            if p.name.is_empty() {
+                p.name = default_name(&p.base_url);
+            }
+            Store {
+                active: profile_key(&p).to_string(),
+                profiles: vec![p],
+            }
+        })
+        .unwrap_or_default()
+}
+fn write_store(app: &tauri::AppHandle, store: &Store) -> Result<(), String> {
     let directory = app
         .path()
         .app_config_dir()
         .map_err(|_| "无法定位配置目录")?;
     fs::create_dir_all(&directory).map_err(|_| "无法创建配置目录")?;
-    Ok(directory.join("connection.json"))
-}
-fn save_profile(app: &tauri::AppHandle, profile: &Profile) -> Result<(), String> {
     fs::write(
-        profile_path(app)?,
-        serde_json::to_vec_pretty(profile).map_err(|_| "配置格式错误")?,
+        directory.join("connections.json"),
+        serde_json::to_vec_pretty(store).map_err(|_| "配置格式错误")?,
     )
     .map_err(|_| "无法保存连接配置".into())
 }
@@ -112,16 +176,15 @@ async fn load_profile(
     state: State<'_, KernelState>,
 ) -> Result<ProfileView, String> {
     trusted(&window)?;
-    let profile: Profile = fs::read(profile_path(&app)?)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    let store = read_store(&app);
+    let profile: Profile = store
+        .profiles
+        .iter()
+        .find(|p| profile_key(p) == store.active)
+        .cloned()
         .unwrap_or_default();
     let token = if profile.remember_token {
-        remembered(if profile.kernel_instance_id.is_empty() {
-            &profile.base_url
-        } else {
-            &profile.kernel_instance_id
-        })
+        remembered(profile_key(&profile))
     } else {
         None
     };
@@ -170,16 +233,11 @@ async fn connect_kernel(
             .filter(|c| c.base == base)
             .map(|c| c.token.clone())
             .or_else(|| {
-                let saved: Option<Profile> = fs::read(profile_path(&app).ok()?)
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-                saved.filter(|p| p.base_url == base).and_then(|p| {
-                    remembered(if p.kernel_instance_id.is_empty() {
-                        &p.base_url
-                    } else {
-                        &p.kernel_instance_id
-                    })
-                })
+                read_store(&app)
+                    .profiles
+                    .iter()
+                    .find(|p| p.base_url == base)
+                    .and_then(|p| remembered(profile_key(p)))
             })
             .ok_or("请填写 API Token")?
     } else {
@@ -216,13 +274,40 @@ async fn connect_kernel(
     if !input.remember_token {
         forget(&instance_id)?;
     }
+    let mut store = read_store(&app);
+    let existing = store
+        .profiles
+        .iter()
+        .position(|p| profile_key(p) == instance_id || p.base_url == base);
+    let name = input
+        .name
+        .map(|n| n.trim().chars().take(40).collect::<String>())
+        .filter(|n| !n.is_empty())
+        .or_else(|| {
+            existing
+                .map(|i| store.profiles[i].name.clone())
+                .filter(|n| !n.is_empty())
+        })
+        .unwrap_or_else(|| default_name(&base));
     let profile = Profile {
         base_url: base,
         computer_url: input.computer_url,
         remember_token: input.remember_token,
-        kernel_instance_id: instance_id,
+        kernel_instance_id: instance_id.clone(),
+        name,
     };
-    save_profile(&app, &profile)?;
+    match existing {
+        Some(i) => {
+            let old = profile_key(&store.profiles[i]).to_string();
+            if old != instance_id {
+                forget(&old)?;
+            }
+            store.profiles[i] = profile.clone();
+        }
+        None => store.profiles.push(profile.clone()),
+    }
+    store.active = instance_id;
+    write_store(&app, &store)?;
     stop(&state);
     close_remote(&app)?;
     *state.connection.lock().unwrap() = Some(credentials);
@@ -238,26 +323,162 @@ fn disconnect_kernel(
     stop(&state);
     close_remote(&app)?;
     if let Some(c) = state.connection.lock().unwrap().take() {
-        let saved: Option<Profile> = fs::read(profile_path(&app)?)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-        let instance_id = saved.map(|p| p.kernel_instance_id).unwrap_or_default();
-        forget(if instance_id.is_empty() {
-            &c.base
-        } else {
-            &instance_id
-        })?;
-        save_profile(
-            &app,
-            &Profile {
-                base_url: c.base,
-                computer_url: c.computer_url,
-                remember_token: false,
-                kernel_instance_id: instance_id,
-            },
-        )?;
+        // 只断开并清除当前连接的凭据；其他已保存连接不受影响。
+        let mut store = read_store(&app);
+        let position = store
+            .profiles
+            .iter()
+            .position(|p| profile_key(p) == store.active)
+            .or_else(|| store.profiles.iter().position(|p| p.base_url == c.base));
+        match position {
+            Some(i) => {
+                forget(profile_key(&store.profiles[i]))?;
+                store.profiles[i].remember_token = false;
+            }
+            None => forget(&c.base)?,
+        }
+        store.active.clear();
+        write_store(&app, &store)?;
     }
     Ok(())
+}
+#[tauri::command]
+fn list_connections(
+    window: tauri::Webview,
+    app: tauri::AppHandle,
+) -> Result<ConnectionList, String> {
+    trusted(&window)?;
+    let store = read_store(&app);
+    let connections = store
+        .profiles
+        .iter()
+        .map(|p| view(p.clone(), remembered(profile_key(p)).is_some()))
+        .collect();
+    Ok(ConnectionList {
+        active: store.active,
+        connections,
+    })
+}
+#[tauri::command]
+async fn activate_connection(
+    window: tauri::Webview,
+    app: tauri::AppHandle,
+    state: State<'_, KernelState>,
+    key: String,
+) -> Result<ProfileView, String> {
+    trusted(&window)?;
+    let mut store = read_store(&app);
+    let profile = store
+        .profiles
+        .iter()
+        .find(|p| profile_key(p) == key)
+        .cloned()
+        .ok_or("未找到该连接")?;
+    validate_url(&profile.base_url)?;
+    let token = remembered(profile_key(&profile))
+        .ok_or("该连接没有保存 Token，请在连接表单中重新输入并验证")?;
+    let credentials = Credentials {
+        base: profile.base_url.clone(),
+        token,
+        computer_url: profile.computer_url.clone(),
+    };
+    if !profile.kernel_instance_id.is_empty() {
+        // 服务器暂时不可达时仍允许切换，由前端的重连流程处理；身份变化则必须拒绝。
+        if let Ok(identity) =
+            transport::request(&credentials, "/api/kernel/identity", "GET", Value::Null).await
+        {
+            if identity["kernel_instance_id"].as_str() != Some(&profile.kernel_instance_id) {
+                return Err("控制中心实例身份变化，请重新连接并核验".into());
+            }
+        }
+    }
+    stop(&state);
+    close_remote(&app)?;
+    *state.connection.lock().unwrap() = Some(credentials);
+    store.active = key;
+    write_store(&app, &store)?;
+    Ok(view(profile, true))
+}
+#[tauri::command]
+fn remove_connection(
+    window: tauri::Webview,
+    app: tauri::AppHandle,
+    state: State<KernelState>,
+    key: String,
+) -> Result<(), String> {
+    trusted(&window)?;
+    let mut store = read_store(&app);
+    let Some(i) = store.profiles.iter().position(|p| profile_key(p) == key) else {
+        return Ok(());
+    };
+    forget(&key)?;
+    store.profiles.remove(i);
+    if store.active == key {
+        stop(&state);
+        close_remote(&app)?;
+        state.connection.lock().unwrap().take();
+        store.active.clear();
+    }
+    write_store(&app, &store)
+}
+#[tauri::command]
+async fn probe_connections(
+    window: tauri::Webview,
+    app: tauri::AppHandle,
+    state: State<'_, KernelState>,
+) -> Result<Vec<Probe>, String> {
+    trusted(&window)?;
+    let store = read_store(&app);
+    let active = state.connection.lock().unwrap().clone();
+    let probes = store.profiles.into_iter().map(|p| {
+        let key = profile_key(&p).to_string();
+        let token = match active.as_ref().filter(|c| c.base == p.base_url) {
+            Some(c) => Some(c.token.clone()),
+            None => remembered(&key),
+        };
+        async move {
+            let Some(token) = token else {
+                return Probe {
+                    key,
+                    status: "no_token",
+                    error: None,
+                };
+            };
+            let credentials = Credentials {
+                base: p.base_url,
+                token,
+                computer_url: p.computer_url,
+            };
+            let probe = tokio::time::timeout(
+                std::time::Duration::from_secs(6),
+                transport::request(&credentials, "/api/computers", "GET", Value::Null),
+            )
+            .await;
+            match probe {
+                Ok(Ok(_)) => Probe {
+                    key,
+                    status: "online",
+                    error: None,
+                },
+                Ok(Err(error)) if error.contains("API Token") => Probe {
+                    key,
+                    status: "auth",
+                    error: Some(error),
+                },
+                Ok(Err(error)) => Probe {
+                    key,
+                    status: "offline",
+                    error: Some(error),
+                },
+                Err(_) => Probe {
+                    key,
+                    status: "offline",
+                    error: Some("连接超时".into()),
+                },
+            }
+        }
+    });
+    Ok(futures_util::future::join_all(probes).await)
 }
 #[tauri::command]
 async fn api_request(
@@ -601,6 +822,7 @@ async fn managed_kernel(
                 computer_url: String::new(),
                 token,
                 remember_token: true,
+                name: Some("本机".into()),
             },
         )
         .await?;
@@ -638,6 +860,10 @@ pub fn run() {
             load_profile,
             connect_kernel,
             disconnect_kernel,
+            list_connections,
+            activate_connection,
+            remove_connection,
+            probe_connections,
             api_request,
             open_computer,
             embed_computer,
@@ -664,12 +890,38 @@ mod tests {
         assert!(trusted_labels("main", "computer").is_err());
     }
     #[test]
+    fn connection_names_and_keys() {
+        assert_eq!(default_name("http://127.0.0.1:8080"), "本机");
+        assert_eq!(
+            default_name("https://kernel.example.com"),
+            "kernel.example.com"
+        );
+        let mut profile = Profile {
+            base_url: "https://a.example".into(),
+            ..Profile::default()
+        };
+        assert_eq!(profile_key(&profile), "https://a.example");
+        profile.kernel_instance_id = "id-1".into();
+        assert_eq!(profile_key(&profile), "id-1");
+    }
+    #[test]
+    fn legacy_store_defaults_are_empty() {
+        let store: Store = serde_json::from_str("{}").unwrap();
+        assert!(store.active.is_empty() && store.profiles.is_empty());
+        let old: Profile = serde_json::from_str(
+            r#"{"base_url":"http://x","computer_url":"","remember_token":true}"#,
+        )
+        .unwrap();
+        assert!(old.name.is_empty() && old.kernel_instance_id.is_empty());
+    }
+    #[test]
     fn profile_contains_no_token() {
         let serialized = serde_json::to_string(&Profile {
             base_url: "https://example.com".into(),
             computer_url: String::new(),
             remember_token: true,
             kernel_instance_id: "test-instance".into(),
+            name: "测试".into(),
         })
         .unwrap();
         assert!(!serialized.contains("secret-token"));
