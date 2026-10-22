@@ -33,5 +33,6 @@ K1/K2 与 L1/L2 首批实现已进入源码，进度合同见 [API](api.md)；�
 - [多资源节点接入验收](resource-nodes-validation-20261011.md)：Docker/VPS 接入向导、下载配置、节点管理、并发锁与独立 Docker 验证。
 - [多 Bot 协作方案](multi-bot-collaboration.md)：Bot 身份、异步交接、群聊、并发 Worker 与 Routine 设计；B1–B5 代码已实现，部分实机验收待完成，详见该文关联验收记录。
 - [Kernel Anywhere 合同](kernel-anywhere-contract.md)：实例身份、版本快照、连接模式、固定资源与二进制协议。
+- [给 Hermes 的远程部署说明](handoff/hermes-remote-deploy.md)：服务器新装/升级、验收清单、备份回滚，以及让桌面同时保存本机与服务器连接。配套 `deploy/compose/remote-init.sh` 与 `make-remote-bundle.ps1`。
 - [Kernel Anywhere 操作手册](kernel-anywhere-operations.md)：本机受管部署、VPS SSH 通道、独立验证与冷备份恢复。
 - [Kernel Anywhere 本地验收](kernel-anywhere-validation-20261013.md)：本轮测试证据及未完成的现场验收。

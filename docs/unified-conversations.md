@@ -44,6 +44,16 @@ Kernel 先将消息落库，再由 Worker 通过 stdio 投递 Pi。消息 ID 是
 
 收到补充要求后，尚未执行的提案和待审批动作变为 DENIED；已执行动作不撤销，UNKNOWN 仍需人工核实。模型请求期间目标发生变化时，旧响应中的动作被拒绝。取消后启动下一轮前，Pi 撤销旧轮次的未完成工作，避免旧工具被归属到新执行。
 
+## 任务收尾报告
+
+每轮执行结束时，Worker 调用 `niucai.control.report` 把过程整理成结论，避免“查到了就停、没有结果”：
+
+- 适用于 COMPLETED、FAILED，以及因预算耗尽（`model turn budget exhausted` / `step budget exhausted`）进入 WAITING_HUMAN 的轮次；其他等待（审批、接管、登录）不生成报告。
+- 事实只来自 Kernel 记录的 Action 与 Artifact：访问过的页面（`browser.navigate`）、产出文件（Artifact）、`files.write` 写入的路径、下载/安装类命令（curl、wget、aria2c、git、pip、npm、yt-dlp 及退出码）、最近失败和页面文本摘录。
+- 已有非空最终答复时原样保留，仅追加“访问的页面”“产出的文件”等段落，不额外调用模型。答复为空或预算耗尽时，用 `summarizer` 角色根据事实写结论；模型不可用或调用失败则用确定性文字。FAILED 不再调用模型。
+- 结果写入 `checkpoint.report`：`status, reason, visited, files, written, downloads, actions, failures, summary`。COMPLETED 同时把 `summary` 作为 `checkpoint.result`；非 COMPLETED 的文字作为 assistant 消息追加到会话（内部字段 `report_message` 不落库）。桌面任务结果区在没有 `result` 时显示 `report.summary`。
+- 上下文策略同时提示模型：找到信息后不要停下，应给出回答用户目标的结果，并说明产出或下载的文件。
+
 ## 迁移与部署顺序
 
 新增迁移 `a7c21010d001`。它保留原 Chat 历史，将遗留 PENDING 回复标记为 INTERRUPTED；每个原任务独立补建会话，保留任务 ID、checkpoint、动作、审批和产物。没有关联证据的聊天与任务不配对。
