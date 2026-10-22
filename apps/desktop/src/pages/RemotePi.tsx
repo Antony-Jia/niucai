@@ -3,13 +3,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Header } from "../components/ui";
 import { request } from "../lib/api";
 import { useApp } from "../lib/state";
+import {
+  ResourceManager,
+  type ResourceNode,
+} from "../components/ResourceManager";
 
-interface Node {
-  id: string;
-  name: string;
-  status: string;
-  capabilities: { version?: string; available?: boolean };
-}
 interface Job {
   id: string;
   prompt: string;
@@ -29,7 +27,7 @@ export function RemotePi() {
   const enabled = connected && !demo;
   const nodes = useQuery({
     queryKey: ["remote-nodes"],
-    queryFn: () => request<Node[]>("/api/remote/nodes"),
+    queryFn: () => request<ResourceNode[]>("/api/remote/nodes"),
     enabled,
     refetchInterval: 3000,
   });
@@ -39,11 +37,13 @@ export function RemotePi() {
     enabled,
     refetchInterval: 2000,
   });
-  const [name, setName] = useState("");
-  const [credential, setCredential] = useState<{
-    id: string;
-    token: string;
-  } | null>(null);
+  const config = useQuery({
+    queryKey: ["remote-config"],
+    queryFn: () => request<{ enabled: boolean }>("/api/remote/config"),
+    enabled,
+    refetchInterval: 3000,
+  });
+  const executionEnabled = enabled && config.data?.enabled === true;
   const [prompt, setPrompt] = useState("");
   const [node, setNode] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
@@ -67,7 +67,7 @@ export function RemotePi() {
     <>
       <Header
         eyebrow="REMOTE PI"
-        title="节点与远程任务"
+        title="执行资源与远程任务"
         description="Pi 在各节点独立执行，Kernel 管理排队、授权与结果。每节点同时执行一个任务。"
       />
       {!enabled && (
@@ -80,55 +80,22 @@ export function RemotePi() {
           无法获取远程节点数据，请检查 Kernel 连接和版本。
         </p>
       )}
+      {enabled && config.data?.enabled === false && (
+        <p className="panel" role="alert">
+          远程执行未启用。请在 Kernel API 与 Worker 配置
+          NIUCAI_REMOTE_PI_ENABLED=true 并重启；节点 Runner 无需主 Kernel 凭据。
+        </p>
+      )}
+      {config.isError && (
+        <p role="alert">无法读取资源配置，请检查 Kernel 版本及连接。</p>
+      )}
       <div className="settings-grid">
-        <section className="panel">
-          <h2>Pi 执行节点</h2>
-          {nodes.data?.map((value) => (
-            <p key={value.id}>
-              <strong>{value.name}</strong> · {value.status} · Pi{" "}
-              {value.capabilities.version || "待接入"}
-              <br />
-              <small>{value.id}</small>
-            </p>
-          ))}
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void act(async () => {
-                const value = await request<{ id: string; token: string }>(
-                  "/api/remote/nodes",
-                  "POST",
-                  { name },
-                );
-                setCredential(value);
-                setName("");
-              });
-            }}
-          >
-            <label>
-              新节点名称
-              <input
-                required
-                maxLength={200}
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-              />
-            </label>
-            <button className="primary-button" disabled={!enabled || busy}>
-              创建节点凭证
-            </button>
-          </form>
-          {credential && (
-            <div>
-              <p>将以下凭证配置到该节点的 Node Runner；关闭后不再显示。</p>
-              <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-                NIUCAI_NODE_ID={credential.id}
-                {"\n"}NIUCAI_NODE_TOKEN={credential.token}
-              </pre>
-              <button onClick={() => setCredential(null)}>关闭凭证</button>
-            </div>
-          )}
-        </section>
+        <ResourceManager
+          nodes={nodes.data || []}
+          enabled={executionEnabled}
+          busy={busy}
+          act={act}
+        />
         <section className="panel">
           <h2>提交远程 Pi 任务</h2>
           <form
@@ -179,7 +146,10 @@ export function RemotePi() {
                 placeholder="说明目标、边界、验证方式与期望产物"
               />
             </label>
-            <button className="primary-button" disabled={!enabled || busy}>
+            <button
+              className="primary-button"
+              disabled={!executionEnabled || busy}
+            >
               提交并查看授权
             </button>
           </form>

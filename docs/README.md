@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+- [Kernel 任意位置部署与多 Bot 协作落地计划](kernel-anywhere-implementation-plan.md)：2026-10-13 方案；一期支持 Desktop 与 Kernel 同机，涵盖本地 Docker/VPS 接入、Bot 一次配置、主任务协作、分阶段实施与验收。
+
 第一阶段已完成真实远端浏览器任务、人工审批、桌面连接及只读浏览器预览的链路验证。
 第二阶段按下面三份计划实施；文档中的拟议字段和能力不表示已经实现。
 K1/K2 与 L1/L2 首批实现已进入源码，进度合同见 [API](api.md)；远端切换和联合验收仍须另行完成。
@@ -28,4 +30,8 @@ K1/K2 与 L1/L2 首批实现已进入源码，进度合同见 [API](api.md)；�
 - [统一会话验收记录](unified-conversations-validation-20261010.md)：自动回归、真实模型与 Linux Chromium 验证及部署边界。
 - [本地 Docker 统一会话联调](local-unified-testing.md)：独立 API、Pi、PostgreSQL、Computer、VNC 和手机入口。
 - [远程 Pi 执行节点 V1](remote-pi-nodes.md)：节点凭证、工作包授权、队列与租约、主 Pi 委派、双 Docker 节点模拟与恢复边界。
-- [多 Bot 协作方案（草案）](multi-bot-collaboration.md)：参考 Grok Bot 的 Bot 身份、异步交接、群聊、并发 Worker 与 Routine 分阶段设计，尚未实现。
+- [多资源节点接入验收](resource-nodes-validation-20261011.md)：Docker/VPS 接入向导、下载配置、节点管理、并发锁与独立 Docker 验证。
+- [多 Bot 协作方案](multi-bot-collaboration.md)：Bot 身份、异步交接、群聊、并发 Worker 与 Routine 设计；B1–B5 代码已实现，部分实机验收待完成，详见该文关联验收记录。
+- [Kernel Anywhere 合同](kernel-anywhere-contract.md)：实例身份、版本快照、连接模式、固定资源与二进制协议。
+- [Kernel Anywhere 操作手册](kernel-anywhere-operations.md)：本机受管部署、VPS SSH 通道、独立验证与冷备份恢复。
+- [Kernel Anywhere 本地验收](kernel-anywhere-validation-20261013.md)：本轮测试证据及未完成的现场验收。

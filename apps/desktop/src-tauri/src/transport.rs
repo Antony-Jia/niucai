@@ -67,9 +67,10 @@ pub async fn request(
         "GET" => http.get(url),
         "POST" => http.post(url),
         "PUT" => http.put(url),
+        "PATCH" => http.patch(url),
         _ => return Err("不支持的请求方法".into()),
     };
-    if matches!(method, "POST" | "PUT") && !body.is_null() {
+    if matches!(method, "POST" | "PUT" | "PATCH") && !body.is_null() {
         request = request.json(&body);
     }
     if path == "/api/chat" {

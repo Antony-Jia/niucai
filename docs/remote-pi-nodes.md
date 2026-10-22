@@ -32,6 +32,55 @@ docker compose --env-file build-cache/remote-pi/.env -f deploy/compose/compose.r
 
 ## 接入实际节点
 
+### 资源接入向导
+
+桌面“远程 Pi”及手机菜单中的节点页面共用资源接入向导。先迁移数据库至最新版本，
+在 Kernel API 和 Worker 配置 `NIUCAI_REMOTE_PI_ENABLED=true` 并重启；默认仍关闭。
+
+1. 点击“新增资源”，选择“本地 Docker”或“远程 VPS”，填写名称、节点可访问的 Kernel 地址、
+   Pi provider/model 及可选模型服务地址。Windows Docker Desktop 使用 Linux 容器。
+2. 创建后下载 ZIP；包含 `.env`、`compose.yml` 和对应平台的 `README.txt`。
+   凭据只在创建或重置响应返回，界面关闭、断开连接或切换 Kernel 后清除，不写入客户端缓存。
+   配置包含独立节点 token，需私有保存；模型 API Key 在节点本机 `.env` 填写，不上传 Kernel。
+3. 在节点机器准备与 Kernel 匹配版本的源码，将包解压至源码的 `build-cache/node-<id>/`。
+   其他目录需修改 `.env` 中 `NIUCAI_SOURCE_PATH`。不依赖预发布镜像，Compose 使用现有 Runner Dockerfile 构建。
+4. 进入解压目录执行 `docker compose -f compose.yml up -d --build`，等待页面显示真实心跳上线、Pi 可用。
+   再提交并批准工作包，以实际结果确认模型可用；单纯在线不代表模型凭据已验证。
+
+容器内 `localhost` 是节点自身。Kernel 在宿主机时可使用 `host.docker.internal`，但 Kernel
+必须监听容器可达的接口；仅绑定宿主机回环的 API 不能直接接入。同一 Docker 网络可用服务名，
+跨网络使用可达地址。VPS 向导要求 HTTPS Kernel 地址；不自动建立隧道、开放端口或安装 SSH。
+
+资源列表分开展示连接状态（待接入/在线/离线）、调度开关、Pi 可用性及占用任务。
+可以改名、修改资源分类、启停调度、空闲时重置凭据。停用不关闭容器；存在 RUNNING、CANCELLING
+或 LOST 任务时禁止停用及重置，必须先确认原进程退出，不支持强制释放或删除节点。
+重置立即使旧 token 失效并清空旧心跳；更新原容器 `.env` 后执行
+`docker compose -f compose.yml up -d --force-recreate`，保留原项目名与数据卷，不能使用 `down -v`。
+下载配置仍需重新填写模型参数；旧 API Key 保留在本机，不从 Kernel 取回。
+
+既有节点迁移为 `unspecified`（未分类），保留原 ID、凭据、授权及任务关联；可在页面修改分类。
+
+### 独立资源验收
+
+```powershell
+cd services/kernel
+uv run --no-sync python ../../deploy/compose/verify-resource-nodes.py
+```
+
+使用独立 Compose 项目 `niucai-resource-test`、API `http://127.0.0.1:38182` 和独立卷，
+不迁移或清空现有部署数据库。验证真实 Pi CLI 双节点并行、第三任务排队、占用管理冲突、
+停用后仍在线、启用恢复调度、旧 token 失效及原节点重连执行，以及 LOST 占用和重启核对。
+凭据位于 gitignored 的 `build-cache/resource-nodes/.env`，结果位于同目录 `verification.json`。
+模型为确定性模拟，不代表真实模型质量或真实 VPS 验收；真实 VPS 需另行确认可达环境、心跳和工作包结果。
+
+停止验收环境并保留数据：
+
+```powershell
+docker compose -p niucai-resource-test --env-file build-cache/resource-nodes/.env -f deploy/compose/compose.remote-pi.yml down
+```
+
+### 手动接入
+
 1. 在客户端创建节点，保存只显示一次的 ID/token；数据库只存 token 哈希。
 2. 构建 `services/node-runner/Dockerfile`，在实际 VPS 或本地 Docker 的 Linux 容器中启动。参考模拟 Compose 的 runner 权限、只读文件系统、独立卷、tmpfs 和 init 配置。
 3. 配置下表变量；节点不需要主 Kernel API token。
@@ -72,12 +121,20 @@ Runner 使用服务身份，Pi 切换到 UID 10001，环境不携带节点/Kerne
 |---|---|
 | `POST /api/remote/nodes` | 创建节点，body 为 name；原始 token 只返回一次 |
 | `GET /api/remote/nodes` | 在线状态、能力、容量，不返回凭据 |
+| `GET /api/remote/config` | 远程执行开关，用于客户端显示启用指引 |
+| `PATCH /api/remote/nodes/{id}` | 可选 name、resource_type、enabled；停用要求无占用任务 |
+| `POST /api/remote/nodes/{id}/rotate-token` | 空闲时重置凭据；新 token 仅本次返回 |
 | `POST /api/remote/jobs` | prompt、idempotency_key、allowed_nodes、可选 parent_task_id |
 | `GET /api/remote/jobs?parent_task_id=...` | 子任务列表 |
 | `GET /api/remote/jobs/{id}` | 状态、会话标识、结果 |
 | `GET /api/remote/jobs/{id}/events?after=0` | 全局游标事件回放 |
 | `POST /api/remote/jobs/{id}/approve` 或 `deny` | 工作包授权 |
 | `POST /api/remote/jobs/{id}/cancel` 或 `retry` | 取消或重新进入审批 |
+
+节点创建可选 `resource_type`：`local_docker`、`remote_vps` 或默认 `unspecified`。
+节点列表保持原数组形状，增加 `resource_type`、`connection_status`、`active_job`；
+`status` 的 ONLINE/OFFLINE 由心跳决定，不受调度 `enabled` 影响。
+凭据响应设置 `Cache-Control: no-store`；审计事件不包含 token。
 
 ## V1 限制
 

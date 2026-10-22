@@ -4,8 +4,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { RemotePi } from "../src/pages/RemotePi";
 import { request } from "../src/lib/api";
 
+const notify = vi.hoisted(() => vi.fn());
+
 vi.mock("../src/lib/state", () => ({
-  useApp: () => ({ connected: true, demo: false, notify: vi.fn() }),
+  useApp: () => ({ connected: true, demo: false, notify }),
   queryClient: new QueryClient(),
 }));
 vi.mock("../src/lib/api", () => ({ request: vi.fn(), setDemo: vi.fn() }));
@@ -13,6 +15,7 @@ afterEach(() => vi.clearAllMocks());
 
 function mount(status: string) {
   vi.mocked(request).mockImplementation(async (path) => {
+    if (path === "/api/remote/config") return { enabled: true } as never;
     if (path === "/api/remote/nodes") return [] as never;
     if (path === "/api/remote/jobs")
       return [
@@ -61,4 +64,42 @@ it("does not offer retry while a lost process has not been reconciled", async ()
   expect(
     screen.queryByRole("button", { name: "重试并重新授权" }),
   ).not.toBeInTheDocument();
+});
+
+it("reports a management conflict if a task claims the node after the idle snapshot", async () => {
+  vi.mocked(request).mockImplementation(async (path, method) => {
+    if (path === "/api/remote/config") return { enabled: true } as never;
+    if (path === "/api/remote/jobs") return [] as never;
+    if (path === "/api/remote/nodes")
+      return [
+        {
+          id: "node",
+          name: "Docker",
+          resource_type: "local_docker",
+          status: "ONLINE",
+          connection_status: "ONLINE",
+          enabled: 1,
+          capabilities: {},
+          active_job: null,
+        },
+      ] as never;
+    if (method === "PATCH")
+      throw new Error("节点仍有执行中、取消中或 LOST 任务，请先确认原任务退出");
+    return {} as never;
+  });
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <RemotePi />
+    </QueryClientProvider>,
+  );
+  const button = await screen.findByRole("button", { name: "停用调度" });
+  await waitFor(() => expect(button).toBeEnabled());
+  fireEvent.click(button);
+  await waitFor(() =>
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("原任务退出")),
+  );
 });
