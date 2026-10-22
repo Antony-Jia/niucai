@@ -1,3 +1,5 @@
+import { ActionCard } from "../components/ActionCard";
+import { actionStatus, describeAction } from "../lib/describe";
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -17,7 +19,6 @@ import {
   Empty,
   ErrorNotice,
   Header,
-  Json,
   Loading,
   Modal,
   statuses,
@@ -405,9 +406,10 @@ export function TaskDetail({
       {actions.data?.map((a) => (
         <details key={a.id} open={a.status === "UNKNOWN" ? true : undefined}>
           <summary>
-            {String(a.spec.type)} <span>{a.status}</span>
+            {describeAction(a.spec).title}{" "}
+            <span>{actionStatus[a.status] ?? a.status}</span>
           </summary>
-          <Json data={{ spec: a.spec, result: a.result }} />
+          <ActionCard spec={a.spec} result={a.result} showTitle={false} />
           {a.status === "UNKNOWN" && allows("reconcile") && (
             <div className="reconcile">
               <p>请先查看设备并确认此动作的实际结果。</p>

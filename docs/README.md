@@ -36,3 +36,4 @@ K1/K2 与 L1/L2 首批实现已进入源码，进度合同见 [API](api.md)；�
 - [给 Hermes 的远程部署说明](handoff/hermes-remote-deploy.md)：服务器新装/升级、验收清单、备份回滚，以及让桌面同时保存本机与服务器连接。配套 `deploy/compose/remote-init.sh` 与 `make-remote-bundle.ps1`。
 - [Kernel Anywhere 操作手册](kernel-anywhere-operations.md)：本机受管部署、VPS SSH 通道、独立验证与冷备份恢复。
 - [Kernel Anywhere 本地验收](kernel-anywhere-validation-20261013.md)：本轮测试证据及未完成的现场验收。
+- [YOLO、对话模式、依赖流程与技能/MCP](yolo-pipelines-extensions.md)：会话级免审批与对话模式、Bot 固定 VPS、按依赖传递结论与产物的多 Bot 流程、全局技能库与 MCP 服务器；自动化测试已覆盖，真实环境联合验收待完成。

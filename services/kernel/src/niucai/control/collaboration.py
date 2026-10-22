@@ -9,9 +9,11 @@ from hashlib import sha256
 
 from sqlalchemy import select, update
 
+from niucai.control.autonomy import inherit
 from niucai.control.bots import active_agent, definition, permitted, task_definition
 from niucai.control.conversations import ConversationManager, append_message, lock_conversation
 from niucai.control.tasks import Conflict, require
+from niucai.domain.schemas import pipeline_order
 from niucai.storage.db import (
     Action,
     Agent,
@@ -32,6 +34,8 @@ from niucai.storage.db import (
 
 DONE = {"REPLIED", "COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"}
 FINISHED = {"COMPLETED", "FAILED", "CANCELLED"}
+# 上游结论注入下游阶段时的单段上限；完整结论仍在上游阶段会话中。
+STAGE_RESULT_CHARS = 8000
 
 
 def gate(session, shared=False):
@@ -118,6 +122,8 @@ def settle_task(session, task, status):
 def wake(session, item):
     if not item.wait:
         return False
+    if "depends_on" in item.wait:
+        return wake_stage(session, item)
     workflow = require(session, Workflow, item.workflow_id)
     task = require(session, Task, item.task_id)
     rows = [require(session, Handoff, ident) for ident in item.wait["handoff_ids"]]
@@ -139,6 +145,247 @@ def wake(session, item):
             task.status, item.status = "PENDING", "QUEUED"
             emit(session, "task.resumed", task.id, reason="bot dependencies settled")
     return ready
+
+
+def wake_stage(session, item):
+    """依赖流程阶段：上游全部完成才放行；任一上游失败/取消则级联取消本阶段。"""
+    if item.status in FINISHED:
+        return False
+    workflow = require(session, Workflow, item.workflow_id)
+    upstream = [require(session, WorkItem, ident) for ident in item.wait["depends_on"]]
+    if any(up.status in {"FAILED", "CANCELLED"} for up in upstream):
+        emit(
+            session,
+            "work_item.blocked",
+            item.task_id,
+            workflow_id=workflow.id,
+            work_item_id=item.id,
+            reason="upstream stage did not complete",
+        )
+        cancel_items(session, workflow, [item])
+        return False
+    if not all(up.status == "COMPLETED" for up in upstream):
+        return False
+    task = require(session, Task, item.task_id)
+    if task.status != "WAITING_BOT" or workflow.status != "ACTIVE" or gate(session).stopped:
+        return True
+    task = require(session, Task, item.task_id, lock=True)
+    if task.status == "WAITING_BOT":
+        release_stage(session, workflow, item, task, upstream)
+    return True
+
+
+def release_stage(session, workflow, item, task, upstream):
+    """把上游结论与产物引用合成为本阶段的唯一任务输入，然后放行执行。"""
+    keys = {stage["work_item_id"]: stage["key"] for stage in workflow.limits.get("stages", [])}
+    artifacts, sections = list(item.artifacts), []
+    for up in upstream:
+        content = str(up.result.get("content", "")).strip() or "（无文本结论）"
+        if len(content) > STAGE_RESULT_CHARS:
+            content = content[:STAGE_RESULT_CHARS] + "\n……（已截断，完整结论见上游阶段会话）"
+        lines = [f"## 上游阶段 {keys.get(up.id, up.id)}（Bot {up.assignee_agent_id}）", content]
+        for ref in up.artifacts:
+            if ref not in artifacts:
+                artifacts.append(ref)
+            artifact = session.get(Artifact, ref["id"])
+            path = artifact.path if artifact else "?"
+            lines.append(f"- 产物 {ref['id']}（{ref['media_type']}，路径 {path}）")
+        sections.append("\n".join(lines))
+    sections.append(f"## 本阶段任务（{keys.get(item.id, item.id)}）\n{item.goal}")
+    if item.output_requirements:
+        sections.append(f"## 输出要求\n{item.output_requirements}")
+    if artifacts:
+        sections.append(
+            "上游产物可用 files.read 按路径读取，或作为 remote_pi_submit 的 artifacts 交给远端节点。"
+        )
+    incoming = session.scalar(select(Handoff).where(Handoff.to_work_item_id == item.id))
+    if incoming:
+        # 等待上游期间不计入本阶段的答复期限：从放行时刻重新计时。
+        incoming.deadline = now() + (incoming.deadline - incoming.created_at)
+    append_message(
+        session,
+        lock_conversation(session, item.conversation_id),
+        role="bot",
+        source="BOT",
+        kind="ASSIGNMENT",
+        content="\n\n".join(sections),
+        task_id=task.id,
+        sender_agent_id=incoming.from_agent_id if incoming else None,
+        handoff_id=incoming.id if incoming else None,
+        workflow_id=workflow.id,
+        work_item_id=item.id,
+    )
+    item.artifacts, item.wait, item.version = artifacts, {}, item.version + 1
+    task.status, item.status = "PENDING", "QUEUED"
+    emit(
+        session,
+        "work_item.unblocked",
+        task.id,
+        workflow_id=workflow.id,
+        work_item_id=item.id,
+        depends_on=[up.id for up in upstream],
+    )
+    emit(session, "task.resumed", task.id, reason="pipeline dependencies settled")
+
+
+def create_stages(session, settings, workflow, stages, parent=None, parent_task=None, key=""):
+    """建立依赖流程阶段：每个阶段独立会话与执行，有依赖的阶段以 WAITING_BOT 挂起。
+
+    parent/parent_task 为发起流程的 Bot 执行（bot_pipeline）；每个阶段对其形成一条
+    DELEGATE handoff，发起者可用 bot_wait 等待。REST 创建的流程没有发起执行。
+    """
+    order = pipeline_order(stages)
+    used = {stage["key"] for stage in workflow.limits.get("stages", [])}
+    if used & {stage.key for stage in order}:
+        raise Conflict("pipeline stage key already used in this workflow")
+    allowed = workflow.authorization.get("agents")
+    causal = hop = None
+    if parent is not None:
+        causal = session.scalar(select(Handoff).where(Handoff.to_work_item_id == parent.id))
+        hop = causal.hop + 1 if causal else 1
+        if hop > settings.handoff_max_hops:
+            raise Conflict("handoff hop limit exceeded")
+        if workflow.handoff_count + len(order) > workflow.limits["handoffs"]:
+            raise Conflict("workflow handoff hard limit exceeded")
+    source = parent_task.conversation_id if parent_task else workflow.origin_conversation_id
+    items, records = {}, []
+    for stage in order:
+        receiver = active_agent(session, stage.agent_id)
+        if allowed and stage.agent_id not in allowed:
+            raise PermissionError("stage Bot is outside the group authorization")
+        title = f"[{stage.key}] {stage.goal}"[:80]
+        conversation = ConversationManager.create_in(session, title, receiver.id)
+        inherit(session, source, conversation)
+        depends = [items[name].id for name in stage.depends_on]
+        checkpoint = {"runtime": "pi", "session_scope": "conversation"}
+        if parent_task is not None:
+            # 与 bot_send 相同：阶段权限不超过发起者与流程授权。
+            checkpoint["authorized_tools"] = workflow.authorization["tools"]
+            checkpoint["authorization_chain"] = [
+                *parent_task.checkpoint.get("authorization_chain", []),
+                definition(require(session, Agent, parent_task.agent_id)).tools,
+            ]
+        task = Task(
+            title=title,
+            goal=stage.goal,
+            agent_id=receiver.id,
+            conversation_id=conversation.id,
+            status="WAITING_BOT" if depends else "PENDING",
+            checkpoint=checkpoint,
+        )
+        session.add(task)
+        session.flush()
+        item = WorkItem(
+            workflow_id=workflow.id,
+            parent_work_item_id=parent.id if parent else None,
+            assignee_agent_id=receiver.id,
+            definition_snapshot=definition(receiver).model_dump(mode="json"),
+            conversation_id=conversation.id,
+            task_id=task.id,
+            goal=stage.goal,
+            output_requirements=stage.output_requirements,
+            wait={"depends_on": depends, "mode": "all"} if depends else {},
+            status="WAITING_BOT" if depends else "QUEUED",
+        )
+        session.add(item)
+        session.flush()
+        items[stage.key] = item
+        emit(session, "work_item.created", task.id, workflow_id=workflow.id, work_item_id=item.id)
+        handoff = None
+        if parent is not None:
+            handoff = Handoff(
+                workflow_id=workflow.id,
+                from_work_item_id=parent.id,
+                to_work_item_id=item.id,
+                from_agent_id=parent_task.agent_id,
+                to_agent_id=receiver.id,
+                from_conversation_id=parent_task.conversation_id,
+                to_conversation_id=conversation.id,
+                from_task_id=parent_task.id,
+                to_task_id=task.id,
+                caused_by_handoff_id=causal.id if causal else None,
+                kind="DELEGATE",
+                expects_reply=1,
+                hop=hop,
+                idempotency_key=f"{key}:{stage.key}",
+                payload={
+                    "to": receiver.id,
+                    "content": stage.goal,
+                    "kind": "DELEGATE",
+                    "expects_reply": True,
+                    "stage": stage.key,
+                    "depends_on": stage.depends_on,
+                    "output_requirements": stage.output_requirements,
+                },
+                deadline=now() + timedelta(seconds=settings.handoff_timeout_seconds),
+            )
+            session.add(handoff)
+            session.flush()
+            workflow.handoff_count += 1
+            for event in ("sent", "accepted"):
+                emit(
+                    session,
+                    f"handoff.{event}",
+                    parent_task.id,
+                    handoff_id=handoff.id,
+                    workflow_id=workflow.id,
+                    work_item_id=item.id,
+                )
+        if not depends:
+            content = stage.goal
+            if stage.output_requirements:
+                content += f"\n\n## 输出要求\n{stage.output_requirements}"
+            append_message(
+                session,
+                conversation,
+                role="bot" if parent_task else "user",
+                source="BOT" if parent_task else "USER",
+                kind="ASSIGNMENT",
+                content=content,
+                task_id=task.id,
+                sender_agent_id=parent_task.agent_id if parent_task else None,
+                handoff_id=handoff.id if handoff else None,
+                workflow_id=workflow.id,
+                work_item_id=item.id,
+            )
+        records.append(
+            {
+                "key": stage.key,
+                "agent_id": receiver.id,
+                "work_item_id": item.id,
+                "task_id": task.id,
+                "conversation_id": conversation.id,
+                "handoff_id": handoff.id if handoff else None,
+                "depends_on": stage.depends_on,
+            }
+        )
+    # 阶段图随流程持久化，供界面展示与结论注入时引用阶段名。
+    workflow.limits = {**workflow.limits, "stages": [*workflow.limits.get("stages", []), *records]}
+    workflow.version += 1
+    emit(session, "workflow.pipeline_created", workflow_id=workflow.id, stages=[r["key"] for r in records])
+    return records
+
+
+def conclude(session, workflow):
+    """所有工作项结束后结算流程状态。"""
+    outstanding = session.scalar(
+        select(WorkItem.id)
+        .where(WorkItem.workflow_id == workflow.id, WorkItem.status.not_in(FINISHED))
+        .limit(1)
+    )
+    if outstanding or workflow.status != "ACTIVE":
+        return
+    failures = session.scalar(
+        select(WorkItem.id).where(WorkItem.workflow_id == workflow.id, WorkItem.status == "FAILED").limit(1)
+    )
+    workflow.status = "FAILED" if failures else "COMPLETED"
+    final_agents = workflow.limits.get("final_agent_ids", [])
+    if final_agents:
+        stage = final_stage(session, workflow)
+        if stage is None or stage.status != "COMPLETED" or stage.assignee_agent_id not in final_agents:
+            workflow.status = "FAILED"
+    workflow.version += 1
+    emit(session, f"workflow.{workflow.status.lower()}", workflow_id=workflow.id)
 
 
 def lock_order(item):
@@ -166,7 +413,7 @@ def cancel_items(session, workflow, items, status="CANCELLED"):
             handoff.status, handoff.reply = status, {"error": status.lower()}
             emit(session, f"handoff.{status.lower()}", handoff.from_task_id, handoff_id=handoff.id)
     session.flush()
-    for item in session.scalars(select(WorkItem).where(WorkItem.workflow_id == workflow.id)):
+    for item in list(session.scalars(select(WorkItem).where(WorkItem.workflow_id == workflow.id))):
         wake(session, item)
 
 
@@ -325,6 +572,7 @@ class CollaborationManager:
                 raise Conflict("Bot pair rate limit exceeded")
             # Carry each policy independently: wildcards are intersected at execution time.
             conversation = ConversationManager.create_in(session, content[:80], receiver.id)
+            inherit(session, task.conversation_id, conversation)
             child = Task(
                 title=content[:80],
                 goal=content,
@@ -415,6 +663,50 @@ class CollaborationManager:
                 emit(session, "task.completed", task.id)
                 return {**as_dict(handoff), "complete": stage_output}
             return as_dict(handoff)
+
+    def pipeline(self, task_id, token, tool_id, stages, input_sequence=None):
+        """bot_pipeline：当前 Bot 一次性拆出带依赖的阶段，返回各阶段 handoff 供 bot_wait。"""
+        from niucai.actions.gateway import ActionGateway
+        from niucai.domain.schemas import PipelineStage
+
+        stages = [PipelineStage.model_validate(stage) for stage in stages]
+        pipeline_order(stages)
+        key = f"{task_id}:pipeline:{sha256(str(tool_id).encode()).hexdigest()}"
+        with self.db.sessions.begin() as session:
+            check_admission(session, self.settings)
+            task = require(session, Task, task_id, lock=True)
+            ActionGateway.check_task(task, token)
+            sender = permitted(session, task, "bot_pipeline")
+            current_sender = definition(require(session, Agent, task.agent_id))
+            for stage in stages:
+                policies = (sender, current_sender)
+                if any(p.delegates is not None and stage.agent_id not in p.delegates for p in policies):
+                    raise PermissionError("delegation outside Bot policy")
+            workflow, parent = self.root(session, task)
+            existing = [
+                record
+                for record in workflow.limits.get("stages", [])
+                if record.get("handoff_id")
+                and (handoff := session.get(Handoff, record["handoff_id"]))
+                and handoff.idempotency_key.startswith(f"{key}:")
+            ]
+            if existing:
+                if sorted(r["key"] for r in existing) != sorted(s.key for s in stages):
+                    raise Conflict("pipeline idempotency payload changed")
+                return {"workflow_id": workflow.id, "stages": existing}
+            user_revision(session, task, input_sequence)
+            if workflow.status != "ACTIVE":
+                raise Conflict("workflow is not active")
+            if (now() - workflow.created_at).total_seconds() > workflow.limits["seconds"]:
+                fail_workflow(session, workflow, "workflow time hard limit exceeded")
+                return {"status": "FAILED", "error": "workflow time hard limit exceeded"}
+            records = create_stages(session, self.settings, workflow, stages, parent, task, key)
+            return {
+                "workflow_id": workflow.id,
+                "stages": records,
+                "handoff_ids": [r["handoff_id"] for r in records],
+                "hint": "Use bot_wait on handoff_ids; downstream stages start after upstream ones complete.",
+            }
 
     def artifact_refs(self, session, workflow_id, references):
         result = []
@@ -595,31 +887,9 @@ class CollaborationManager:
             )
         session.flush()
         workflow = require(session, Workflow, item.workflow_id)
-        for waiting in session.scalars(select(WorkItem).where(WorkItem.workflow_id == workflow.id)):
+        for waiting in list(session.scalars(select(WorkItem).where(WorkItem.workflow_id == workflow.id))):
             wake(session, waiting)
-        outstanding = session.scalar(
-            select(WorkItem.id)
-            .where(WorkItem.workflow_id == workflow.id, WorkItem.status.not_in(FINISHED))
-            .limit(1)
-        )
-        if not outstanding and workflow.status == "ACTIVE":
-            failures = session.scalar(
-                select(WorkItem.id)
-                .where(WorkItem.workflow_id == workflow.id, WorkItem.status == "FAILED")
-                .limit(1)
-            )
-            workflow.status = "FAILED" if failures else "COMPLETED"
-            final_agents = workflow.limits.get("final_agent_ids", [])
-            if final_agents:
-                stage = final_stage(session, workflow)
-                if (
-                    stage is None
-                    or stage.status != "COMPLETED"
-                    or stage.assignee_agent_id not in final_agents
-                ):
-                    workflow.status = "FAILED"
-            workflow.version += 1
-            emit(session, f"workflow.{workflow.status.lower()}", workflow_id=workflow.id)
+        conclude(session, workflow)
 
     def tick(self):
         with self.db.sessions.begin() as session:
@@ -631,6 +901,8 @@ class CollaborationManager:
             for handoff in session.scalars(
                 select(Handoff).where(Handoff.status.not_in(DONE), Handoff.deadline < now())
             ):
+                if session.get(WorkItem, handoff.to_work_item_id).wait.get("depends_on"):
+                    continue  # 阶段仍在等待上游，放行时才开始计时。
                 receiver = session.get(Task, handoff.to_task_id)
                 if receiver and (
                     receiver.status == "WAITING_HUMAN"
@@ -646,8 +918,12 @@ class CollaborationManager:
                 cancel_items(session, workflow, [item])
                 wake(session, require(session, WorkItem, handoff.from_work_item_id))
                 emit(session, "handoff.timed_out", handoff.from_task_id, handoff_id=handoff.id)
-            for waiting in session.scalars(select(WorkItem).where(WorkItem.status == "WAITING_BOT")):
+            for waiting in list(session.scalars(select(WorkItem).where(WorkItem.status == "WAITING_BOT"))):
                 wake(session, waiting)
+            # 依赖流程可能因级联取消而全部结束，没有执行会再触发结算。
+            for workflow in list(session.scalars(select(Workflow).where(Workflow.status == "ACTIVE"))):
+                if workflow.limits.get("stages"):
+                    conclude(session, workflow)
 
     def model_turn(self, task_id, token):
         from niucai.actions.gateway import ActionGateway

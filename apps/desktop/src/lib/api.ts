@@ -3,6 +3,7 @@ import type {
   Artifact,
   Computer,
   Conversation,
+  ConversationSettings,
   KernelEvent,
   Memory,
   Message,
@@ -148,6 +149,14 @@ export const api = {
       );
     return conversation;
   },
+  conversation: (id: string) =>
+    request<Conversation>(`/api/conversations/${id}`),
+  updateConversationSettings: (
+    id: string,
+    settings: Partial<Omit<ConversationSettings, "autonomy">> & {
+      autonomy?: Partial<ConversationSettings["autonomy"]>;
+    },
+  ) => request<Conversation>(`/api/conversations/${id}`, "PATCH", { settings }),
   sendMessage: (id: string, content: string, clientId: string) =>
     request<{
       conversation: Conversation;

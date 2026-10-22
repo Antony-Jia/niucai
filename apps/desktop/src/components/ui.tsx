@@ -23,6 +23,11 @@ export function Badge({ status }: { status: string }) {
             HUMAN: "你正在控制",
             ONLINE: "在线",
             OFFLINE: "离线",
+            ACTIVE: "进行中",
+            QUEUED: "排队中",
+            WAITING_APPROVAL: "等待审批",
+            SUCCEEDED: "已完成",
+            DENIED: "已拒绝",
           } as Record<string, string>
         )[status] ||
         status}
@@ -179,7 +184,4 @@ export function Modal({
       </section>
     </div>
   );
-}
-export function Json({ data }: { data: unknown }) {
-  return <pre className="json">{JSON.stringify(data, null, 2)}</pre>;
 }

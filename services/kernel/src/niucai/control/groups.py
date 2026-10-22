@@ -4,6 +4,7 @@ import re
 
 from sqlalchemy import select
 
+from niucai.control.autonomy import inherit
 from niucai.control.bots import active_agent
 from niucai.control.collaboration import CollaborationManager, check_admission
 from niucai.control.conversations import ConversationManager, append_message, lock_conversation
@@ -47,6 +48,7 @@ def send_group(db, settings, ident, content, client_id):
         for agent_id in recipients:
             active_agent(session, agent_id)
             execution = ConversationManager.create_in(session, content[:80], agent_id)
+            inherit(session, display.id, execution)
             task = Task(
                 title=content[:80],
                 goal=content,

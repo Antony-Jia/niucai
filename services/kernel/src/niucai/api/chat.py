@@ -4,10 +4,11 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from niucai.control.conversations import ConversationManager
+from niucai.control.autonomy import normalize
+from niucai.control.conversations import ConversationManager, lock_conversation
 from niucai.control.progress import task_snapshot
 from niucai.control.tasks import require
-from niucai.storage.db import Artifact, Conversation, Event, Message, Task, as_dict
+from niucai.storage.db import Artifact, Conversation, Event, Message, Task, as_dict, emit
 
 
 class ConversationCreate(BaseModel):
@@ -15,6 +16,14 @@ class ConversationCreate(BaseModel):
     title: str = Field(default="新会话", min_length=1, max_length=200)
     agent_id: str = "main"
     computer_id: str | None = None
+    settings: dict | None = None
+
+
+class ConversationPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    # 局部更新：{"mode": "chat"} 或 {"autonomy": {"actions": true}}。
+    settings: dict | None = None
 
 
 class MessageCreate(BaseModel):
@@ -61,7 +70,40 @@ def chat_router(db, settings, auth, injected_gateway=None):
 
             raise Conflict("multi Bot collaboration disabled")
         with db.sessions.begin() as session:
-            return as_dict(manager.create_in(session, **request.model_dump()))
+            values = request.model_dump(exclude={"settings"})
+            conversation = manager.create_in(session, **values)
+            if request.settings:
+                conversation.settings = normalize(request.settings, settings)
+            return as_dict(conversation)
+
+    @router.get("/api/conversations/{conversation_id}")
+    def conversation(conversation_id: str):
+        with db.sessions() as session:
+            row = require(session, Conversation, conversation_id)
+            return {**as_dict(row), "settings": normalize(row.settings)}
+
+    @router.patch("/api/conversations/{conversation_id}")
+    def update(conversation_id: str, request: ConversationPatch):
+        with db.sessions.begin() as session:
+            row = lock_conversation(session, conversation_id)
+            if request.title:
+                row.title = request.title
+            if request.settings is not None:
+                current = normalize(row.settings)
+                merged = {**current, **request.settings}
+                if isinstance(request.settings.get("autonomy"), dict):
+                    merged["autonomy"] = {**current["autonomy"], **request.settings["autonomy"]}
+                # 只有本次请求开启 YOLO 时检查总开关；关闭或切换模式始终允许。
+                requested = request.settings.get("autonomy") or {}
+                enabling = any((merged.get("autonomy") or {}).get(k) for k in requested)
+                row.settings = normalize(merged, settings if enabling else None)
+                emit(
+                    session,
+                    "conversation.settings_updated",
+                    conversation_id=row.id,
+                    settings=row.settings,
+                )
+            return {**as_dict(row), "settings": normalize(row.settings)}
 
     @router.get("/api/conversations/{conversation_id}/messages")
     def messages(conversation_id: str, limit: int = Query(200, ge=1, le=200)):

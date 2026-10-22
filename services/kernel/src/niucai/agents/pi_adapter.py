@@ -20,6 +20,11 @@ from niucai.control.tasks import ComputerBusy, ComputerRequired, Conflict, requi
 from niucai.domain.schemas import ActionSpec, Plan, Role
 from niucai.storage.db import Action, Message, Task, emit
 
+CHAT_MODE_NOTE = (
+    "This conversation is in chat mode. Tools are disabled by the Kernel: answer directly "
+    "from the conversation and your knowledge, and say so if the request needs computer actions."
+)
+
 
 def inline_schema(schema):
     """TypeBox and the model see a self-contained schema; Python validates again."""
@@ -150,6 +155,7 @@ class PiDurableRuntime:
                 "task",
                 "bot_list",
                 "bot_send",
+                "bot_pipeline",
                 "bot_wait",
                 "bot_reply",
                 "board_list",
@@ -180,9 +186,10 @@ class PiDurableRuntime:
                 package = worker.context.compile(task_id)
             prompt = (
                 package["policies"]
-                + " Use execute_action for every external computer/browser/file/shell operation. "
+                + " Use execute_action for every external computer/browser/file/shell operation, "
+                "skills.read and mcp.call. "
                 "When remote Pi tools are available, delegate bounded independent work packages with "
-                "remote_pi_submit and aggregate verified remote_pi_result outputs. Remote jobs require "
+                "remote_pi_submit and aggregate verified remote_pi_result outputs. Remote jobs may need "
                 "human workspace-autonomy approval; do not claim success while they are queued or running. "
                 "Read tool feedback and adjust your approach in this session. FAILED permits correction; "
                 "UNKNOWN requires human inspection. Use update_plan to revise the plan, task to delegate, "
@@ -364,6 +371,17 @@ class PiDurableRuntime:
                                 params.get("_kernelSequence"),
                             )
                         )
+                    if method == "bot.pipeline":
+                        return jsonable_encoder(
+                            await asyncio.to_thread(
+                                collaboration.pipeline,
+                                task_id,
+                                token,
+                                params["toolTaskId"],
+                                params["stages"],
+                                params.get("_kernelSequence"),
+                            )
+                        )
                     if method == "bot.wait":
                         return jsonable_encoder(
                             await asyncio.to_thread(
@@ -483,6 +501,18 @@ class PiDurableRuntime:
                         for tool in params.get("tools", [])
                         if tool.get("function", {}).get("name") in known
                     ]
+                    from niucai.control.autonomy import task_settings
+
+                    with worker.db.sessions() as session:
+                        chat_mode = task_settings(session, task_id)["mode"] == "chat"
+                    if chat_mode:
+                        # 对话模式：Kernel 不向模型暴露任何工具，模型只能直接作答。
+                        params["tools"] = []
+                        params["messages"] = [
+                            *params["messages"][:1],
+                            {"role": "system", "content": CHAT_MODE_NOTE},
+                            *params["messages"][1:],
+                        ]
                     role = Role(params["role"])
                     if role not in {Role.EXECUTOR, Role.SUMMARIZER}:
                         raise ValueError("unsupported harness model role")
@@ -508,6 +538,7 @@ class PiDurableRuntime:
                             if call.get("function", {}).get("name") in {
                                 "execute_action",
                                 "bot_send",
+                                "bot_pipeline",
                                 "bot_reply",
                             }:
                                 try:

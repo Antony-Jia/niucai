@@ -11,6 +11,8 @@ Only propose registered typed actions. The Kernel owns execution, permissions, a
 Never claim a side effect succeeded without a recorded successful result.
 Browser mutations require human approval. Unknown outcomes require human inspection.
 Use browser.snapshot before click/fill and use only refs from the latest snapshot.
+When a listed skill matches the work, read it with skills.read and follow it. Call listed MCP tools with
+mcp.call {server, tool, arguments}; non read-only MCP tools require approval.
 Do not stop once information is found: finish with a result that answers the user's goal, states the key
 findings, and names any files produced or downloaded. Wait only if login, clarification or manual inspection
 is needed."""
@@ -86,6 +88,37 @@ class ContextCompiler:
                 + (["shell.exec"] if self.settings.allow_shell else []),
                 "policies": POLICY,
             }
+            from niucai.control.autonomy import task_settings
+
+            package["conversation_settings"] = task_settings(s, task)
+            from niucai.control import mcp, skills
+
+            # 技能目录与 MCP 工具目录对所有 Bot 可见（按定义白名单收窄），正文/调用经 Action。
+            if catalog := skills.catalog(s, identity):
+                package["skills"] = catalog
+                package["available_tools"].append("skills.read")
+            if self.settings.mcp_enabled and (catalog := mcp.catalog(s, identity)):
+                package["mcp_tools"] = catalog
+                package["available_tools"].append("mcp.call")
+            policy = identity.resource_policy
+            if policy.strategy == "fixed" and policy.fixed_node_id:
+                from datetime import timedelta
+
+                from niucai.storage.db import RemoteNode, now
+
+                node = s.get(RemoteNode, policy.fixed_node_id)
+                # 绑定节点的 Bot：命令/文件类工作经 remote_pi_submit 提交到该节点执行。
+                package["identity"]["bound_node"] = {
+                    "id": policy.fixed_node_id,
+                    "name": node.name if node else None,
+                    "online": bool(
+                        node
+                        and node.enabled
+                        and node.heartbeat_at
+                        and node.heartbeat_at > now() - timedelta(seconds=self.settings.remote_lease_seconds)
+                    ),
+                    "usage": "Submit shell/file/crawl work packages to this node with remote_pi_submit.",
+                }
             tools = []
             for tool in package["available_tools"]:
                 try:
@@ -159,11 +192,10 @@ class ContextCompiler:
                     and len(package["conversation"]["messages"]) > 1
                 ):
                     package["conversation"]["messages"].pop(0)
-            for field in ["memories", "recent_actions", "artifacts"]:
-                while (
-                    len(json.dumps(package, ensure_ascii=False)) > self.settings.context_chars
-                    and package[field]
-                ):
+            for field in ["memories", "recent_actions", "artifacts", "mcp_tools", "skills"]:
+                while len(
+                    json.dumps(package, ensure_ascii=False)
+                ) > self.settings.context_chars and package.get(field):
                     package[field].pop(0)
             if len(json.dumps(package, ensure_ascii=False)) > self.settings.context_chars:
                 package["state"] = {"summary": str(task.checkpoint)[:2000]}

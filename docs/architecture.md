@@ -53,6 +53,7 @@ browser.click、browser.fill、files.write、shell.exec 默认 HIGH，逐动作�
 Approval 绑定不可变 spec；审批不代表设备控制授权，执行前再次检查租约及 HUMAN 状态。
 resume 不能绕过待审批动作或 UNKNOWN。拒绝审批返回 DENIED，模型可选择其它办法。
 只读 browser.snapshot/files.read 的超时与错误返回 FAILED，允许即时重试；可能发生副作用的异常保守按 UNKNOWN。
+会话可开启 YOLO（需 Kernel 总开关 `NIUCAI_YOLO_ENABLED`）：HIGH 动作与远程工作包由会话设置自动批准，仍写 Approval/Audit；`shell.exec` 永不自动批准。`skills.read`、`mcp.call` 由 Kernel 执行；MCP 非只读工具为 HIGH。详见 [yolo-pipelines-extensions.md](yolo-pipelines-extensions.md)。
 
 ## Model、Context 与子 Agent
 

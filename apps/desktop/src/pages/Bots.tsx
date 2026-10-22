@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Header, ErrorNotice, ConnectionEmpty } from "../components/ui";
+import { Header, ErrorNotice, ConnectionEmpty, Badge } from "../components/ui";
 import { request } from "../lib/api";
 import { useApp } from "../lib/state";
 
@@ -13,14 +13,24 @@ export interface Bot {
     instructions?: string;
     tools?: string[];
     allowed_nodes?: string[] | null;
+    resource_policy?: { strategy?: string; fixed_node_id?: string | null };
+    skills?: string[] | null;
+    mcp_servers?: string[] | null;
     enabled?: boolean;
     archived?: boolean;
     [key: string]: unknown;
   };
 }
+interface StageRecord {
+  key: string;
+  agent_id: string;
+  work_item_id: string;
+  depends_on: string[];
+}
 interface Workflow {
   id: string;
   status: string;
+  limits?: { stages?: StageRecord[] };
   owner_agent_id: string;
   handoff_count: number;
   model_turns: number;
@@ -42,6 +52,36 @@ interface Item {
     wait_state?: { reason?: string };
   }[];
   artifacts?: { id: string; content_hash: string }[];
+}
+interface StageDraft {
+  key: string;
+  agent_id: string;
+  goal: string;
+  depends_on: string[];
+  output_requirements: string;
+}
+function newStage(index: number, previous?: string): StageDraft {
+  return {
+    key: `step${index}`,
+    agent_id: "",
+    goal: "",
+    depends_on: previous ? [previous] : [],
+    output_requirements: "",
+  };
+}
+/** 白名单输入：留空=全部，none=全部禁止，其余逗号分隔（支持 *）。 */
+function listText(value: string[] | null | undefined) {
+  if (value === null || value === undefined) return "";
+  return value.length ? value.join(", ") : "none";
+}
+function parseList(text: string): string[] | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  if (trimmed === "none") return [];
+  return trimmed
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 interface Routine {
   id: string;
@@ -119,11 +159,60 @@ export function Bots({
   const [cron, setCron] = useState("0 9 * * *");
   const [timezone, setTimezone] = useState("Asia/Shanghai");
   const [prompt, setPrompt] = useState("");
+  const [pipelineGoal, setPipelineGoal] = useState("");
+  const [stages, setStages] = useState<StageDraft[]>([newStage(1)]);
+  function changeStage(index: number, patch: Partial<StageDraft>) {
+    setStages((current) =>
+      current.map((stage, i) => {
+        if (i === index) return { ...stage, ...patch };
+        // 阶段改名时同步更新其他阶段的依赖引用。
+        if (patch.key === undefined) return stage;
+        const old = current[index].key;
+        return {
+          ...stage,
+          depends_on: stage.depends_on.map((d) => (d === old ? patch.key! : d)),
+        };
+      }),
+    );
+  }
+  function removeStage(index: number) {
+    setStages((current) => {
+      const key = current[index].key;
+      return current
+        .filter((_, i) => i !== index)
+        .map((stage) => ({
+          ...stage,
+          depends_on: stage.depends_on.filter((d) => d !== key),
+        }));
+    });
+  }
+  function binding(bot: Bot) {
+    const policy = bot.definition.resource_policy;
+    const allowed = bot.definition.allowed_nodes;
+    if (policy?.strategy === "fixed" && policy.fixed_node_id) {
+      const node = nodes.data?.find((n) => n.id === policy.fixed_node_id);
+      return `绑定节点：${node ? `${node.name}（${node.connection_status}）` : policy.fixed_node_id}`;
+    }
+    if (allowed === null || allowed === undefined) return "节点：兼容授权";
+    if (!allowed.length) return "不使用远程节点";
+    return `节点池：${allowed.length} 个节点`;
+  }
+  function setDefinitionField(key: string, value: unknown) {
+    try {
+      setAdvanced(
+        JSON.stringify({ ...JSON.parse(advanced), [key]: value }, null, 2),
+      );
+    } catch {
+      notify("高级配置不是有效 JSON，请先修正");
+    }
+  }
   function resourceConfig() {
     try {
       return JSON.parse(advanced) as {
         allowed_nodes?: string[] | null;
         resource_policy?: { strategy?: string; fixed_node_id?: string | null };
+        skills?: string[] | null;
+        mcp_servers?: string[] | null;
       };
     } catch {
       return {};
@@ -198,6 +287,17 @@ export function Bots({
       ),
     );
   }
+  function stageLabel(w: Workflow, itemId: string) {
+    const stage = w.limits?.stages?.find((st) => st.work_item_id === itemId);
+    if (!stage) return null;
+    return (
+      <strong>
+        [{stage.key}
+        {stage.depends_on.length ? ` ← ${stage.depends_on.join("、")}` : ""}
+        ]{" "}
+      </strong>
+    );
+  }
   if (!connected) return <ConnectionEmpty />;
   return (
     <div className="settings-page">
@@ -238,7 +338,8 @@ export function Bots({
               <button onClick={() => edit(bot)}>
                 {bot.name} · {bot.id}
               </button>
-              <span> {bot.definition.description}</span>
+              <span> {bot.definition.description}</span>{" "}
+              <small>{binding(bot)}</small>
               {bot.id !== "main" && (
                 <button
                   disabled={busy}
@@ -353,6 +454,30 @@ export function Bots({
               </label>
             </p>
           )}
+          <p>
+            <label>
+              可用技能（逗号分隔，支持 *；留空=全部，none=禁止）
+              <input
+                aria-label="可用技能"
+                value={listText(resourceConfig().skills)}
+                onChange={(e) =>
+                  setDefinitionField("skills", parseList(e.target.value))
+                }
+              />
+            </label>
+          </p>
+          <p>
+            <label>
+              可用 MCP 服务器（留空=全部，none=禁止）
+              <input
+                aria-label="可用 MCP 服务器"
+                value={listText(resourceConfig().mcp_servers)}
+                onChange={(e) =>
+                  setDefinitionField("mcp_servers", parseList(e.target.value))
+                }
+              />
+            </label>
+          </p>
           <p>允许节点（新 Bot 需显式选择）</p>
           {nodes.data?.map((node) => (
             <label key={node.id}>
@@ -382,9 +507,9 @@ export function Bots({
             </label>
           ))}
           <button disabled={busy || !enabled}>保存角色</button>
-          <p>
+          <details>
+            <summary>高级配置（模型、资源与交付）</summary>
             <label>
-              模型、资源与交付配置（JSON）
               <textarea
                 aria-label="模型、资源与交付配置"
                 rows={14}
@@ -392,7 +517,7 @@ export function Bots({
                 onChange={(e) => setAdvanced(e.target.value)}
               />
             </label>
-          </p>
+          </details>
           <p>
             fixed 指定 fixed_node_id 且必须列入 allowed_nodes；pool 仅在
             allowed_nodes 内选择。空列表禁止远程节点，null
@@ -473,8 +598,21 @@ export function Bots({
         {workflows.data?.map((w) => (
           <div key={w.id}>
             <p>
-              {w.owner_agent_id} · {w.status} · 交接 {w.handoff_count} ·
-              模型轮次 {w.model_turns}
+              {w.owner_agent_id} <Badge status={w.status} /> · 交接{" "}
+              {w.handoff_count} · 模型轮次 {w.model_turns}
+              {!!w.limits?.stages?.length && (
+                <>
+                  {" "}
+                  · 依赖流程：
+                  {w.limits.stages
+                    .map((st) =>
+                      st.depends_on.length
+                        ? `${st.depends_on.join("+")} → ${st.key}`
+                        : st.key,
+                    )
+                    .join("，")}
+                </>
+              )}
             </p>
             {["ACTIVE", "PAUSED"].includes(w.status) && (
               <p>
@@ -503,7 +641,8 @@ export function Bots({
               ?.filter((i) => i.workflow_id === w.id)
               .map((i) => (
                 <p key={i.id}>
-                  {i.assignee_agent_id} · {i.status} · {i.goal}{" "}
+                  {stageLabel(w, i.id)}
+                  {i.assignee_agent_id} <Badge status={i.status} /> {i.goal}{" "}
                   <small>
                     配置 v
                     {i.definition_snapshot?.definition_version ?? "未记录"}
@@ -538,6 +677,141 @@ export function Bots({
               ))}
           </div>
         ))}
+      </section>
+      <section className="panel" style={{ padding: 20, marginTop: 16 }}>
+        <h2>依赖流程</h2>
+        <p>
+          把任务拆成多个阶段交给不同
+          Bot：下游阶段在全部上游完成后启动，并自动收到上游结论与产物；任一上游失败，下游自动取消。
+        </p>
+        <form
+          aria-label="依赖流程"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void act(async () => {
+              await request("/api/workflows", "POST", {
+                goal: pipelineGoal,
+                stages: stages.map((stage) => ({
+                  ...stage,
+                  key: stage.key.trim(),
+                })),
+              });
+              setPipelineGoal("");
+              setStages([newStage(1)]);
+              notify("依赖流程已创建");
+            });
+          }}
+        >
+          <label>
+            总目标
+            <textarea
+              required
+              aria-label="流程总目标"
+              value={pipelineGoal}
+              onChange={(e) => setPipelineGoal(e.target.value)}
+            />
+          </label>
+          {stages.map((stage, index) => (
+            <fieldset className="pipeline-stage" key={index}>
+              <legend>阶段 {index + 1}</legend>
+              <label>
+                阶段名{" "}
+                <input
+                  required
+                  aria-label={`阶段 ${index + 1} 名称`}
+                  pattern="[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}"
+                  title="字母或数字开头，可含 _ 与 -"
+                  value={stage.key}
+                  onChange={(e) => changeStage(index, { key: e.target.value })}
+                />
+              </label>
+              <label>
+                负责 Bot{" "}
+                <select
+                  required
+                  aria-label={`阶段 ${index + 1} Bot`}
+                  value={stage.agent_id}
+                  onChange={(e) =>
+                    changeStage(index, { agent_id: e.target.value })
+                  }
+                >
+                  <option value="">请选择</option>
+                  {bots.data
+                    ?.filter((b) => !b.definition.archived)
+                    .map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name} · {binding(b)}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label>
+                阶段目标
+                <textarea
+                  required
+                  aria-label={`阶段 ${index + 1} 目标`}
+                  value={stage.goal}
+                  onChange={(e) => changeStage(index, { goal: e.target.value })}
+                />
+              </label>
+              <label>
+                交付要求
+                <input
+                  aria-label={`阶段 ${index + 1} 交付要求`}
+                  value={stage.output_requirements}
+                  onChange={(e) =>
+                    changeStage(index, { output_requirements: e.target.value })
+                  }
+                />
+              </label>
+              {stages.length > 1 && (
+                <div>
+                  依赖：
+                  {stages
+                    .filter((_, i) => i !== index)
+                    .map((other) => (
+                      <label key={other.key}>
+                        <input
+                          type="checkbox"
+                          checked={stage.depends_on.includes(other.key)}
+                          onChange={(e) =>
+                            changeStage(index, {
+                              depends_on: e.target.checked
+                                ? [...stage.depends_on, other.key]
+                                : stage.depends_on.filter(
+                                    (d) => d !== other.key,
+                                  ),
+                            })
+                          }
+                        />
+                        {other.key}
+                      </label>
+                    ))}
+                </div>
+              )}
+              {stages.length > 1 && (
+                <button type="button" onClick={() => removeStage(index)}>
+                  删除阶段
+                </button>
+              )}
+            </fieldset>
+          ))}
+          <p>
+            <button
+              type="button"
+              disabled={stages.length >= 12}
+              onClick={() =>
+                setStages((current) => [
+                  ...current,
+                  newStage(current.length + 1, current.at(-1)?.key),
+                ])
+              }
+            >
+              添加阶段
+            </button>{" "}
+            <button disabled={busy || !enabled}>创建依赖流程</button>
+          </p>
+        </form>
       </section>
       <section className="panel" style={{ padding: 20, marginTop: 16 }}>
         <h2>定时工作</h2>

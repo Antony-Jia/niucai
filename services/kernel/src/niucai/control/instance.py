@@ -7,7 +7,7 @@ from sqlalchemy import select, text
 from niucai.storage.db import KernelInstance, RemoteJob, Task, TaskRun, WorkerHealth, now, uid
 
 PROTOCOL_VERSION = 2
-MIGRATION_HEAD = "f2d21013d006"
+MIGRATION_HEAD = "a3d21022d007"
 
 
 def instance(session):
@@ -76,7 +76,13 @@ def diagnostics(session, settings):
         "execution_ready": bool(
             workers and model_ready and revision == MIGRATION_HEAD and ident.admission_enabled
         ),
-        "features": {"remote_pi": settings.remote_pi_enabled, "multi_bot": settings.multi_bot_enabled},
+        "features": {
+            "remote_pi": settings.remote_pi_enabled,
+            "multi_bot": settings.multi_bot_enabled,
+            "yolo": settings.yolo_enabled,
+            "mcp": settings.mcp_enabled,
+            "shell": settings.allow_shell,
+        },
         "host_limitation": (
             "Closing Desktop keeps services running; host sleep, shutdown or Docker stop interrupts them."
         ),

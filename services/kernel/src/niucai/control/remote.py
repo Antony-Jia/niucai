@@ -308,6 +308,13 @@ class RemoteManager:
             s.add(job)
             s.flush()
             job_event(s, job, "submitted", execution_policy="isolated-node-autonomous")
+            if parent_task_id:
+                from niucai.control.autonomy import yolo
+
+                if yolo(s, self.settings, task, "remote"):
+                    # 隔离节点工作包按会话 YOLO 直接入队，事件流仍记录批准来源。
+                    job.status = "QUEUED"
+                    job_event(s, job, "approve", policy="yolo")
             return as_dict(job)
 
     def jobs(self, parent_task_id=None):

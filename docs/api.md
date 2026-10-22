@@ -84,6 +84,18 @@ Chat 已统一为异步会话消息入口，自动创建或加入当前执行。
 
 以上 REST 路由统一要求 Bearer Token。
 
+## 会话设置、依赖流程与扩展
+
+详见 [YOLO、对话模式、依赖流程与技能/MCP](yolo-pipelines-extensions.md)。
+
+- `GET /api/conversations/{id}`：会话及 `settings`（`mode`、`autonomy.actions/remote`）。
+- `PATCH /api/conversations/{id}`：`{"settings":{...}}` 局部合并；`NIUCAI_YOLO_ENABLED` 关闭时开启 YOLO 返回 409。
+- `POST /api/workflows` 可传 `stages`（1–12 个 `{key, agent_id, goal, depends_on, output_requirements}`），按依赖图创建阶段，不可与 `routes` 同用。
+- `GET/POST /api/skills`、`GET/PATCH/DELETE /api/skills/{id}`：全局技能库。
+- `GET/POST /api/mcp/servers`、`PATCH/DELETE /api/mcp/servers/{id}`、`POST /api/mcp/servers/{id}/refresh`：MCP 服务器；`env`/`headers` 值以 `***` 返回。
+- 新动作类型 `skills.read {name}`（LOW）与 `mcp.call {server, tool, arguments}`（只读且服务器允许时 LOW，否则 HIGH），均由 Kernel 执行。
+- 新事件：`conversation.settings_updated`、`approval.auto_approved`、`workflow.pipeline_created`、`work_item.blocked`、`work_item.unblocked`、`skill.updated`、`mcp.refreshed`。
+
 ## 任务进度合同（第二阶段 K1/K2）
 
 创建、列表、详情、控制与绑定电脑的 Task 响应均增量返回 `progress`。原有 status、checkpoint 保留。

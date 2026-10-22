@@ -82,6 +82,8 @@ class Conversation(Base):
     agent_id: Mapped[str] = mapped_column(String(100), default="main")
     computer_id: Mapped[str | None] = mapped_column(ForeignKey("computers.id"))
     next_sequence: Mapped[int] = mapped_column(Integer, default=0)
+    # mode: agent|chat；autonomy: {"actions": bool, "remote": bool}（YOLO，委派会话继承）。
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
@@ -378,6 +380,36 @@ Index(
     sqlite_where=Task.status.not_in(["COMPLETED", "CANCELLED"]),
     postgresql_where=Task.status.not_in(["COMPLETED", "CANCELLED"]),
 )
+
+
+class Skill(Base):
+    """Kernel 托管的技能说明包；所有 Bot 可读，按 Bot 定义的 skills 白名单收窄。"""
+
+    __tablename__ = "skills"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    description: Mapped[str] = mapped_column(String(1000), default="")
+    content: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
+class McpServer(Base):
+    """Kernel 托管的 MCP 服务器；工具清单在刷新时缓存，调用经 ActionGateway。"""
+
+    __tablename__ = "mcp_servers"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    transport: Mapped[str] = mapped_column(String(20))
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    tools: Mapped[list] = mapped_column(JSON, default=list)
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
+    auto_approve_read_only: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 
 
 class ArtifactUpload(Base):

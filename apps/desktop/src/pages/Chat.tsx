@@ -5,6 +5,80 @@ import type { Bot } from "./Bots";
 import { useApp, useCommand, useData } from "../lib/state";
 import { ConnectionEmpty, ErrorNotice, Badge } from "../components/ui";
 import { TaskDetail } from "./Tasks";
+import { eventLabel } from "../lib/describe";
+import type { ConversationSettings } from "../lib/types";
+
+const DEFAULT_SETTINGS: ConversationSettings = {
+  mode: "agent",
+  autonomy: { actions: false, remote: false },
+};
+
+/** 会话模式与 YOLO 免审批开关；新会话在首条消息前写入。 */
+function ConversationSettingsBar({
+  value,
+  yoloAvailable,
+  disabled,
+  onChange,
+}: {
+  value: ConversationSettings;
+  yoloAvailable: boolean;
+  disabled: boolean;
+  onChange: (next: ConversationSettings) => void;
+}) {
+  const agent = value.mode === "agent";
+  const toggle = (scope: "actions" | "remote", checked: boolean) =>
+    onChange({ ...value, autonomy: { ...value.autonomy, [scope]: checked } });
+  return (
+    <div className="conversation-settings" aria-label="会话设置">
+      <label>
+        模式{" "}
+        <select
+          aria-label="会话模式"
+          value={value.mode}
+          disabled={disabled}
+          onChange={(e) =>
+            onChange({
+              ...value,
+              mode: e.target.value as ConversationSettings["mode"],
+            })
+          }
+        >
+          <option value="agent">执行（可操作电脑与工具）</option>
+          <option value="chat">对话（只回答，不调用工具）</option>
+        </select>
+      </label>
+      {agent && (
+        <>
+          <label>
+            <input
+              type="checkbox"
+              aria-label="YOLO 电脑操作免审批"
+              disabled={disabled || (!yoloAvailable && !value.autonomy.actions)}
+              checked={value.autonomy.actions}
+              onChange={(e) => toggle("actions", e.target.checked)}
+            />
+            YOLO：电脑操作免审批
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              aria-label="YOLO 远程任务免审批"
+              disabled={disabled || (!yoloAvailable && !value.autonomy.remote)}
+              checked={value.autonomy.remote}
+              onChange={(e) => toggle("remote", e.target.checked)}
+            />
+            YOLO：远程任务免审批
+          </label>
+          <span className="hint">
+            {yoloAvailable
+              ? "命令执行（shell）始终需要人工审批"
+              : "Kernel 未启用 YOLO（NIUCAI_YOLO_ENABLED）"}
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
 
 export function Chat({
   conversationId,
@@ -24,6 +98,11 @@ export function Chat({
   const collaboration = useData(["collaboration-status"], () =>
     request<{ enabled: boolean }>("/api/collaboration/status"),
   );
+  const diagnostics = useData(["kernel-diagnostics"], () =>
+    request<{ features?: { yolo?: boolean } }>("/api/kernel/diagnostics"),
+  );
+  const [draftSettings, setDraftSettings] =
+    useState<ConversationSettings>(DEFAULT_SETTINGS);
   const [agentId, setAgentId] = useState("main");
   const [groupIds, setGroupIds] = useState<string[]>(["main"]);
   const [localId, setLocalId] = useState<string | null>(() => {
@@ -37,6 +116,19 @@ export function Chat({
       ? request<{ agent_id: string }[]>(`/api/conversations/${id}/participants`)
       : Promise.resolve([]),
   );
+  const conversation = useData(["conversation", id], () =>
+    id ? api.conversation(id) : Promise.resolve(null),
+  );
+  const settings = id
+    ? (conversation.data?.settings ?? DEFAULT_SETTINGS)
+    : draftSettings;
+  const updateSettings = useCommand(
+    (next: ConversationSettings) =>
+      api.updateConversationSettings(id as string, next),
+    "会话设置已更新",
+  );
+  const changeSettings = (next: ConversationSettings) =>
+    id ? updateSettings.mutate(next) : setDraftSettings(next);
   const select = (value: string | null) =>
     onConversation ? onConversation(value) : setLocalId(value);
   const [content, setContent] = useState("");
@@ -57,6 +149,7 @@ export function Chat({
         id: string | null;
         clientId: string;
         createdId?: string;
+        configured?: boolean;
       }
     | undefined
   >(undefined);
@@ -83,6 +176,13 @@ export function Chat({
       attempt.createdId ||
       (await api.createConversation(targetComputer, agentId, groupIds)).id;
     attempt.createdId = target;
+    if (
+      !id &&
+      !attempt.configured &&
+      JSON.stringify(draftSettings) !== JSON.stringify(DEFAULT_SETTINGS)
+    )
+      await api.updateConversationSettings(target, draftSettings);
+    attempt.configured = true;
     const result = await api.sendMessage(target, text, attempt.clientId);
     return result;
   });
@@ -95,6 +195,7 @@ export function Chat({
     send.mutate(text, {
       onSuccess: (result) => {
         select(result.conversation.id);
+        setDraftSettings(DEFAULT_SETTINGS);
         setContent((current) => (current.trim() === text ? "" : current));
         retry.current = undefined;
       },
@@ -172,6 +273,12 @@ export function Chat({
               ))}
           </fieldset>
         )}
+        <ConversationSettingsBar
+          value={settings}
+          yoloAvailable={diagnostics.data?.features?.yolo === true}
+          disabled={updateSettings.isPending || (!!id && !conversation.data)}
+          onChange={changeSettings}
+        />
         {content.endsWith("@") && (
           <div>
             {[
@@ -212,24 +319,11 @@ export function Chat({
                   <small>历史回复已中断</small>
                 )}
               </div>
-            ) : /^(task\.(created|started|completed|pending|failed|waiting_human|pause|resume|cancel|retry)|action\.(executing|succeeded|failed|unknown|denied)|approval\.requested)$/.test(
-                item.type,
-              ) ? (
+            ) : eventLabel(item.type, item.data) ? (
               <div className="timeline-event" key={item.id}>
-                <span>
-                  {item.type.startsWith("action.")
-                    ? "工具动作"
-                    : item.type.startsWith("approval.")
-                      ? "等待审批"
-                      : "执行进度"}
-                </span>
-                <Badge
-                  status={String(
-                    item.data.status || item.type.split(".")[1].toUpperCase(),
-                  )}
-                />
-                {!!item.data.reason && (
-                  <small>{String(item.data.reason)}</small>
+                <span>{eventLabel(item.type, item.data)}</span>
+                {!!item.data.status && (
+                  <Badge status={String(item.data.status)} />
                 )}
               </div>
             ) : null,

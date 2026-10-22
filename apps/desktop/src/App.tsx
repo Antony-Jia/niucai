@@ -8,6 +8,7 @@ import {
   ChevronRight,
   X,
   RefreshCw,
+  Puzzle,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useApp, useData } from "./lib/state";
@@ -18,6 +19,7 @@ import { Files, MemoryPage } from "./pages/FilesMemory";
 import { Settings } from "./pages/Settings";
 import { RemotePi } from "./pages/RemotePi";
 import { Bots } from "./pages/Bots";
+import { Extensions } from "./pages/Extensions";
 import { ConnectionSwitcher } from "./components/Connections";
 import type { Page } from "./lib/types";
 const navigation: { id: Page; label: string; icon: typeof Monitor }[] = [
@@ -27,6 +29,7 @@ const navigation: { id: Page; label: string; icon: typeof Monitor }[] = [
   { id: "memory", label: "Memory", icon: Brain },
   { id: "remote", label: "远程 Pi", icon: Monitor },
   { id: "bots", label: "Bots", icon: Brain },
+  { id: "extensions", label: "扩展", icon: Puzzle },
   { id: "settings", label: "Settings", icon: SettingsIcon },
 ];
 export function App() {
@@ -78,6 +81,7 @@ export function App() {
     settings: Settings,
     remote: RemotePi,
     bots: Bots,
+    extensions: Extensions,
   }[page];
   return (
     <div

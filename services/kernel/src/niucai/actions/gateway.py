@@ -61,6 +61,18 @@ class ActionGateway:
                 task.computer_id, computer.active_task_id = computer_id, task.id
             # Semantic side effects cannot be inferred from DOM alone. Conservative V1 policy.
             risk = "HIGH" if kind in {"browser.click", "browser.fill", "files.write", "shell.exec"} else "LOW"
+            if kind == "mcp.call":
+                from niucai.control.mcp import call_risk
+
+                # 只读且服务器允许自动放行的 MCP 工具为 LOW，其余一律需要审批（或 YOLO）。
+                risk = call_risk(s, self.settings, agent_policy, spec)
+            elif kind == "skills.read":
+                from niucai.control.skills import find
+
+                find(s, agent_policy, spec["name"])
+            from niucai.control.autonomy import NEVER_AUTO, yolo
+
+            auto = risk == "HIGH" and kind not in NEVER_AUTO and yolo(s, self.settings, task, "actions")
             action = Action(
                 task_id=task.id,
                 agent_id=task.agent_id,
@@ -68,14 +80,23 @@ class ActionGateway:
                 idempotency_key=key,
                 spec=spec,
                 risk=risk,
-                status="WAITING_APPROVAL" if risk == "HIGH" else "PROPOSED",
+                status=("APPROVED" if auto else "WAITING_APPROVAL") if risk == "HIGH" else "PROPOSED",
                 result={"input_sequence": input_sequence} if input_sequence is not None else {},
             )
             s.add(action)
             s.flush()
             emit(s, "action.proposed", task.id, action_id=action.id, type=kind, risk=risk)
             s.add(Audit(action_id=action.id, outcome="PROPOSED", data={"type": kind, "risk": risk}))
-            if risk == "HIGH":
+            if risk == "HIGH" and auto:
+                # YOLO 仍保留审批记录与审计，只是由会话设置代替人工决定。
+                approval = Approval(
+                    action_id=action.id, status="APPROVED", note="YOLO 自动批准", decided_at=now()
+                )
+                s.add(approval)
+                s.add(Audit(action_id=action.id, outcome="AUTO_APPROVED", data={"policy": "yolo"}))
+                s.flush()
+                emit(s, "approval.auto_approved", task.id, approval_id=approval.id, action_id=action.id)
+            elif risk == "HIGH":
                 approval = Approval(action_id=action.id)
                 s.add(approval)
                 s.flush()
@@ -162,10 +183,12 @@ class ActionGateway:
             computer = require(s, Computer, action.computer_id, lock=True) if action.computer_id else None
             action = require(s, Action, action_id, lock=True)
             dispatched = False
-            read_only = action.spec["type"] in {"browser.snapshot", "files.read"}
+            read_only = action.spec["type"] in {"browser.snapshot", "files.read", "skills.read"} or (
+                action.spec["type"] == "mcp.call" and action.risk == "LOW"
+            )
             try:
                 self.check_task(task, token)
-                permitted(s, task, action.spec["type"])
+                agent_policy = permitted(s, task, action.spec["type"])
                 if task.checkpoint.get("bot_reply_committed") or task.checkpoint.get(
                     "bot_transfer_committed"
                 ):
@@ -178,12 +201,19 @@ class ActionGateway:
                     ref = action.spec["ref"]
                     if not re.fullmatch(r"e[1-9][0-9]*", ref) or ref not in computer.state.get("refs", []):
                         raise ValueError("invalid or stale browser reference")
+                from niucai.control.mcp import KERNEL_ACTIONS, kernel_execute
+
                 with tracer.start_as_current_span("action.execute") as span:
                     span.set_attribute("action.id", action.id)
+                    if action.spec["type"] in KERNEL_ACTIONS:
+                        # 技能与 MCP 由 Kernel 自身执行，不占用执行电脑适配器。
+                        call = kernel_execute(s, self.settings, agent_policy, action.spec)
+                        timeout = max(self.settings.action_timeout, self.settings.mcp_timeout + 5)
+                    else:
+                        call = self.adapter.execute(action.spec, computer)
+                        timeout = self.settings.action_timeout
                     dispatched = True
-                    result = await asyncio.wait_for(
-                        self.adapter.execute(action.spec, computer), self.settings.action_timeout
-                    )
+                    result = await asyncio.wait_for(call, timeout)
                 action.status, action.result = "SUCCEEDED", result
                 if computer and action.spec["type"].startswith("browser."):
                     computer.state = {**computer.state, **result}

@@ -4,6 +4,7 @@ import type {
   Memory,
   Artifact,
   Conversation,
+  ConversationSettings,
   Message,
   Approval,
   Action,
@@ -331,5 +332,46 @@ export async function demoRequest(
       return structuredClone({ conversation: c, messages: [m], task: t });
     }
   }
+  if (route === "/api/kernel/diagnostics")
+    return {
+      demo: true,
+      features: {
+        remote_pi: false,
+        multi_bot: false,
+        yolo: true,
+        mcp: false,
+        shell: false,
+      },
+    };
+  if (/^\/api\/conversations\/[^/]+$/.test(route)) {
+    const c = conversations.find((c) => c.id === route.split("/")[3]);
+    if (!c) throw new Error("会话不存在");
+    const current = c.settings ?? {
+      mode: "agent",
+      autonomy: { actions: false, remote: false },
+    };
+    if (method === "PATCH") {
+      const next = (body as { settings?: Partial<ConversationSettings> })
+        .settings;
+      c.settings = {
+        mode: next?.mode ?? current.mode,
+        autonomy: { ...current.autonomy, ...next?.autonomy },
+      };
+    }
+    return structuredClone({ ...c, settings: c.settings ?? current });
+  }
+  if (route === "/api/skills" && method === "GET")
+    return [
+      {
+        id: "demo-skill",
+        name: "web-research",
+        description: "网页调研：先列来源，再交叉核对",
+        content: "1. 列出至少三个来源\n2. 交叉核对关键数字\n3. 注明访问时间",
+        version: 1,
+        enabled: true,
+      },
+    ];
+  if (route === "/api/mcp/servers" && method === "GET")
+    return { enabled: false, servers: [] };
   throw new Error("示例模式暂不支持此操作");
 }

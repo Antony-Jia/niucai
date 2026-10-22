@@ -44,8 +44,14 @@ def validate_definition(session, value, settings):
             router.resolve(role)
 
 
+# 只读的 Kernel 技能说明对所有 Bot 默认开放，仅受 definition.skills 白名单收窄。
+IMPLICIT_TOOLS = {"skills.read"}
+
+
 def permitted(session, task, tool):
     agent = definition(require(session, Agent, task.agent_id))
+    if tool in IMPLICIT_TOOLS and agent.enabled and not agent.archived:
+        return task_definition(session, task)
     if not agent.enabled or agent.archived or not allows(agent.tools, tool):
         raise PermissionError(f"Bot {task.agent_id} cannot use {tool}")
     saved = task_definition(session, task)

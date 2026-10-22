@@ -29,6 +29,9 @@
 - KasmVNC mouse / keyboard / 中文输入 / clipboard / fullscreen。
 - 接管中止下一次 Agent 操作、同 Browser 人机切换的实际验收。
 
+- YOLO 会话在真实浏览器上的连续自动执行与接管中断；真实模型调用 `bot_pipeline` 的拆分质量。
+- 依赖流程阶段分别绑定不同 VPS 节点时的跨节点产物交接；第三方 MCP 服务器（stdio/HTTP）兼容性。
+
 不能把 fake adapter、mock LLM 或 SQLite 测试当作上述设备验收已通过。
 
 ## 交付范围

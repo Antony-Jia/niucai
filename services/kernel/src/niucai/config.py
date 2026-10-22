@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     model_timeout: float = Field(default=120, gt=0)
     runtime_idle_timeout: float = Field(default=300, gt=0)
     allow_shell: bool = False
+    # YOLO 总开关：开启后会话才能选择免审批；shell.exec 永远需要人工审批。
+    yolo_enabled: bool = False
+    # MCP 服务器由 Kernel 托管调用；stdio 服务器在 API/Worker 容器内启动，不是安全沙箱。
+    mcp_enabled: bool = False
+    mcp_timeout: float = Field(default=60, gt=0)
     auto_create_schema: bool = False
     remote_pi_enabled: bool = False
     multi_bot_enabled: bool = False

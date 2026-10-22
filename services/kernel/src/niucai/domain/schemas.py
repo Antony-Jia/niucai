@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
@@ -87,6 +87,9 @@ class AgentDefinition(Strict):
     resource_policy: ResourcePolicy = Field(default_factory=ResourcePolicy)
     output_contract: OutputContract = Field(default_factory=OutputContract)
     delegates: list[str] | None = None
+    # None 表示可用全部已启用的技能 / MCP 服务器；列表按 fnmatch 模式收窄。
+    skills: list[str] | None = Field(default=None, max_length=100)
+    mcp_servers: list[str] | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
     def authorized_target(self):
@@ -100,6 +103,45 @@ class AgentCreate(Strict):
     id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_-]{0,99}$")
     name: str = Field(min_length=1, max_length=200)
     definition: AgentDefinition = Field(default_factory=AgentDefinition)
+
+
+class PipelineStage(Strict):
+    """依赖流程的一个阶段；depends_on 引用同一流程中先声明或后声明的阶段 key。"""
+
+    key: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$")
+    agent_id: str = Field(min_length=1, max_length=100)
+    goal: str = Field(min_length=1, max_length=16000)
+    depends_on: list[str] = Field(default_factory=list, max_length=12)
+    output_requirements: str = Field(default="", max_length=4000)
+
+
+def pipeline_order(stages):
+    """校验阶段图（唯一 key、依赖存在、无环）并返回拓扑顺序。"""
+    if not 1 <= len(stages) <= 12:
+        raise ValueError("pipeline requires 1-12 stages")
+    by_key = {stage.key: stage for stage in stages}
+    if len(by_key) != len(stages):
+        raise ValueError("pipeline stage keys must be unique")
+    order, state = [], {}
+
+    def visit(stage):
+        if state.get(stage.key) == "done":
+            return
+        if state.get(stage.key) == "visiting":
+            raise ValueError("pipeline dependencies contain a cycle")
+        state[stage.key] = "visiting"
+        if len(set(stage.depends_on)) != len(stage.depends_on):
+            raise ValueError(f"stage {stage.key} repeats a dependency")
+        for key in stage.depends_on:
+            if key not in by_key:
+                raise ValueError(f"stage {stage.key} depends on unknown stage {key}")
+            visit(by_key[key])
+        state[stage.key] = "done"
+        order.append(stage)
+
+    for stage in stages:
+        visit(stage)
+    return order
 
 
 class Navigate(Strict):
@@ -149,10 +191,81 @@ class Shell(Strict):
     argv: list[str] = Field(min_length=1, max_length=100)
 
 
+class SkillRead(Strict):
+    type: Literal["skills.read"]
+    name: str = Field(min_length=1, max_length=100)
+
+
+class McpCall(Strict):
+    type: Literal["mcp.call"]
+    server: str = Field(min_length=1, max_length=100)
+    tool: str = Field(min_length=1, max_length=200)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
 ActionSpec = Annotated[
-    Navigate | Snapshot | Click | Fill | Scroll | Screenshot | ReadFile | WriteFile | Shell,
+    Navigate
+    | Snapshot
+    | Click
+    | Fill
+    | Scroll
+    | Screenshot
+    | ReadFile
+    | WriteFile
+    | Shell
+    | SkillRead
+    | McpCall,
     Field(discriminator="type"),
 ]
+
+NAME = r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,99}$"
+
+
+class SkillCreate(Strict):
+    name: str = Field(pattern=NAME)
+    description: str = Field(default="", max_length=1000)
+    content: str = Field(default="", max_length=200000)
+    enabled: bool = True
+
+
+class SkillPatch(Strict):
+    name: str | None = Field(default=None, pattern=NAME)
+    description: str | None = Field(default=None, max_length=1000)
+    content: str | None = Field(default=None, max_length=200000)
+    enabled: bool | None = None
+
+
+class McpStdio(Strict):
+    command: str = Field(min_length=1, max_length=1000)
+    args: list[str] = Field(default_factory=list, max_length=100)
+    env: dict[str, str] = Field(default_factory=dict)
+    cwd: str | None = Field(default=None, max_length=1024)
+
+
+class McpHttp(Strict):
+    url: HttpUrl
+    headers: dict[str, str] = Field(default_factory=dict)
+
+
+class McpServerCreate(Strict):
+    name: str = Field(pattern=NAME)
+    transport: Literal["stdio", "http"]
+    config: dict[str, Any]
+    enabled: bool = True
+    auto_approve_read_only: bool = True
+
+    @model_validator(mode="after")
+    def transport_config(self):
+        model = McpStdio if self.transport == "stdio" else McpHttp
+        self.config = model.model_validate(self.config).model_dump(mode="json")
+        return self
+
+
+class McpServerPatch(Strict):
+    name: str | None = Field(default=None, pattern=NAME)
+    config: dict[str, Any] | None = None
+    enabled: bool | None = None
+    auto_approve_read_only: bool | None = None
 
 
 class Step(Strict):

@@ -110,6 +110,13 @@ export interface Conversation {
   updated_at?: string;
   agent_id?: string;
   computer_id?: string | null;
+  settings?: ConversationSettings;
+}
+export interface ConversationSettings {
+  /** agent：可调用工具执行；chat：只对话，不调用工具 */
+  mode: "agent" | "chat";
+  /** YOLO：会话内电脑操作 / 远程任务免人工审批（shell 始终需要审批） */
+  autonomy: { actions: boolean; remote: boolean };
 }
 export interface Message {
   id: string;
@@ -170,6 +177,7 @@ export interface ConnectionProbe {
 export const connectionKey = (p: Profile) => p.kernel_instance_id || p.base_url;
 export type Page =
   | "bots"
+  | "extensions"
   | "remote"
   | "dashboard"
   | "chat"

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { native, request } from "../lib/api";
 import { useApp } from "../lib/state";
+import { plain } from "../lib/describe";
 
 export function KernelManager() {
   const { notify, connectTo, connected, demo } = useApp();
@@ -104,7 +105,7 @@ export function KernelManager() {
           onClick={() => {
             setBusy(true);
             void request("/api/kernel/diagnostics")
-              .then((value) => setResult(JSON.stringify(value, null, 2)))
+              .then((value) => setResult(plain(value)))
               .catch((error) => notify(String(error)))
               .finally(() => setBusy(false));
           }}

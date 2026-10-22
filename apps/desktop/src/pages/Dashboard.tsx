@@ -1,3 +1,5 @@
+import { ActionCard } from "../components/ActionCard";
+import { describeAction } from "../lib/describe";
 import {
   ArrowRight,
   Clock3,
@@ -15,7 +17,6 @@ import {
   Empty,
   ErrorNotice,
   Header,
-  Json,
   Loading,
   time,
 } from "../components/ui";
@@ -40,12 +41,12 @@ export function Approvals({
           <div className="section-heading">
             <span className="approval-title">
               <ShieldCheck size={18} />
-              {String(a.action.spec.type)}
+              {describeAction(a.action.spec).title}
             </span>
             <span className="risk">需要授权</span>
           </div>
           <p>任务 {a.action.task_id.slice(0, 8)} 提出了以下动作：</p>
-          <Json data={a.action.spec} />
+          <ActionCard spec={a.action.spec} showTitle={false} />
           <div className="button-row">
             <button
               className="primary"

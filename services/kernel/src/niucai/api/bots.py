@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import Field, ValidationError
 from sqlalchemy import select
 
+from niucai.control.autonomy import inherit
 from niucai.control.bots import active_agent, archive, definition, validate_definition
 from niucai.control.collaboration import (
     FINISHED,
@@ -17,7 +18,7 @@ from niucai.control.collaboration import (
     wake,
 )
 from niucai.control.tasks import Conflict, require
-from niucai.domain.schemas import AgentCreate, AgentDefinition, Strict
+from niucai.domain.schemas import AgentCreate, AgentDefinition, PipelineStage, Strict, pipeline_order
 from niucai.storage.db import (
     Action,
     Agent,
@@ -79,6 +80,8 @@ class WorkflowCreate(Strict):
     max_revisions: int = Field(default=3, ge=0, le=20)
     participant_agent_ids: list[str] | None = Field(default=None, max_length=32)
     output_requirements: str = Field(default="", max_length=4000)
+    # 依赖流程：提供 stages 时不启动协调者执行，按依赖图直接创建各阶段。
+    stages: list[PipelineStage] | None = Field(default=None, max_length=12)
 
 
 def item_dict(session, item):
@@ -247,9 +250,12 @@ def bot_router(db, settings, auth):
                 | set(request.participant_agent_ids or [])
             ):
                 active_agent(session, ident)
+            if request.stages is not None:
+                return create_pipeline(session, request)
             if request.routes and not request.final_agent_ids:
                 raise HTTPException(422, "stage workflow requires final_agent_ids")
             execution = ConversationManager.create_in(session, request.goal[:80], request.agent_id)
+            inherit(session, request.origin_conversation_id, execution)
             task = Task(
                 title=request.goal[:80],
                 goal=request.goal,
@@ -286,6 +292,48 @@ def bot_router(db, settings, auth):
                 work_item_id=item.id,
             )
             return {**as_dict(workflow), "work_items": [item_dict(session, item)]}
+
+    def create_pipeline(session, request):
+        from niucai.control.collaboration import create_stages
+        from niucai.control.conversations import ConversationManager, append_message
+
+        if request.routes or request.final_agent_ids:
+            raise HTTPException(422, "pipeline stages cannot be combined with routes")
+        pipeline_order(request.stages)
+        if request.origin_conversation_id:
+            origin = require(session, Conversation, request.origin_conversation_id)
+        else:
+            # 概览会话只汇总各阶段结论，本身不启动执行。
+            origin = ConversationManager.create_in(session, request.goal[:80], request.agent_id)
+            append_message(session, origin, role="user", content=request.goal)
+        authorization = {
+            "tools": definition(require(session, Agent, request.agent_id)).tools,
+            "project_results": True,
+        }
+        if request.participant_agent_ids is not None:
+            authorization["agents"] = sorted({request.agent_id, *request.participant_agent_ids})
+        workflow = Workflow(
+            origin_conversation_id=origin.id,
+            owner_agent_id=request.agent_id,
+            authorization=authorization,
+            limits={
+                "handoffs": settings.handoff_max_per_workflow,
+                "model_turns": settings.workflow_max_model_turns,
+                "seconds": settings.workflow_max_seconds,
+                "revisions": request.max_revisions,
+            },
+        )
+        session.add(workflow)
+        session.flush()
+        emit(session, "workflow.created", workflow_id=workflow.id)
+        create_stages(session, settings, workflow, request.stages)
+        return {
+            **as_dict(workflow),
+            "work_items": [
+                item_dict(session, i)
+                for i in session.scalars(select(WorkItem).where(WorkItem.workflow_id == workflow.id))
+            ],
+        }
 
     @router.get("/api/workflows/{ident}")
     def workflow(ident: str):

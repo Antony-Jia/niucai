@@ -338,6 +338,31 @@ async function main() {
         }),
       },
       {
+        name: "bot_pipeline",
+        method: "bot.pipeline",
+        description:
+          "Split work into dependent stages (e.g. crawl -> clean -> analyze). Each stage runs on its own Bot; " +
+          "a stage starts only after all depends_on stages complete and receives their results and artifacts. " +
+          "Returns immediately with handoff_ids; use bot_wait to aggregate.",
+        parameters: Type.Object({
+          _kernelSequence: Type.Optional(Type.Integer()),
+          stages: Type.Array(
+            Type.Object({
+              key: Type.String({ pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$" }),
+              agent_id: Type.String(),
+              goal: Type.String({ minLength: 1, maxLength: 16000 }),
+              depends_on: Type.Optional(
+                Type.Array(Type.String(), { maxItems: 12 }),
+              ),
+              output_requirements: Type.Optional(
+                Type.String({ maxLength: 4000 }),
+              ),
+            }),
+            { minItems: 1, maxItems: 12 },
+          ),
+        }),
+      },
+      {
         name: "bot_wait",
         method: "bot.wait",
         description:
