@@ -1377,3 +1377,145 @@ fieldset label {
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 12px;
 }
+
+/* Workflow DAG graph */
+.wfg {
+  margin: 10px 0 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 10px 12px 12px;
+}
+.wfg-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  margin-bottom: 8px;
+}
+.wfg-bar {
+  flex: 1;
+  max-width: 220px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.wfg-bar i {
+  display: block;
+  height: 100%;
+  background: var(--ok);
+  transition: width 0.4s var(--ease);
+}
+.wfg-scroll {
+  overflow-x: auto;
+}
+.wfg-canvas {
+  position: relative;
+  color: var(--line-strong);
+}
+.wfg-canvas svg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.wfg-edge {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+}
+.wfg-edge.passed {
+  color: var(--ok);
+  stroke: var(--ok);
+}
+.wfg-edge.broken {
+  stroke: var(--bad);
+  stroke-dasharray: 4 4;
+}
+.wfg-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  padding: 8px 12px;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+}
+.wfg-node:disabled {
+  cursor: default;
+}
+.wfg-node .wfg-key {
+  font-weight: 600;
+  color: var(--text);
+}
+.wfg-node .wfg-bot,
+.wfg-node .wfg-where {
+  font-size: 12px;
+  color: var(--muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wfg-status {
+  font-size: 12px;
+  font-weight: 600;
+}
+.wfg-node.ok {
+  border-left-color: var(--ok);
+  background: var(--ok-soft);
+}
+.wfg-node.run {
+  border-left-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  animation: wfg-pulse 1.6s ease-in-out infinite;
+}
+.wfg-node.wait,
+.wfg-node.warn {
+  border-left-color: var(--warn);
+  background: var(--warn-soft);
+}
+.wfg-node.bad {
+  border-left-color: var(--bad);
+  background: var(--bad-soft);
+}
+.wfg-node.off {
+  border-left-color: var(--muted);
+  opacity: 0.65;
+}
+.wfg-status.ok {
+  color: var(--ok);
+}
+.wfg-status.run {
+  color: var(--accent);
+}
+.wfg-status.wait,
+.wfg-status.warn {
+  color: var(--warn);
+}
+.wfg-status.bad {
+  color: var(--bad);
+}
+.wfg-status.off,
+.wfg-status.idle {
+  color: var(--muted);
+}
+@keyframes wfg-pulse {
+  50% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wfg-node.run {
+    animation: none;
+  }
+}

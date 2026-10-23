@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Header, ErrorNotice, ConnectionEmpty, Badge } from "../components/ui";
+import { WorkflowGraph } from "../components/WorkflowGraph";
 import { request } from "../lib/api";
 import { useApp } from "../lib/state";
 
@@ -286,6 +287,11 @@ export function Bots({
         2,
       ),
     );
+  }
+  function openConversation(conversationId: string) {
+    if (onTask) onTask(conversationId);
+    else sessionStorage.setItem("niucai.open-conversation", conversationId);
+    setPage(onTask ? "computer" : "chat");
   }
   function stageLabel(w: Workflow, itemId: string) {
     const stage = w.limits?.stages?.find((st) => st.work_item_id === itemId);
@@ -637,6 +643,24 @@ export function Bots({
                 )}
               </p>
             )}
+            {!!w.limits?.stages?.length && (
+              <WorkflowGraph
+                stages={w.limits.stages}
+                items={items.data?.filter((i) => i.workflow_id === w.id) ?? []}
+                botName={(agentId) =>
+                  bots.data?.find((b) => b.id === agentId)?.name ?? agentId
+                }
+                nodeLabel={(agentId, nodeId) => {
+                  const id =
+                    nodeId ??
+                    bots.data?.find((b) => b.id === agentId)?.definition
+                      .resource_policy?.fixed_node_id;
+                  if (!id) return "Kernel 本机";
+                  return `节点 ${nodes.data?.find((n) => n.id === id)?.name ?? id}`;
+                }}
+                onOpen={openConversation}
+              />
+            )}
             {items.data
               ?.filter((i) => i.workflow_id === w.id)
               .map((i) => (
@@ -660,17 +684,7 @@ export function Bots({
                       · 产物 {a.id} / {a.content_hash.slice(0, 12)}
                     </span>
                   ))}
-                  <button
-                    onClick={() => {
-                      if (onTask) onTask(i.conversation_id);
-                      else
-                        sessionStorage.setItem(
-                          "niucai.open-conversation",
-                          i.conversation_id,
-                        );
-                      setPage(onTask ? "computer" : "chat");
-                    }}
-                  >
+                  <button onClick={() => openConversation(i.conversation_id)}>
                     查看执行会话
                   </button>
                 </p>
