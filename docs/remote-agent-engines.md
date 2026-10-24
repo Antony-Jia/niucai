@@ -115,7 +115,7 @@ Kernel 侧事件 `kind` 保持现有集合，不新增类型，Desktop 无需改
 
 | 档位 | Codex | Claude Code | 用途 |
 |---|---|---|---|
-| `read` | `--sandbox read-only` | `--permission-mode plan` 或只读工具白名单 | 代码审阅、分析，不写文件 |
+| `read` | `--sandbox read-only` | `--tools Read,Glob,Grep --permission-mode dontAsk`（移除所有写入与命令工具） | 代码审阅、分析，不写文件 |
 | `workspace`（默认） | `--sandbox workspace-write` | `--permission-mode acceptEdits` + 工具白名单（编辑和受限 Bash） | 在工作区内修改并产出文件 |
 | `full` | `--sandbox danger-full-access` | `--permission-mode bypassPermissions` | 仅限容器内需要任意命令时使用；需 Bot 定义显式允许 |
 
@@ -213,6 +213,17 @@ E1 有意未做（Runner 的 protocol 3 已在 E2 完成）：Runner 仍发送 p
 3. 工作区里存在 `AGENTS.md` / `CLAUDE.md` 时，是拒绝启动，还是改名保留？当前倾向拒绝启动，并在结果中说明原因。
 4. 是否允许同一节点按引擎各开一个执行槽。V1 不做，需要等资源占用和计费模型明确后再定。
 
-进度（E2）：Runner 已实现 `CodexEngine` 并切换为 protocol 3，心跳上报 `executors`（`pi` 总是上报；`NIUCAI_ENGINES` 含 `codex` 才启用 Codex，含 `claude` 时上报 `not_implemented`）。节点环境变量：`NIUCAI_ENGINES`（默认 `pi`）、`NIUCAI_CODEX_API_KEY`（缺失则 `credential_missing`）、`NIUCAI_CODEX_MODEL`、`NIUCAI_CODEX_BASE_URL`（走 Responses API 的自定义 provider）、`NIUCAI_CODEX_PROFILES`（默认 `read,workspace`，`full` 须显式加入）、`NIUCAI_CODEX_UID`（默认 10002）。镜像构建参数 `ENGINES="pi codex"` 安装锁定版本 `@openai/codex@0.164.0`。进度事件带 `engine` 字段，工具事件只含工具名与是否出错。命令行固定 `approval_policy="never"`、`project_doc_max_bytes=0`（不读工作区 `AGENTS.md`）、`web_search="disabled"`；Kernel 的 `ExecutorStatus` 新增 `sandbox`。
+进度（E2）：Runner 已实现 `CodexEngine` 并切换为 protocol 3，心跳上报 `executors`（`pi` 总是上报；`NIUCAI_ENGINES` 含 `codex` / `claude` 才启用对应引擎）。节点环境变量：`NIUCAI_ENGINES`（默认 `pi`）、`NIUCAI_CODEX_API_KEY`（缺失则 `credential_missing`）、`NIUCAI_CODEX_MODEL`、`NIUCAI_CODEX_BASE_URL`（走 Responses API 的自定义 provider）、`NIUCAI_CODEX_PROFILES`（默认 `read,workspace`，`full` 须显式加入）、`NIUCAI_CODEX_UID`（默认 10002）。镜像构建参数 `ENGINES="pi codex"` 安装锁定版本 `@openai/codex@0.164.0`。进度事件带 `engine` 字段，工具事件只含工具名与是否出错。命令行固定 `approval_policy="never"`、`project_doc_max_bytes=0`（不读工作区 `AGENTS.md`）、`web_search="disabled"`；Kernel 的 `ExecutorStatus` 新增 `sandbox`。
 验证：`services/node-runner/tests`（夹具单测，字段取自真实 CLI 输出：`item.type=error` 警告、`Reconnecting` 瞬时错误、`exec_command` 对应 `command_execution`）；`remote-pi-demo.ps1 -Codex` 后运行 `verify-remote-engines.py`（真实 Codex CLI 容器，模拟 Responses API）：能力上报、Codex 工作包在 Codex 节点完成并返回 `proof.txt` 与 usage、Pi 工作包不受影响、指向 Pi 节点的 Codex 工作包以 `ENGINE_NOT_READY` 等待；`verify-remote-pi.py` 在 protocol 3 Runner 下仍全部通过（运行前需停掉 `node-codex`，该脚本假定只有两个节点）。模拟模型是确定性服务，不代表真实 Codex 模型质量；`verify-resource-nodes.py` 仍未运行。
-E2 有意未做：`permission_profile` 目前只从 `config_snapshot` 读取，API 与主 Pi 工具尚未写入（E4），实际默认走 `workspace`；Desktop 引擎标签与接入向导字段（E4）；Claude Code（E3）；Codex 会话续接（E5）。
+E2 有意未做：`permission_profile` 目前只从 `config_snapshot` 读取，API 与主 Pi 工具尚未写入（E4），实际默认走 `workspace`；Desktop 引擎标签与接入向导字段（E4）；Codex 会话续接（E5）。
+
+进度（E3）：Runner 已实现 `ClaudeEngine`（`claude -p --output-format stream-json --verbose`，提示词走 stdin 直到 EOF）。节点环境变量：`NIUCAI_ENGINES` 含 `claude`、`NIUCAI_CLAUDE_API_KEY`（缺失则 `credential_missing`）、`NIUCAI_CLAUDE_MODEL`、`NIUCAI_CLAUDE_BASE_URL`（`ANTHROPIC_BASE_URL`）、`NIUCAI_CLAUDE_PROFILES`（默认 `read,workspace`，`full` 须显式加入）、`NIUCAI_CLAUDE_MAX_BUDGET_USD`（可选，对应 `--max-budget-usd`）、`NIUCAI_CLAUDE_UID`（默认 10003）。镜像构建参数 `ENGINES="pi claude"` 安装锁定版本 `@anthropic-ai/claude-code@2.1.307`。
+
+隔离与档位（以 2.1.307 实测为准）：
+- 命令行固定 `--bare --strict-mcp-config --mcp-config '{"mcpServers":{}}'`。实测默认模式会把工作区 `CLAUDE.md` 注入系统提示，而 `--bare` 不会；同时它跳过 hooks、插件、keychain 与自动记忆。`--bare` 只认 `ANTHROPIC_API_KEY`，与“只支持 API Key”的边界一致。
+- `--disallowedTools WebSearch WebFetch` 默认禁用联网类工具。
+- `read`：`--tools Read,Glob,Grep --permission-mode dontAsk`，写入与命令工具根本不存在（实测 Bash 调用返回 `No such tool available`），因此不依赖任何沙箱；`workspace`：`--permission-mode acceptEdits --allowedTools Bash Edit Write Read`，Bash 不做命令级限制，隔离靠容器，心跳 `sandbox: "container"`；`full`：`bypassPermissions`，仅在节点显式启用时可用。该 CLI 版本没有 `--max-turns`，预算只能用 `--max-budget-usd` 和作业超时。
+- 事件：`system/init` → `session`；`assistant` 的 `text` / `tool_use` 与 `user` 的 `tool_result` → `assistant` / `tool_execution_start` / `tool_execution_end`（工具名保持 Claude 原名，如 `Bash`，不含命令文本）；带 `parent_tool_use_id` 的子代理帧不上报；`thinking` 不上报；`system` 的其它子类型（`task_summary`、`post_turn_summary` 等）忽略。
+- 终态：`result` 帧 `subtype=success` 且 `is_error=false` 才算成功。实测存在 `subtype=success` 但 `is_error=true` 的失败（模型不可用），必须按 `is_error` 判定。结果带 `usage`（整数字段加 `num_turns`）与 `cost_usd`。
+
+验证：夹具单测（帧结构取自真实 CLI 输出）；`remote-pi-demo.ps1 -Codex -Claude` 后运行 `verify-remote-engines.py`：真实 Claude Code 2.1.307 容器对接模拟 Anthropic Messages API，Claude 工作包在 Claude 节点完成并返回 `proof.txt`、usage 与带引擎标记的事件，Codex 与 Claude 工作包指向无对应引擎的节点时以 `ENGINE_NOT_READY` 等待；`verify-remote-pi.py` 在多引擎 Runner 下仍全部通过（运行前需停掉 `node-codex` 与 `node-claude`）。模拟模型是确定性服务，不代表真实模型质量；`read` 档位只有命令行与本机实测，容器内联调尚未覆盖（API 暂不能写入 `permission_profile`，待 E4）。

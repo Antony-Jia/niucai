@@ -387,6 +387,173 @@ class CodexEngine:
         return [], None
 
 
+class ClaudeEngine:
+    """Claude Code engine: `claude -p --output-format stream-json`, prompt on stdin, API-key auth only."""
+
+    name = "claude"
+    label = "Claude Code"
+    closes_stdin = True  # `-p` reads the prompt until EOF
+    sandbox = "container"  # no OS sandbox is used here; the node container is the boundary
+    web_tools = ["WebSearch", "WebFetch"]
+    ignored_blocks = {"thinking", "redacted_thinking"}
+    # Frame types without job-relevant information; any other type is counted as format drift.
+    ignored_frames = {"system", "stream_event", "rate_limit_event"}
+
+    def __init__(self, root):
+        self.uid = int(os.environ.get("NIUCAI_CLAUDE_UID", "10003"))
+        self.home = root / "claude-home"
+        self.home.mkdir(exist_ok=True)
+        os.chown(self.home, self.uid, self.uid)
+        self.model = os.environ.get("NIUCAI_CLAUDE_MODEL", "")
+        self.base_url = os.environ.get("NIUCAI_CLAUDE_BASE_URL", "")
+        self.budget = os.environ.get("NIUCAI_CLAUDE_MAX_BUDGET_USD", "")
+        allowed = {a.strip() for a in os.environ.get("NIUCAI_CLAUDE_PROFILES", "read,workspace").split(",")}
+        self.profiles = [p for p in ("read", "workspace", "full") if p in allowed]
+        self.version = self.probe_version()
+
+    @staticmethod
+    def probe_version():
+        if not shutil.which("claude"):
+            return ""
+        try:
+            output = subprocess.run(
+                ["claude", "--version"], capture_output=True, text=True, timeout=30, check=False
+            ).stdout.split()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return output[0][:100] if output else ""
+
+    @staticmethod
+    def credential():
+        return os.environ.get("NIUCAI_CLAUDE_API_KEY", "")
+
+    def status(self):
+        if not shutil.which("claude"):
+            return {"available": False, "reason": "not_installed"}
+        if not self.credential():
+            return {"available": False, "reason": "credential_missing"}
+        return {
+            "available": True,
+            "version": self.version,
+            "model": self.model,
+            "profiles": self.profiles,
+            "sandbox": self.sandbox,
+        }
+
+    def environment(self):
+        # Only Claude's own credential; the node token and Pi keys never reach this process.
+        environment = {
+            "PATH": os.environ["PATH"],
+            "HOME": str(self.home),
+            "CLAUDE_CONFIG_DIR": str(self.home),
+            "LANG": "C.UTF-8",
+            "ANTHROPIC_API_KEY": self.credential(),
+            "DISABLE_AUTOUPDATER": "1",
+            "DISABLE_TELEMETRY": "1",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        }
+        if self.base_url:
+            environment["ANTHROPIC_BASE_URL"] = self.base_url
+        return environment
+
+    def drop_privileges(self):
+        os.setgroups([])
+        os.setgid(self.uid)
+        os.setuid(self.uid)
+
+    def command(self, session, job=None):
+        profile = ((job or {}).get("config_snapshot") or {}).get("permission_profile") or "workspace"
+        if profile not in self.profiles:
+            raise ValueError(f"permission profile not enabled on this node: {str(profile)[:40]}")
+        args = [
+            "claude",
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            # --bare skips CLAUDE.md discovery, hooks, plugins, keychain and auto-memory: the workspace
+            # and the node's home are untrusted input, only the flags below configure the run.
+            "--bare",
+            "--strict-mcp-config",
+            "--mcp-config",
+            '{"mcpServers":{}}',
+            "--disallowedTools",
+            *self.web_tools,
+        ]
+        if profile == "read":
+            # Read-only is enforced by removing every tool that can write or run commands.
+            args += ["--tools", "Read,Glob,Grep", "--permission-mode", "dontAsk"]
+        elif profile == "workspace":
+            args += ["--permission-mode", "acceptEdits", "--allowedTools", "Bash", "Edit", "Write", "Read"]
+        else:
+            args += ["--permission-mode", "bypassPermissions"]
+        if self.model:
+            args += ["--model", self.model]
+        if self.budget:
+            args += ["--max-budget-usd", self.budget]
+        return args
+
+    @staticmethod
+    def stdin(attempt, message):
+        return message.encode()
+
+    def translate(self, frame, state):
+        """Map one `claude -p --output-format stream-json` frame to (events, final)."""
+        kind = frame.get("type", "")
+        if kind == "system":
+            if frame.get("subtype") == "init":
+                state["thread_id"] = str(frame.get("session_id", ""))
+                return [("session", {"session_id": state["thread_id"] or state["job_id"]})], None
+            return [], None
+        if kind in {"user", "assistant"}:
+            if frame.get("parent_tool_use_id"):  # sub-agent traffic is not reported
+                return [], None
+            events = []
+            for block in (frame.get("message") or {}).get("content") or []:
+                block_type = block.get("type") if isinstance(block, dict) else None
+                if kind == "user" and block_type == "tool_result":
+                    tool = state.setdefault("tools", {}).pop(block.get("tool_use_id"), "tool")
+                    events.append(
+                        ("tool_execution_end", {"tool": tool, "is_error": bool(block.get("is_error"))})
+                    )
+                elif kind == "assistant" and block_type == "text":
+                    state["answer"] = str(block.get("text", ""))
+                    data = {"text": state["answer"][:4000], "stop_reason": "stop"}
+                    events.append(("assistant", data))
+                elif kind == "assistant" and block_type == "tool_use":
+                    tool = str(block.get("name", "tool"))[:64]
+                    state.setdefault("tools", {})[block.get("id")] = tool
+                    events.append(("tool_execution_start", {"tool": tool, "is_error": False}))
+                elif block_type not in self.ignored_blocks and not (kind == "user" and block_type == "text"):
+                    state["unknown_frames"] = state.get("unknown_frames", 0) + 1
+            return events, None
+        if kind == "result":
+            answer = str(frame.get("result") or state["answer"])
+            if frame.get("is_error") or frame.get("subtype") != "success":
+                reason = answer or str(frame.get("subtype") or "error")
+                raise RuntimeError(f"Claude Code failed ({frame.get('subtype')}): {reason}"[:500])
+            if not answer:
+                raise RuntimeError("Claude Code ended without a final answer")
+            final = {
+                "answer": answer[:16000],
+                "executor": self.name,
+                "session_id": str(frame.get("session_id") or state.get("thread_id", "")),
+            }
+            usage = {k: v for k, v in (frame.get("usage") or {}).items() if isinstance(v, int)}
+            if isinstance(frame.get("num_turns"), int):
+                usage["num_turns"] = frame["num_turns"]
+            if usage:
+                final["usage"] = usage
+            if isinstance(frame.get("total_cost_usd"), (int, float)):
+                final["cost_usd"] = round(float(frame["total_cost_usd"]), 6)
+            if state.get("unknown_frames"):
+                final["unknown_frames"] = state["unknown_frames"]
+            return [], final
+        if kind not in self.ignored_frames:
+            state["unknown_frames"] = state.get("unknown_frames", 0) + 1
+        return [], None
+
+
 class Runner:
     def __init__(self):
         self.root = Path(os.environ.get("NIUCAI_NODE_DATA", "/data"))
@@ -413,6 +580,8 @@ class Runner:
         engines = [PiEngine(self.root)]
         if "codex" in self.requested:
             engines.append(CodexEngine(self.root))
+        if "claude" in self.requested:
+            engines.append(ClaudeEngine(self.root))
         self.engines = {engine.name: engine for engine in engines}
 
     async def post(self, suffix, data=None):
@@ -445,8 +614,6 @@ class Runner:
 
     def heartbeat_payload(self):
         executors = {name: engine.status() for name, engine in self.engines.items()}
-        if "claude" in self.requested:
-            executors["claude"] = {"available": False, "reason": "not_implemented"}
         return {
             **self.engines["pi"].heartbeat(),
             "protocol_version": 3,

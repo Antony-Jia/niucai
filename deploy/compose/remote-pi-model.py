@@ -114,6 +114,56 @@ async def responses(request: Request):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
+@app.post("/v1/messages")
+async def messages(request: Request):
+    """Minimal Anthropic Messages API so the real Claude Code CLI can be exercised: one Bash call, then an answer."""
+    body = await request.json()
+    finished = any(
+        isinstance(m.get("content"), list) and any(b.get("type") == "tool_result" for b in m["content"])
+        for m in body.get("messages", [])
+    )
+    if not body.get("stream"):  # helper calls such as title generation
+        return {
+            "id": "msg_helper",
+            "type": "message",
+            "role": "assistant",
+            "model": body.get("model", "sim"),
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+    if finished:
+        block = {"type": "text", "text": ""}
+        delta = {"type": "text_delta", "text": "SIMULATION: Claude wrote proof.txt"}
+        stop = "end_turn"
+    else:
+        block = {"type": "tool_use", "id": "toolu_sim", "name": "Bash", "input": {}}
+        command = {"command": "echo claude-simulation > proof.txt", "description": "write proof"}
+        delta = {"type": "input_json_delta", "partial_json": json.dumps(command)}
+        stop = "tool_use"
+    start = {
+        "id": "msg_sim",
+        "type": "message",
+        "role": "assistant",
+        "model": body.get("model", "sim"),
+        "content": [],
+        "stop_reason": None,
+        "stop_sequence": None,
+        "usage": {"input_tokens": 11, "output_tokens": 1},
+    }
+
+    async def stream():
+        yield sse("message_start", {"message": start})
+        yield sse("content_block_start", {"index": 0, "content_block": block})
+        yield sse("content_block_delta", {"index": 0, "delta": delta})
+        yield sse("content_block_stop", {"index": 0})
+        yield sse("message_delta", {"delta": {"stop_reason": stop, "stop_sequence": None}, "usage": {"output_tokens": 7}})
+        yield sse("message_stop", {})
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
 @app.post("/v1/chat/completions")
 async def chat(request: Request):
     body = await request.json()

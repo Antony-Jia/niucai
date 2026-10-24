@@ -116,6 +116,25 @@ services:
       NIUCAI_CODEX_MODEL: demo-codex
     volumes: [node-c-data:/data, "../../services/node-runner/runner.py:/opt/runner/runner.py:ro"]
 
+  # Optional: `remote-pi-demo.ps1 -Claude`. Real Claude Code CLI against the simulation Messages API.
+  node-claude:
+    <<: *runner
+    profiles: [claude]
+    image: niucai-pi-node-claude:v1
+    build:
+      context: ../..
+      dockerfile: services/node-runner/Dockerfile
+      args: {ENGINES: "pi claude"}
+    environment:
+      <<: *runner-env
+      NIUCAI_NODE_ID: ${REMOTE_NODE_D_ID:-}
+      NIUCAI_NODE_TOKEN: ${REMOTE_NODE_D_TOKEN:-}
+      NIUCAI_ENGINES: pi,claude
+      NIUCAI_CLAUDE_API_KEY: simulation-only
+      NIUCAI_CLAUDE_BASE_URL: http://model:8081
+      NIUCAI_CLAUDE_MODEL: demo-claude
+    volumes: [node-d-data:/data, "../../services/node-runner/runner.py:/opt/runner/runner.py:ro"]
+
 volumes:
   remote-db:
   remote-workspace:
@@ -123,3 +142,4 @@ volumes:
   node-a-data:
   node-b-data:
   node-c-data:
+  node-d-data:

@@ -30,7 +30,7 @@ K1/K2 与 L1/L2 首批实现已进入源码，进度合同见 [API](api.md)；�
 - [统一会话验收记录](unified-conversations-validation-20261010.md)：自动回归、真实模型与 Linux Chromium 验证及部署边界。
 - [本地 Docker 统一会话联调](local-unified-testing.md)：独立 API、Pi、PostgreSQL、Computer、VNC 和手机入口。
 - [远程 Pi 执行节点 V1](remote-pi-nodes.md)：节点凭证、工作包授权、队列与租约、主 Pi 委派、双 Docker 节点模拟与恢复边界。
-- [远程节点多执行引擎](remote-agent-engines.md)：方案（E0 Runner 重构、E1 Kernel 基础、E2 Codex 引擎已实现，Claude Code 与编排工具未实现），Node Runner 引擎抽象，接入 Claude Code / Codex 的事件映射、凭据与审批边界、迁移计划；未实现。
+- [远程节点多执行引擎](remote-agent-engines.md)：方案（E0 Runner 重构、E1 Kernel 基础、E2 Codex 引擎、E3 Claude Code 引擎已实现，编排工具未实现），Node Runner 引擎抽象，接入 Claude Code / Codex 的事件映射、凭据与审批边界、迁移计划；未实现。
 - [多资源节点接入验收](resource-nodes-validation-20261011.md)：Docker/VPS 接入向导、下载配置、节点管理、并发锁与独立 Docker 验证。
 - [多 Bot 协作方案](multi-bot-collaboration.md)：Bot 身份、异步交接、群聊、并发 Worker 与 Routine 设计；B1–B5 代码已实现，部分实机验收待完成，详见该文关联验收记录。
 - [Kernel Anywhere 合同](kernel-anywhere-contract.md)：实例身份、版本快照、连接模式、固定资源与二进制协议。

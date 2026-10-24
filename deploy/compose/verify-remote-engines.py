@@ -1,6 +1,6 @@
-"""Live Docker verification for engine dispatch (E2). Needs `remote-pi-demo.ps1 -Codex`.
+"""Live Docker verification for engine dispatch (E2/E3). Needs `remote-pi-demo.ps1 -Codex` and/or `-Claude`.
 
-Real Codex CLI in the node container, simulation Responses API as the model: this proves the
+Real Codex / Claude Code CLIs in the node containers, simulation model APIs: this proves the
 Runner/CLI/Kernel chain, not model quality. Reads local demo credentials without printing them.
 """
 
@@ -20,7 +20,8 @@ client = httpx.Client(
     headers={"Authorization": f"Bearer {env['REMOTE_API_TOKEN']}"},
     timeout=10,
 )
-codex_node = env["REMOTE_NODE_C_ID"]
+codex_node = env.get("REMOTE_NODE_C_ID", "")
+claude_node = env.get("REMOTE_NODE_D_ID", "")
 evidence = {}
 
 
@@ -67,45 +68,56 @@ def events(ident):
 
 
 nodes = {n["id"]: n for n in request("/api/remote/nodes", method="GET")}
-assert nodes[codex_node]["engines"]["codex"]["available"], nodes[codex_node]
-assert nodes[codex_node]["protocol_status"] == "COMPATIBLE"
-evidence["codex_capabilities"] = nodes[codex_node]["engines"]["codex"]
-print("PASS capabilities: protocol 3 node reports codex", evidence["codex_capabilities"])
+has_codex = codex_node in nodes and nodes[codex_node]["engines"].get("codex", {}).get("available")
+has_claude = claude_node in nodes and nodes[claude_node]["engines"].get("claude", {}).get("available")
+assert has_codex or has_claude, "start a node with `remote-pi-demo.ps1 -Codex` or `-Claude` first"
+node_a = next(n["id"] for n in nodes.values() if n["name"].endswith(" A"))
 
-# 1. A Codex job only runs on the Codex node and returns the file written by the real CLI.
-codex_id = submit("codex")
-codex_job = wait(lambda: finished(codex_id))
-assert codex_job["status"] == "COMPLETED", codex_job
-assert codex_job["node_id"] == codex_node, codex_job
-result = codex_job["result"]
-assert result["executor"] == "codex" and result["answer"].startswith("SIMULATION"), result
-assert result["usage"]["input_tokens"] > 0 and codex_job["session_id"], codex_job
-proof = [f for f in result["files"] if f["path"] == "proof.txt"]
-assert proof and proof[0].get("text", "").strip() == "codex-simulation", result["files"]
-kinds = [(e["data"]["kind"], e["data"]["payload"]) for e in events(codex_id) if e["data"].get("kind")]
-assert all(data.get("engine") == "codex" for _, data in kinds), kinds
-assert [k for k, _ in kinds if k.startswith("tool_execution")] == [
-    "tool_execution_start",
-    "tool_execution_end",
-], kinds
-assert "echo" not in json.dumps(kinds), "command text must not be reported"
-evidence["codex_job"] = {"status": codex_job["status"], "node": "codex", "events": [k for k, _ in kinds]}
-print("PASS codex job: completed on the Codex node with proof.txt, usage and engine-tagged events")
 
-# 2. Pi jobs still run, and never need the Codex engine.
+def check_engine(engine, node, proof_text, answer_prefix):
+    """The engine's job runs only on its node and returns the file written by the real CLI."""
+    assert nodes[node]["protocol_status"] == "COMPATIBLE", nodes[node]
+    evidence[f"{engine}_capabilities"] = nodes[node]["engines"][engine]
+    print(f"PASS capabilities: protocol 3 node reports {engine}", evidence[f"{engine}_capabilities"])
+    ident = submit(engine)
+    job = wait(lambda: finished(ident))
+    assert job["status"] == "COMPLETED", job
+    assert job["node_id"] == node, job
+    result = job["result"]
+    assert result["executor"] == engine and result["answer"].startswith(answer_prefix), result
+    assert result["usage"]["input_tokens"] > 0 and job["session_id"], job
+    proof = [f for f in result["files"] if f["path"] == "proof.txt"]
+    assert proof and proof[0].get("text", "").strip() == proof_text, result["files"]
+    kinds = [(e["data"]["kind"], e["data"]["payload"]) for e in events(ident) if e["data"].get("kind")]
+    assert all(data.get("engine") == engine for _, data in kinds), kinds
+    assert [k for k, _ in kinds if k.startswith("tool_execution")] == [
+        "tool_execution_start",
+        "tool_execution_end",
+    ], kinds
+    assert "echo" not in json.dumps(kinds), "command text must not be reported"
+    evidence[f"{engine}_job"] = {"status": job["status"], "events": [k for k, _ in kinds]}
+    print(f"PASS {engine} job: completed on the {engine} node with proof.txt, usage and engine-tagged events")
+
+
+if has_codex:
+    check_engine("codex", codex_node, "codex-simulation", "SIMULATION")
+if has_claude:
+    check_engine("claude", claude_node, "claude-simulation", "SIMULATION")
+
+# Pi jobs still run, and never need another engine.
 pi_id = submit("pi")
 pi_job = wait(lambda: finished(pi_id))
 assert pi_job["status"] == "COMPLETED" and pi_job["result"]["executor"] == "pi", pi_job
 print("PASS pi job: still completes through Pi")
 
-# 3. A Codex job pinned to a Pi-only node is never claimed and shows why it waits.
-node_a = next(n["id"] for n in nodes.values() if n["name"].endswith(" A"))
-stuck = submit("codex", [node_a])
-time.sleep(6)
-waiting = request(f"/api/remote/jobs/{stuck}", method="GET")
-assert waiting["status"] == "QUEUED" and waiting["wait_state"]["reason"] == "ENGINE_NOT_READY", waiting
-request(f"/api/remote/jobs/{stuck}/cancel")
-print("PASS dispatch: Codex job pinned to a Pi-only node waits with ENGINE_NOT_READY")
+# An engine job pinned to a node without that engine is never claimed and shows why it waits.
+for engine in [e for e, ok in (("codex", has_codex), ("claude", has_claude)) if ok]:
+    stuck = submit(engine, [node_a])  # node A only has Pi
+    time.sleep(6)
+    waiting = request(f"/api/remote/jobs/{stuck}", method="GET")
+    assert waiting["status"] == "QUEUED" and waiting["wait_state"]["reason"] == "ENGINE_NOT_READY", waiting
+    request(f"/api/remote/jobs/{stuck}/cancel")
+    print(f"PASS dispatch: {engine} job pinned to a node without it waits with ENGINE_NOT_READY")
 
 out = root / "build-cache/remote-pi/verification-engines.json"
 out.write_text(json.dumps(evidence, indent=2), encoding="utf-8")

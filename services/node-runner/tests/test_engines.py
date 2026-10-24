@@ -156,7 +156,13 @@ def test_runner_heartbeat_is_protocol_3_with_executors(tmp_path, monkeypatch):
     monkeypatch.setattr(runner.shutil, "which", lambda name: "/usr/bin/codex")
     monkeypatch.setattr(runner.CodexEngine, "probe_version", staticmethod(lambda: ""))
     monkeypatch.setattr(runner.CodexEngine, "probe_sandbox", lambda self: "engine")
-    engines = {"pi": runner.PiEngine(tmp_path), "codex": runner.CodexEngine(tmp_path)}
+    monkeypatch.setattr(runner.ClaudeEngine, "probe_version", staticmethod(lambda: "2.1.307"))
+    monkeypatch.setenv("NIUCAI_CLAUDE_API_KEY", "sk-claude")
+    engines = {
+        "pi": runner.PiEngine(tmp_path),
+        "codex": runner.CodexEngine(tmp_path),
+        "claude": runner.ClaudeEngine(tmp_path),
+    }
     instance = object.__new__(runner.Runner)
     instance.engines, instance.requested = engines, {"pi", "codex", "claude"}
     instance.kernel_instance_id = "kernel-1"
@@ -165,7 +171,9 @@ def test_runner_heartbeat_is_protocol_3_with_executors(tmp_path, monkeypatch):
     assert payload["protocol_version"] == 3 and payload["kernel_instance_id"] == "kernel-1"
     assert payload["executors"]["pi"]["available"] is True
     assert payload["executors"]["codex"] == {"available": False, "reason": "credential_missing"}
-    assert payload["executors"]["claude"]["reason"] == "not_implemented"
+    assert payload["executors"]["claude"]["available"] is True
+    assert payload["executors"]["claude"]["sandbox"] == "container"
+    assert "sk-claude" not in json.dumps(payload)
 
 
 def test_pi_wire_behaviour_is_unchanged(tmp_path, monkeypatch):
@@ -200,3 +208,164 @@ def test_codex_without_engine_sandbox_offers_only_container_isolated_profiles(tm
     assert args[args.index("--sandbox") + 1] == "danger-full-access"
     with pytest.raises(ValueError):  # read-only cannot be enforced, so it is not offered
         engine.command(tmp_path / "j.jsonl", {"config_snapshot": {"permission_profile": "read"}})
+
+
+@pytest.fixture
+def claude(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner.os, "chown", lambda *a: None, raising=False)
+    monkeypatch.setenv("NIUCAI_CLAUDE_API_KEY", "sk-claude")
+    monkeypatch.setenv("NIUCAI_CLAUDE_MODEL", "claude-test")
+    monkeypatch.setenv("NIUCAI_NODE_TOKEN", "node-secret")
+    monkeypatch.setattr(runner.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(runner.ClaudeEngine, "probe_version", staticmethod(lambda: "2.1.307"))
+    return runner.ClaudeEngine(tmp_path)
+
+
+def test_claude_success_maps_events_usage_and_cost(claude, tmp_path):
+    # Frame shapes taken from `claude -p --output-format stream-json --verbose` 2.1.307.
+    frames = [
+        {"type": "system", "subtype": "init", "session_id": "sess-1", "tools": ["Bash"]},
+        {
+            "type": "assistant",
+            "parent_tool_use_id": None,
+            "message": {
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "secret cmd"}}
+                ]
+            },
+        },
+        {"type": "system", "subtype": "task_summary", "detail": "writing proof"},
+        {
+            "type": "user",
+            "message": {
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "x", "is_error": False}]
+            },
+        },
+        {"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "hmm"}]}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "done"}]}},
+        {"type": "system", "subtype": "post_turn_summary"},
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "all done",
+            "session_id": "sess-1",
+            "num_turns": 2,
+            "total_cost_usd": 0.000368,
+            "usage": {
+                "input_tokens": 22,
+                "output_tokens": 14,
+                "service_tier": "standard",
+                "speed": "standard",
+            },
+        },
+    ]
+    events, final = run_frames(claude, frames, tmp_path)
+    assert events == [
+        ("session", {"session_id": "sess-1"}),
+        ("tool_execution_start", {"tool": "Bash", "is_error": False}),
+        ("tool_execution_end", {"tool": "Bash", "is_error": False}),
+        ("assistant", {"text": "done", "stop_reason": "stop"}),
+    ]
+    assert final == {
+        "answer": "all done",
+        "executor": "claude",
+        "session_id": "sess-1",
+        "usage": {"input_tokens": 22, "output_tokens": 14, "num_turns": 2},
+        "cost_usd": 0.000368,
+    }
+    assert "secret cmd" not in json.dumps(events)  # command text is never reported
+
+
+def test_claude_tool_errors_subagents_and_unknown_frames(claude, tmp_path):
+    frames = [
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Edit", "input": {}}]},
+        },
+        {
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": True}]},
+        },
+        {
+            "type": "assistant",
+            "parent_tool_use_id": "agent-1",
+            "message": {"content": [{"type": "text", "text": "sub-agent chatter"}]},
+        },
+        {"type": "assistant", "message": {"content": [{"type": "hologram"}]}},
+        {"type": "surprise"},
+        {"type": "rate_limit_event"},
+        {"type": "result", "subtype": "success", "is_error": False, "result": "ok"},
+    ]
+    events, final = run_frames(claude, frames, tmp_path)
+    assert ("tool_execution_end", {"tool": "Edit", "is_error": True}) in events
+    assert "sub-agent chatter" not in json.dumps(events)
+    assert final["unknown_frames"] == 2 and final["answer"] == "ok"
+
+
+def test_claude_failed_results_raise(claude, tmp_path):
+    with pytest.raises(RuntimeError, match="error_max_budget_usd"):
+        run_frames(
+            claude, [{"type": "result", "subtype": "error_max_budget_usd", "is_error": True}], tmp_path
+        )
+    with pytest.raises(RuntimeError, match="invalid key"):
+        run_frames(
+            claude,
+            [{"type": "result", "subtype": "success", "is_error": True, "result": "invalid key"}],
+            tmp_path,
+        )
+    with pytest.raises(RuntimeError, match="without a final answer"):
+        run_frames(
+            claude, [{"type": "result", "subtype": "success", "is_error": False, "result": ""}], tmp_path
+        )
+
+
+def test_claude_command_maps_profiles_and_isolates_configuration(claude, tmp_path):
+    session = tmp_path / "job-1.jsonl"
+    default = claude.command(session, {"config_snapshot": {}})
+    assert default[:2] == ["claude", "-p"] and "--bare" in default and "--strict-mcp-config" in default
+    assert default[default.index("--permission-mode") + 1] == "acceptEdits"
+    assert default[default.index("--model") + 1] == "claude-test"
+    assert default[default.index("--disallowedTools") + 1 : default.index("--disallowedTools") + 3] == [
+        "WebSearch",
+        "WebFetch",
+    ]
+    read = claude.command(session, {"config_snapshot": {"permission_profile": "read"}})
+    assert read[read.index("--tools") + 1] == "Read,Glob,Grep" and "Bash" not in read
+    for profile in ("full", "root"):  # `full` must be enabled explicitly on the node
+        with pytest.raises(ValueError):
+            claude.command(session, {"config_snapshot": {"permission_profile": profile}})
+
+
+def test_claude_full_profile_budget_and_environment(claude, tmp_path, monkeypatch):
+    monkeypatch.setenv("NIUCAI_CLAUDE_PROFILES", "workspace,full")
+    monkeypatch.setenv("NIUCAI_CLAUDE_MAX_BUDGET_USD", "2.5")
+    monkeypatch.setenv("NIUCAI_CLAUDE_BASE_URL", "http://model:8080")
+    engine = runner.ClaudeEngine(tmp_path)
+    assert engine.profiles == ["workspace", "full"]
+    args = engine.command(tmp_path / "j.jsonl", {"config_snapshot": {"permission_profile": "full"}})
+    assert args[args.index("--permission-mode") + 1] == "bypassPermissions"
+    assert args[args.index("--max-budget-usd") + 1] == "2.5"
+    environment = engine.environment()
+    assert (
+        environment["ANTHROPIC_API_KEY"] == "sk-claude"
+        and environment["ANTHROPIC_BASE_URL"] == "http://model:8080"
+    )
+    assert "node-secret" not in json.dumps(environment) and "CODEX_API_KEY" not in environment
+    assert engine.closes_stdin and engine.stdin("a", "hello") == b"hello"
+
+
+def test_claude_status_reports_reason_without_leaking_credentials(claude, monkeypatch):
+    status = claude.status()
+    assert status == {
+        "available": True,
+        "version": "2.1.307",
+        "model": "claude-test",
+        "profiles": ["read", "workspace"],
+        "sandbox": "container",
+    }
+    assert "sk-claude" not in json.dumps(status)
+    monkeypatch.delenv("NIUCAI_CLAUDE_API_KEY")
+    assert claude.status() == {"available": False, "reason": "credential_missing"}
+    monkeypatch.setattr(runner.shutil, "which", lambda name: None)
+    assert claude.status() == {"available": False, "reason": "not_installed"}
