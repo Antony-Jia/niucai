@@ -52,6 +52,7 @@ class JobCreate(BaseModel):
     parent_task_id: str | None = None
     artifacts: list[dict] = Field(default_factory=list, max_length=16)
     engine: Literal["pi", "codex", "claude"] = "pi"
+    permission_profile: Literal["read", "workspace", "full"] | None = None
 
 
 class Attempt(BaseModel):
@@ -183,6 +184,7 @@ def remote_router(db, settings, auth):
             request.parent_task_id,
             artifacts=request.artifacts,
             engine=request.engine,
+            permission_profile=request.permission_profile,
         )
 
     @router.get("/api/remote/jobs", dependencies=auth)

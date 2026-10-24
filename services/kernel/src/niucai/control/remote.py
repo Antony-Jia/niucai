@@ -12,6 +12,7 @@ from niucai.storage.db import Event, RemoteJob, RemoteNode, Task, as_dict, emit,
 ACTIVE = {"RUNNING", "CANCELLING", "LOST"}
 TERMINAL = {"COMPLETED", "FAILED", "CANCELLED", "DENIED"}
 ENGINES = ("pi", "codex", "claude")
+PROFILES = ("read", "workspace", "full")
 NODE_PROTOCOLS = {1, 2, 3}
 
 
@@ -235,10 +236,13 @@ class RemoteManager:
         parent_token=None,
         artifacts=None,
         engine="pi",
+        permission_profile=None,
     ):
         self.enabled()
         if engine not in ENGINES:
             raise ValueError(f"unknown remote engine: {engine}")
+        if permission_profile is not None and permission_profile not in PROFILES:
+            raise ValueError(f"unknown permission profile: {permission_profile}")
         with self.db.sessions.begin() as s:
             from niucai.control.bots import permitted
             from niucai.control.collaboration import gate
@@ -308,15 +312,18 @@ class RemoteManager:
                 raise Conflict("Kernel is draining for migration")
             existing = s.scalar(select(RemoteJob).where(RemoteJob.idempotency_key == key))
             allowed_nodes = sorted(set(allowed_nodes))
+            if permission_profile:
+                saved = {**saved, "permission_profile": permission_profile}
             if existing:
                 if existing.input_artifacts != references:
                     raise Conflict("remote input artifact versions changed on replay")
-                if (existing.prompt, existing.allowed_nodes, existing.parent_task_id, existing.engine) != (
-                    prompt,
-                    allowed_nodes,
-                    parent_task_id,
-                    engine,
-                ):
+                if (
+                    existing.prompt,
+                    existing.allowed_nodes,
+                    existing.parent_task_id,
+                    existing.engine,
+                    existing.config_snapshot.get("permission_profile"),
+                ) != (prompt, allowed_nodes, parent_task_id, engine, permission_profile):
                     raise Conflict("idempotency key reused with a different job")
                 return as_dict(existing)
             if parent_task_id and self.settings.multi_bot_enabled:
@@ -343,11 +350,19 @@ class RemoteManager:
             )
             s.add(job)
             s.flush()
-            job_event(s, job, "submitted", execution_policy="isolated-node-autonomous")
+            job_event(
+                s,
+                job,
+                "submitted",
+                execution_policy="isolated-node-autonomous",
+                engine=engine,
+                permission_profile=permission_profile or "workspace",
+            )
             if parent_task_id:
                 from niucai.control.autonomy import yolo
 
-                if yolo(s, self.settings, task, "remote"):
+                # full 档位绕过引擎自身的权限询问，永远需要人工批准，不随会话 YOLO 自动入队。
+                if permission_profile != "full" and yolo(s, self.settings, task, "remote"):
                     # 隔离节点工作包按会话 YOLO 直接入队，事件流仍记录批准来源。
                     job.status = "QUEUED"
                     job_event(s, job, "approve", policy="yolo")

@@ -436,6 +436,8 @@ class PiDurableRuntime:
                             idempotency_key=f"{task_id}:remote:{sha256(str(params['toolTaskId']).encode()).hexdigest()}",
                             parent_task_id=task_id,
                             artifacts=params.get("artifacts", []),
+                            engine=params.get("engine") or "pi",
+                            permission_profile=params.get("permission_profile") or None,
                         )
                         return jsonable_encoder(
                             await asyncio.to_thread(
@@ -446,6 +448,8 @@ class PiDurableRuntime:
                                 task_id,
                                 token,
                                 request.artifacts,
+                                request.engine,
+                                request.permission_profile,
                             )
                         )
                     if method == "remote.result":

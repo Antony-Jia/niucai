@@ -44,7 +44,7 @@ def wait(predicate, timeout=120):
     raise TimeoutError("live verification condition did not become true")
 
 
-def submit(engine, allowed=None):
+def submit(engine, allowed=None, profile=None):
     value = request(
         "/api/remote/jobs",
         {
@@ -52,6 +52,7 @@ def submit(engine, allowed=None):
             "idempotency_key": f"engine-{time.time_ns()}-{engine}",
             "allowed_nodes": allowed or [],
             "engine": engine,
+            **({"permission_profile": profile} if profile else {}),
         },
     )
     request(f"/api/remote/jobs/{value['id']}/approve")
@@ -103,6 +104,26 @@ if has_codex:
     check_engine("codex", codex_node, "codex-simulation", "SIMULATION")
 if has_claude:
     check_engine("claude", claude_node, "claude-simulation", "SIMULATION")
+
+# Permission profiles reach the real CLI: `read` removes write tools, `full` is not enabled on the node.
+for engine, node in (("codex", codex_node), ("claude", claude_node)):
+    if not nodes.get(node, {}).get("engines", {}).get(engine, {}).get("available"):
+        continue
+    offered = nodes[node]["engines"][engine].get("profiles", [])
+    print(f"{engine} node offers profiles", offered)
+    denied = submit(engine, [node], "full")
+    job = wait(lambda: finished(denied))
+    assert job["status"] == "FAILED" and job["config_snapshot"]["permission_profile"] == "full", job
+    print(f"PASS profile: {engine} refuses `full`, which the node did not enable")
+    if "read" in offered:
+        ident = submit(engine, [node], "read")
+        job = wait(lambda: finished(ident))
+        files = [f["path"] for f in job["result"].get("files", [])] if job["status"] == "COMPLETED" else []
+        assert "proof.txt" not in files, job
+        print(f"PASS profile: {engine} `read` job ended {job['status']} without writing proof.txt")
+        evidence[f"{engine}_read_profile"] = {"status": job["status"], "files": files}
+    else:
+        print(f"SKIP profile: {engine} node does not offer `read` in this container")
 
 # Pi jobs still run, and never need another engine.
 pi_id = submit("pi")

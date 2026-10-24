@@ -465,9 +465,23 @@ async function main() {
           defineTool({
             name: "remote_pi_submit",
             description:
-              "Delegate a bounded task to a remote Pi CLI. Returns a job ID; user must approve workspace autonomy before it runs. Submit independent jobs before waiting to allow parallel execution. Remote Pi has local file/shell tools but no Kernel credentials.",
+              "Delegate a bounded task to a remote coding agent (Pi, Codex or Claude Code CLI) on an isolated node. Returns a job ID; user must approve workspace autonomy before it runs. Submit independent jobs before waiting to allow parallel execution. Remote agents have local file/shell tools but no Kernel credentials. Use `engine` only when the task suits it and the Bot allows it (default pi); use permission_profile `read` for review/analysis that must not change files, `workspace` (default) for edits inside the job workspace, `full` only when unavoidable — it always needs explicit human approval and the node must enable it.",
             parameters: Type.Object({
               prompt: Type.String({ minLength: 1, maxLength: 16000 }),
+              engine: Type.Optional(
+                Type.Union([
+                  Type.Literal("pi"),
+                  Type.Literal("codex"),
+                  Type.Literal("claude"),
+                ]),
+              ),
+              permission_profile: Type.Optional(
+                Type.Union([
+                  Type.Literal("read"),
+                  Type.Literal("workspace"),
+                  Type.Literal("full"),
+                ]),
+              ),
               allowed_nodes: Type.Optional(
                 Type.Array(Type.String(), { maxItems: 32 }),
               ),

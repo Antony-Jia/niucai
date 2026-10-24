@@ -227,3 +227,7 @@ E2 有意未做：`permission_profile` 目前只从 `config_snapshot` 读取，A
 - 终态：`result` 帧 `subtype=success` 且 `is_error=false` 才算成功。实测存在 `subtype=success` 但 `is_error=true` 的失败（模型不可用），必须按 `is_error` 判定。结果带 `usage`（整数字段加 `num_turns`）与 `cost_usd`。
 
 验证：夹具单测（帧结构取自真实 CLI 输出）；`remote-pi-demo.ps1 -Codex -Claude` 后运行 `verify-remote-engines.py`：真实 Claude Code 2.1.307 容器对接模拟 Anthropic Messages API，Claude 工作包在 Claude 节点完成并返回 `proof.txt`、usage 与带引擎标记的事件，Codex 与 Claude 工作包指向无对应引擎的节点时以 `ENGINE_NOT_READY` 等待；`verify-remote-pi.py` 在多引擎 Runner 下仍全部通过（运行前需停掉 `node-codex` 与 `node-claude`）。模拟模型是确定性服务，不代表真实模型质量；`read` 档位只有命令行与本机实测，容器内联调尚未覆盖（API 暂不能写入 `permission_profile`，待 E4）。
+
+进度（E4）：`POST /api/remote/jobs` 新增可选 `permission_profile`（`read` / `workspace` / `full`，非法值 422），写入作业 `config_snapshot.permission_profile`，不传则由节点按 `workspace` 执行；它与 `engine` 一样是幂等键的一部分，同键不同档位返回 409。`submitted` 事件记录 `engine` 与生效档位。`full` 绕过引擎自身的权限询问，因此永远不随会话 YOLO 自动入队，必须人工批准，并且节点需通过 `NIUCAI_*_PROFILES` 显式启用，否则作业以 `FAILED` 结束。主 Pi 的 `remote_pi_submit` 工具新增可选 `engine` 与 `permission_profile`，由桥接层转发到同一 `RemoteManager.submit`，仍受 Bot `allowed_engines` 约束。Desktop 的远程任务页提交表单可选引擎与档位，作业列表、详情与批准卡片显示“引擎 · 档位”，选择 `full` 时给出提示。
+
+验证：Kernel 测试覆盖档位校验、存储、幂等冲突与 API；Desktop 测试覆盖提交参数与批准卡片文案；`verify-remote-engines.py` 在真实容器内确认 Codex 与 Claude 节点拒绝未启用的 `full`，Claude 的 `read` 作业在没有 Bash 工具的情况下完成且未写出 `proof.txt`。Codex 节点在加固容器中只提供 `workspace`，`read` 档位因此跳过。尚未做：接入向导的引擎环境变量字段、`phone PWA` 显示（`apps/web` 当前没有远程作业页面）、会话续接（E5）。

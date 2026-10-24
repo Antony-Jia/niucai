@@ -282,3 +282,31 @@ def test_runner_heartbeat_accepts_protocol3_executors_over_http(setup):
         assert rejected.status_code == 422
     assert manager.nodes()[0]["engines"]["codex"]["profiles"] == ["read"]
     assert manager.nodes()[0]["engines"]["codex"]["sandbox"] == "container"
+
+
+def test_permission_profile_is_validated_stored_and_part_of_idempotency(setup):
+    manager = remote(setup)
+    with pytest.raises(ValueError):
+        manager.submit("work", "bad", permission_profile="root")
+    default = manager.submit("work", "d", engine="claude")
+    assert "permission_profile" not in default["config_snapshot"]  # the node applies its own default
+    first = manager.submit("work", "p", engine="claude", permission_profile="read")
+    assert first["config_snapshot"]["permission_profile"] == "read"
+    assert manager.submit("work", "p", engine="claude", permission_profile="read")["id"] == first["id"]
+    with pytest.raises(Conflict):
+        manager.submit("work", "p", engine="claude", permission_profile="full")
+    with pytest.raises(Conflict):
+        manager.submit("work", "p", engine="claude")
+    with TestClient(create_app(setup[1], setup[0])) as client:
+        admin = {"Authorization": "Bearer " + "x" * 40}
+        body = {"prompt": "w", "idempotency_key": "k3", "engine": "codex"}
+        assert (
+            client.post(
+                "/api/remote/jobs", headers=admin, json={**body, "permission_profile": "x"}
+            ).status_code
+            == 422
+        )
+        created = client.post("/api/remote/jobs", headers=admin, json={**body, "permission_profile": "full"})
+        assert (
+            created.status_code == 201 and created.json()["config_snapshot"]["permission_profile"] == "full"
+        )

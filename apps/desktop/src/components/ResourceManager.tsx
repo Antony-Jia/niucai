@@ -25,6 +25,10 @@ export interface ResourceNode {
     available?: boolean;
     node_model?: { provider?: string; model?: string };
   };
+  engines?: Record<
+    string,
+    { available?: boolean; profiles?: string[]; reason?: string }
+  >;
   active_job: { id: string; status: string } | null;
 }
 const names = {

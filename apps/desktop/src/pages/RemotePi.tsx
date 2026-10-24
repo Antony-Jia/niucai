@@ -8,11 +8,32 @@ import {
   type ResourceNode,
 } from "../components/ResourceManager";
 
+type Engine = "pi" | "codex" | "claude";
+type Profile = "read" | "workspace" | "full";
+const engineNames: Record<Engine, string> = {
+  pi: "Pi",
+  codex: "Codex",
+  claude: "Claude Code",
+};
+const profileNames: Record<Profile, string> = {
+  read: "只读",
+  workspace: "工作区读写",
+  full: "完全访问",
+};
+
+function describeJob(value: Job) {
+  const engine = engineNames[value.engine || "pi"] || value.engine;
+  const profile = value.config_snapshot?.permission_profile || "workspace";
+  return `${engine} · ${profileNames[profile] || profile}`;
+}
+
 interface Job {
   id: string;
   prompt: string;
   status: string;
   node_id: string | null;
+  engine?: Engine;
+  config_snapshot?: { permission_profile?: Profile };
   parent_task_id: string | null;
   result: {
     answer?: string;
@@ -46,6 +67,8 @@ export function RemotePi() {
   const executionEnabled = enabled && config.data?.enabled === true;
   const [prompt, setPrompt] = useState("");
   const [node, setNode] = useState("");
+  const [engine, setEngine] = useState<Engine>("pi");
+  const [profile, setProfile] = useState<Profile>("workspace");
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [submissionKey, setSubmissionKey] = useState<string | null>(null);
@@ -107,6 +130,8 @@ export function RemotePi() {
                 const value = await request<Job>("/api/remote/jobs", "POST", {
                   prompt,
                   allowed_nodes: node ? [node] : [],
+                  engine,
+                  permission_profile: profile,
                   idempotency_key: key,
                 });
                 setSelected(value.id);
@@ -133,6 +158,43 @@ export function RemotePi() {
               </select>
             </label>
             <label>
+              执行引擎
+              <select
+                value={engine}
+                onChange={(event) => {
+                  setEngine(event.target.value as Engine);
+                  setSubmissionKey(null);
+                }}
+              >
+                {(Object.keys(engineNames) as Engine[]).map((value) => (
+                  <option key={value} value={value}>
+                    {engineNames[value]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              权限档位
+              <select
+                value={profile}
+                onChange={(event) => {
+                  setProfile(event.target.value as Profile);
+                  setSubmissionKey(null);
+                }}
+              >
+                {(Object.keys(profileNames) as Profile[]).map((value) => (
+                  <option key={value} value={value}>
+                    {profileNames[value]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {profile === "full" && (
+              <p role="alert">
+                完全访问会关闭引擎自身的权限询问，仍需你手动批准，且节点必须显式启用。
+              </p>
+            )}
+            <label>
               工作要求
               <textarea
                 required
@@ -154,8 +216,8 @@ export function RemotePi() {
             </button>
           </form>
           <p>
-            任务授权后，Pi
-            可在节点容器中自主读写文件和运行命令。任务内操作不会逐项经过主
+            任务授权后，所选引擎（Pi / Codex / Claude Code）
+            可在节点容器中按权限档位自主读写文件和运行命令。任务内操作不会逐项经过主
             Kernel 的设备审批。
           </p>
         </section>
@@ -171,7 +233,7 @@ export function RemotePi() {
             >
               {value.prompt.slice(0, 90)}
             </button>{" "}
-            · {value.status} ·{" "}
+            · {describeJob(value)} · {value.status} ·{" "}
             {nodes.data?.find((item) => item.id === value.node_id)?.name ||
               "待分配"}
             {value.parent_task_id && (
@@ -182,10 +244,13 @@ export function RemotePi() {
         {job && (
           <div>
             <h3>{job.status}</h3>
+            <p>{describeJob(job)}</p>
             <p style={{ whiteSpace: "pre-wrap" }}>{job.prompt}</p>
             {job.status === "WAITING_APPROVAL" && (
               <>
-                <p>批准此工作包，允许远程 Pi 在隔离节点内自主执行。</p>
+                <p>
+                  批准此工作包，允许 {describeJob(job)} 在隔离节点内自主执行。
+                </p>
                 <button
                   disabled={busy}
                   onClick={() =>

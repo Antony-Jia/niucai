@@ -13,13 +13,20 @@ vi.mock("../src/lib/state", () => ({
 vi.mock("../src/lib/api", () => ({ request: vi.fn(), setDemo: vi.fn() }));
 afterEach(() => vi.clearAllMocks());
 
-function mount(status: string) {
+function mount(status: string, extra: object = {}) {
   vi.mocked(request).mockImplementation(async (path) => {
     if (path === "/api/remote/config") return { enabled: true } as never;
     if (path === "/api/remote/nodes") return [] as never;
     if (path === "/api/remote/jobs")
       return [
-        { id: "child", prompt: "Fix login", status, node_id: null, result: {} },
+        {
+          id: "child",
+          prompt: "Fix login",
+          status,
+          node_id: null,
+          result: {},
+          ...extra,
+        },
       ] as never;
     return {} as never;
   });
@@ -38,7 +45,9 @@ it("requires an explicit workspace-autonomy approval before remote execution", a
   mount("WAITING_APPROVAL");
   fireEvent.click(await screen.findByRole("button", { name: "Fix login" }));
   expect(
-    screen.getByText("批准此工作包，允许远程 Pi 在隔离节点内自主执行。"),
+    screen.getByText(
+      "批准此工作包，允许 Pi · 工作区读写 在隔离节点内自主执行。",
+    ),
   ).toBeInTheDocument();
   expect(request).not.toHaveBeenCalledWith(
     "/api/remote/jobs/child/approve",
@@ -101,5 +110,39 @@ it("reports a management conflict if a task claims the node after the idle snaps
   fireEvent.click(button);
   await waitFor(() =>
     expect(notify).toHaveBeenCalledWith(expect.stringContaining("原任务退出")),
+  );
+});
+
+it("shows the engine and permission profile on the approval card", async () => {
+  mount("WAITING_APPROVAL", {
+    engine: "claude",
+    config_snapshot: { permission_profile: "full" },
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "Fix login" }));
+  expect(
+    screen.getByText(
+      "批准此工作包，允许 Claude Code · 完全访问 在隔离节点内自主执行。",
+    ),
+  ).toBeInTheDocument();
+});
+
+it("submits the chosen engine and permission profile", async () => {
+  mount("COMPLETED");
+  fireEvent.change(await screen.findByLabelText("执行引擎"), {
+    target: { value: "codex" },
+  });
+  fireEvent.change(screen.getByLabelText("权限档位"), {
+    target: { value: "read" },
+  });
+  fireEvent.change(screen.getByLabelText("工作要求"), {
+    target: { value: "Review the repo" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "提交并查看授权" }));
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith(
+      "/api/remote/jobs",
+      "POST",
+      expect.objectContaining({ engine: "codex", permission_profile: "read" }),
+    ),
   );
 });
