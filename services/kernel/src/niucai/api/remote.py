@@ -124,6 +124,7 @@ def remote_router(db, settings, auth):
         model: str = Field(default="", max_length=200)
         profiles: list[str] = Field(default_factory=list, max_length=8)
         reason: str = Field(default="", max_length=100)
+        sandbox: Literal["engine", "container", ""] = ""
 
     class Capabilities(BaseModel):
         executor: Literal["pi"] = "pi"

@@ -74,6 +74,46 @@ def collaboration_response(messages, tools):
     }
 
 
+def sse(kind, data):
+    return f"event: {kind}\ndata: {json.dumps({'type': kind, **data})}\n\n"
+
+
+@app.post("/v1/responses")
+async def responses(request: Request):
+    """Minimal Responses API so the real Codex CLI can be exercised: one shell call, then an answer."""
+    body = await request.json()
+    finished = any(i.get("type") == "function_call_output" for i in body.get("input", []))
+    if finished:
+        item = {
+            "type": "message",
+            "role": "assistant",
+            "id": "msg_sim",
+            "content": [{"type": "output_text", "text": "SIMULATION: Codex wrote proof.txt"}],
+        }
+    else:
+        item = {
+            "type": "function_call",
+            "id": "fc_sim",
+            "call_id": "call_sim",
+            "name": "exec_command",
+            "arguments": json.dumps({"cmd": "echo codex-simulation > proof.txt"}),
+        }
+    usage = {
+        "input_tokens": 3,
+        "input_tokens_details": None,
+        "output_tokens": 2,
+        "output_tokens_details": None,
+        "total_tokens": 5,
+    }
+
+    async def stream():
+        yield sse("response.created", {"response": {"id": "resp_sim"}})
+        yield sse("response.output_item.done", {"output_index": 0, "item": item})
+        yield sse("response.completed", {"response": {"id": "resp_sim", "usage": usage}})
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
 @app.post("/v1/chat/completions")
 async def chat(request: Request):
     body = await request.json()

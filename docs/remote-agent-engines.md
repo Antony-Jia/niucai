@@ -119,7 +119,7 @@ Kernel 侧事件 `kind` 保持现有集合，不新增类型，Desktop 无需改
 | `workspace`（默认） | `--sandbox workspace-write` | `--permission-mode acceptEdits` + 工具白名单（编辑和受限 Bash） | 在工作区内修改并产出文件 |
 | `full` | `--sandbox danger-full-access` | `--permission-mode bypassPermissions` | 仅限容器内需要任意命令时使用；需 Bot 定义显式允许 |
 
-待验证：Codex 的 `workspace-write` 依赖内核沙箱（Landlock/seccomp），在无特权 Docker 容器中可能不可用。如果实测不可用，`workspace` 档改为由容器隔离兜底，并在审批卡片上如实标注“引擎内沙箱不可用”，不得假装仍有引擎内隔离。
+已验证（Codex 0.164.0，E2）：`workspace-write` 与 `read-only` 都依赖 bubblewrap 的用户命名空间；在 `cap_drop: ALL`、默认 seccomp 的节点容器里，二者都会以 `bwrap: No permissions to create a new namespace` 失败，命令全部退出码 1。因此 Runner 启动时用 `codex sandbox -- /bin/true` 探测，不可用时心跳上报 `sandbox: "container"`：`read` 档位不再提供（无法强制只读），`workspace` 档位以 `danger-full-access` 运行，隔离完全由容器负责。原先的待验证说明如下：Codex 的 `workspace-write` 依赖内核沙箱（Landlock/seccomp），在无特权 Docker 容器中可能不可用。如果实测不可用，`workspace` 档改为由容器隔离兜底，并在审批卡片上如实标注“引擎内沙箱不可用”，不得假装仍有引擎内隔离。
 
 网络：Claude Code 和 Codex 必须能访问模型 API；Web 搜索、抓取类工具默认禁用（Claude 加入 `--disallowedTools`，Codex 关闭 web search 配置），由权限档位或 Bot 定义显式开启。
 
@@ -191,7 +191,7 @@ V1 不改工具名，避免牵动 `permitted(..., "remote_pi_submit")`、固定�
 进度：E0 的代码已改（`PiEngine` 与 `Runner` 拆分，未知 `engine` 的工作包经账本以 `FAILED` 结案）。验证：`ruff` 检查与格式检查；`PiEngine` 的事件翻译 / stdin / 提示词 / 命令行 / 心跳单元对照；`deploy/compose/remote-pi-demo.ps1` 重新构建镜像后，`verify-remote-pi.py` 四项全部通过（双节点并行与第三任务排队、取消与原节点重试、停机后不重复执行并核对旧 attempt、主 Pi 委派与聚合），节点容器内确认运行的是拆分后的 runner，证据在 `build-cache/remote-pi/verification.json`（gitignored）。模拟模型为确定性服务，不代表真实模型质量。尚未运行 `verify-resource-nodes.py`。
 
 进度（E1）：Kernel 基础已实现并通过测试。`remote_jobs.engine`（迁移 `b4e21024d008`，默认 `pi`）；`POST /api/remote/jobs` 接受 `engine`，心跳接受 protocol 3 的 `executors`；`claim()` 只把工作包派给对应引擎可用的节点，protocol 1/2 节点只视为单一 Pi 执行器；Bot `allowed_engines`（默认 `["pi"]`）在提交（快照策略与当前定义）和 claim/心跳时校验；非 Pi 引擎无可用节点时等待原因为 `ENGINE_NOT_READY`。验证：`ruff`、`alembic upgrade head` + `alembic check`，`test_remote_pi` 新增 5 项，相关套件（remote/resource/kernel_anywhere/multi_bot）通过；全量中 `test_desktop_api::test_artifact_download_and_latest_event_cursor` 与 `test_kernel::test_workspace_containment_and_file_read_limit` 失败，在 E1 之前的基线同样失败，与本改动无关。
-E1 有意未做：Runner 仍发送 protocol 2（避免旧 Kernel 拒绝 protocol 3 节点，留到 E2 随第二个引擎一起切换）；Desktop 引擎标签、`permission_profile`、主 Pi 工具的 `engine` 参数留给 E4。
+E1 有意未做（Runner 的 protocol 3 已在 E2 完成）：Runner 仍发送 protocol 2（避免旧 Kernel 拒绝 protocol 3 节点，留到 E2 随第二个引擎一起切换）；Desktop 引擎标签、`permission_profile`、主 Pi 工具的 `engine` 参数留给 E4。
 
 兼容性：
 
@@ -212,3 +212,7 @@ E1 有意未做：Runner 仍发送 protocol 2（避免旧 Kernel 拒绝 protocol
 2. 预算：Claude 可以用 `--max-turns`（以及版本支持时的费用上限）约束，Codex 只能依赖超时和 token 统计。是否需要在 Kernel 侧按 `usage` 实现跨工作包的硬上限，与多 Bot 方案的预算规则合并处理？
 3. 工作区里存在 `AGENTS.md` / `CLAUDE.md` 时，是拒绝启动，还是改名保留？当前倾向拒绝启动，并在结果中说明原因。
 4. 是否允许同一节点按引擎各开一个执行槽。V1 不做，需要等资源占用和计费模型明确后再定。
+
+进度（E2）：Runner 已实现 `CodexEngine` 并切换为 protocol 3，心跳上报 `executors`（`pi` 总是上报；`NIUCAI_ENGINES` 含 `codex` 才启用 Codex，含 `claude` 时上报 `not_implemented`）。节点环境变量：`NIUCAI_ENGINES`（默认 `pi`）、`NIUCAI_CODEX_API_KEY`（缺失则 `credential_missing`）、`NIUCAI_CODEX_MODEL`、`NIUCAI_CODEX_BASE_URL`（走 Responses API 的自定义 provider）、`NIUCAI_CODEX_PROFILES`（默认 `read,workspace`，`full` 须显式加入）、`NIUCAI_CODEX_UID`（默认 10002）。镜像构建参数 `ENGINES="pi codex"` 安装锁定版本 `@openai/codex@0.164.0`。进度事件带 `engine` 字段，工具事件只含工具名与是否出错。命令行固定 `approval_policy="never"`、`project_doc_max_bytes=0`（不读工作区 `AGENTS.md`）、`web_search="disabled"`；Kernel 的 `ExecutorStatus` 新增 `sandbox`。
+验证：`services/node-runner/tests`（夹具单测，字段取自真实 CLI 输出：`item.type=error` 警告、`Reconnecting` 瞬时错误、`exec_command` 对应 `command_execution`）；`remote-pi-demo.ps1 -Codex` 后运行 `verify-remote-engines.py`（真实 Codex CLI 容器，模拟 Responses API）：能力上报、Codex 工作包在 Codex 节点完成并返回 `proof.txt` 与 usage、Pi 工作包不受影响、指向 Pi 节点的 Codex 工作包以 `ENGINE_NOT_READY` 等待；`verify-remote-pi.py` 在 protocol 3 Runner 下仍全部通过（运行前需停掉 `node-codex`，该脚本假定只有两个节点）。模拟模型是确定性服务，不代表真实 Codex 模型质量；`verify-resource-nodes.py` 仍未运行。
+E2 有意未做：`permission_profile` 目前只从 `config_snapshot` 读取，API 与主 Pi 工具尚未写入（E4），实际默认走 `workspace`；Desktop 引擎标签与接入向导字段（E4）；Claude Code（E3）；Codex 会话续接（E5）。

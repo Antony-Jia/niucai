@@ -269,7 +269,10 @@ def test_runner_heartbeat_accepts_protocol3_executors_over_http(setup):
         "executor": "pi",
         "available": True,
         "protocol_version": 3,
-        "executors": {"pi": {"available": True}, "codex": {"available": True, "profiles": ["read"]}},
+        "executors": {
+            "pi": {"available": True},
+            "codex": {"available": True, "profiles": ["read"], "sandbox": "container"},
+        },
     }
     with TestClient(create_app(setup[1], setup[0])) as client:
         response = client.post(f"/api/remote/runner/{value['id']}/heartbeat", headers=credential, json=body)
@@ -278,3 +281,4 @@ def test_runner_heartbeat_accepts_protocol3_executors_over_http(setup):
         rejected = client.post(f"/api/remote/runner/{value['id']}/heartbeat", headers=credential, json=body)
         assert rejected.status_code == 422
     assert manager.nodes()[0]["engines"]["codex"]["profiles"] == ["read"]
+    assert manager.nodes()[0]["engines"]["codex"]["sandbox"] == "container"

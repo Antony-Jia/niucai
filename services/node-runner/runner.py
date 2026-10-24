@@ -7,7 +7,9 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import signal
+import subprocess
 import tempfile
 import time
 from hashlib import sha256
@@ -51,6 +53,7 @@ class PiEngine:
 
     name = "pi"
     label = "Pi"
+    closes_stdin = False  # RPC stays open until the process is killed
 
     def __init__(self, root):
         self.uid = int(os.environ.get("NIUCAI_PI_UID", "10001"))
@@ -96,10 +99,12 @@ class PiEngine:
             "executor": self.name,
             "available": True,
             "version": "1.1.0",
-            "protocol_version": 2,
             "features": ["artifact-v2", "managed-workspace"],
             "node_model": {"provider": self.provider, "model": self.model},
         }
+
+    def status(self):
+        return {"available": True, "version": "1.1.0", "model": self.model}
 
     def environment(self):
         # Runner credentials are never inherited by Pi; Pi runs under another Unix UID.
@@ -120,7 +125,7 @@ class PiEngine:
         os.setgid(self.uid)
         os.setuid(self.uid)
 
-    def command(self, session):
+    def command(self, session, job=None):
         return [
             "pi",
             "--mode",
@@ -181,6 +186,207 @@ class PiEngine:
         return [], None
 
 
+class CodexEngine:
+    """Codex CLI engine: `codex exec --json -`, prompt on stdin, API-key auth only."""
+
+    name = "codex"
+    label = "Codex"
+    closes_stdin = True  # `exec -` reads the prompt until EOF
+    sandboxes = {"read": "read-only", "workspace": "workspace-write", "full": "danger-full-access"}
+    ignored_items = {"reasoning", "todo_list", "agent_message", "error"}  # item "error" = CLI warning
+    tools = {
+        "command_execution": "shell",
+        "file_change": "edit",
+        "mcp_tool_call": "mcp",
+        "web_search": "web_search",
+    }
+
+    def __init__(self, root):
+        self.uid = int(os.environ.get("NIUCAI_CODEX_UID", "10002"))
+        self.home = root / "codex-home"
+        self.home.mkdir(exist_ok=True)
+        os.chown(self.home, self.uid, self.uid)
+        self.model = os.environ.get("NIUCAI_CODEX_MODEL", "")
+        self.base_url = os.environ.get("NIUCAI_CODEX_BASE_URL", "")
+        allowed = {a.strip() for a in os.environ.get("NIUCAI_CODEX_PROFILES", "read,workspace").split(",")}
+        self.version = self.probe_version()
+        # Codex's own sandbox needs unprivileged user namespaces, which hardened containers deny.
+        self.sandbox = self.probe_sandbox()
+        self.profiles = [
+            p
+            for p in ("read", "workspace", "full")
+            if p in allowed and (self.sandbox == "engine" or p != "read")  # read-only cannot be enforced
+        ]
+
+    @staticmethod
+    def probe_version():
+        if not shutil.which("codex"):
+            return ""
+        try:
+            output = subprocess.run(
+                ["codex", "--version"], capture_output=True, text=True, timeout=10, check=False
+            ).stdout.split()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return output[-1][:100] if output else ""
+
+    def probe_sandbox(self):
+        if not shutil.which("codex"):
+            return "container"
+        try:
+            probe = subprocess.run(
+                ["codex", "sandbox", "--", "/bin/true"],
+                capture_output=True,
+                timeout=30,
+                check=False,
+                cwd=self.home,
+                env=self.environment(),
+                preexec_fn=self.drop_privileges,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return "container"
+        return "engine" if probe.returncode == 0 else "container"
+
+    @staticmethod
+    def credential():
+        return os.environ.get("NIUCAI_CODEX_API_KEY", "")
+
+    def status(self):
+        if not shutil.which("codex"):
+            return {"available": False, "reason": "not_installed"}
+        if not self.credential():
+            return {"available": False, "reason": "credential_missing"}
+        return {
+            "available": True,
+            "version": self.version,
+            "model": self.model,
+            "profiles": self.profiles,
+            "sandbox": self.sandbox,
+        }
+
+    def environment(self):
+        # Only Codex's own credential; the node token and Pi keys never reach this process.
+        return {
+            "PATH": os.environ["PATH"],
+            "HOME": str(self.home),
+            "CODEX_HOME": str(self.home),
+            "LANG": "C.UTF-8",
+            "CODEX_API_KEY": self.credential(),
+        }
+
+    def drop_privileges(self):
+        os.setgroups([])
+        os.setgid(self.uid)
+        os.setuid(self.uid)
+
+    def command(self, session, job=None):
+        profile = ((job or {}).get("config_snapshot") or {}).get("permission_profile") or "workspace"
+        if profile not in self.sandboxes or profile not in self.profiles:
+            raise ValueError(f"permission profile not enabled on this node: {str(profile)[:40]}")
+        args = [
+            "codex",
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--sandbox",
+            # Without the engine sandbox the container is the boundary; `workspace` is labelled as such.
+            self.sandboxes[profile] if self.sandbox == "engine" else "danger-full-access",
+            "--output-last-message",
+            str(session.with_suffix(".txt")),
+            "-c",
+            'approval_policy="never"',
+            "-c",
+            "project_doc_max_bytes=0",  # workspace AGENTS.md is untrusted input
+            "-c",
+            'web_search="disabled"',
+        ]
+        if self.model:
+            args += ["-m", self.model]
+        if self.base_url:
+            provider = "model_providers.niucai"
+            args += [
+                "-c",
+                'model_provider="niucai"',
+                "-c",
+                f'{provider}.name="niucai"',
+                "-c",
+                f"{provider}.base_url=" + json.dumps(self.base_url),
+                "-c",
+                f'{provider}.env_key="CODEX_API_KEY"',
+                "-c",
+                f'{provider}.wire_api="responses"',
+            ]
+        return [*args, "-"]
+
+    @staticmethod
+    def stdin(attempt, message):
+        return message.encode()
+
+    @staticmethod
+    def tool_failed(item):
+        status = item.get("status")
+        if item.get("type") == "command_execution":
+            return item.get("exit_code") not in (0, None) or status == "failed"
+        if item.get("type") == "mcp_tool_call":
+            return status == "failed" or bool(item.get("error"))
+        return status == "failed"
+
+    def translate(self, frame, state):
+        """Map one `codex exec --json` frame to (events, final), like PiEngine.translate."""
+        kind = frame.get("type", "")
+        if kind == "thread.started":
+            state["thread_id"] = str(frame.get("thread_id", ""))
+            return [("session", {"session_id": state["thread_id"] or state["job_id"]})], None
+        if kind in {"item.started", "item.updated", "item.completed"}:
+            item = frame.get("item") or {}
+            item_type = item.get("type", "")
+            if item_type == "agent_message" and kind == "item.completed":
+                state["answer"] = str(item.get("text", ""))
+                data = {"text": state["answer"][:4000], "stop_reason": "stop"}
+                return [("assistant", data)], None
+            tool = self.tools.get(item_type)
+            if tool is None:
+                if item_type not in self.ignored_items:
+                    state["unknown_frames"] = state.get("unknown_frames", 0) + 1
+                return [], None
+            opened = state.setdefault("open", set())
+            events = []
+            if item.get("id") not in opened and kind != "item.updated":
+                opened.add(item.get("id"))
+                events.append(("tool_execution_start", {"tool": tool, "is_error": False}))
+            if kind == "item.completed":
+                opened.discard(item.get("id"))
+                events.append(("tool_execution_end", {"tool": tool, "is_error": self.tool_failed(item)}))
+            return events, None
+        if kind == "turn.failed":
+            raise RuntimeError(str((frame.get("error") or {}).get("message") or "Codex turn failed")[:500])
+        if kind == "error":
+            message = str(frame.get("message", ""))
+            if message.startswith("Reconnecting"):  # transient stream retry, not a failure
+                return [], None
+            raise RuntimeError(message[:500] or "Codex error")
+        if kind == "turn.completed":
+            answer = state["answer"]
+            if not answer:
+                with contextlib.suppress(OSError):
+                    answer = Path(state["session_path"]).with_suffix(".txt").read_text()
+            if not answer:
+                raise RuntimeError("Codex ended without a final answer")
+            final = {
+                "answer": answer[:16000],
+                "executor": self.name,
+                "session_id": state.get("thread_id", ""),
+            }
+            if isinstance(frame.get("usage"), dict):
+                final["usage"] = {k: v for k, v in frame["usage"].items() if isinstance(v, int)}
+            if state.get("unknown_frames"):
+                final["unknown_frames"] = state["unknown_frames"]
+            return [], final
+        if kind != "turn.started":
+            state["unknown_frames"] = state.get("unknown_frames", 0) + 1
+        return [], None
+
+
 class Runner:
     def __init__(self):
         self.root = Path(os.environ.get("NIUCAI_NODE_DATA", "/data"))
@@ -203,7 +409,11 @@ class Runner:
             headers={"Authorization": f"Bearer {os.environ['NIUCAI_NODE_TOKEN']}"},
             timeout=5,
         )
-        self.engines = {engine.name: engine for engine in (PiEngine(self.root),)}
+        self.requested = {e.strip() for e in os.environ.get("NIUCAI_ENGINES", "pi").split(",")}
+        engines = [PiEngine(self.root)]
+        if "codex" in self.requested:
+            engines.append(CodexEngine(self.root))
+        self.engines = {engine.name: engine for engine in engines}
 
     async def post(self, suffix, data=None):
         response = await self.client.post(self.prefix + suffix, json=data)
@@ -233,8 +443,16 @@ class Runner:
         )
         self.ledger.unlink()
 
-    def heartbeat_payload(self, engine):
-        return {**engine.heartbeat(), "kernel_instance_id": self.kernel_instance_id}
+    def heartbeat_payload(self):
+        executors = {name: engine.status() for name, engine in self.engines.items()}
+        if "claude" in self.requested:
+            executors["claude"] = {"available": False, "reason": "not_implemented"}
+        return {
+            **self.engines["pi"].heartbeat(),
+            "protocol_version": 3,
+            "executors": executors,
+            "kernel_instance_id": self.kernel_instance_id,
+        }
 
     @staticmethod
     def compose_prompt(job):
@@ -258,7 +476,7 @@ class Runner:
         record = {"id": ident, "attempt_id": attempt}
         atomic_json(self.ledger, record)  # Durable admission before starting a process.
         engine = self.engines.get(job.get("engine") or "pi")
-        if engine is None:
+        if engine is None or not engine.status()["available"]:
             record["finish"] = {
                 "status": "FAILED",
                 "result": {"error": f"engine not available on this node: {job.get('engine')}"[:500]},
@@ -274,7 +492,6 @@ class Runner:
         os.chown(workspace, uid, uid)
         os.chown(sessions, uid, uid)
         session = sessions / f"{ident}.jsonl"
-        args = engine.command(session)
         process = None
         heartbeat = None
         stopped = asyncio.Event()
@@ -290,10 +507,7 @@ class Runner:
             nonlocal last_lease, lease_seconds
             while True:
                 try:
-                    await self.post(
-                        "/heartbeat",
-                        self.heartbeat_payload(engine),
-                    )
+                    await self.post("/heartbeat", self.heartbeat_payload())
                     response = await self.post(base + "/heartbeat", {"attempt_id": attempt})
                     if response["stop"]:
                         stopped.set()
@@ -316,7 +530,7 @@ class Runner:
                 "attempt_id": attempt,
                 "sequence": sequence,
                 "kind": kind,
-                "data": data,
+                "data": {**data, "engine": engine.name},
             }
             for count in range(3):
                 try:
@@ -378,6 +592,7 @@ class Runner:
                     path.unlink(missing_ok=True)
                     raise RuntimeError("input artifact hash mismatch")
                 os.chown(path, uid, uid)
+            args = engine.command(session, job)
             process = await asyncio.create_subprocess_exec(
                 *args,
                 cwd=workspace,
@@ -393,6 +608,8 @@ class Runner:
             atomic_json(self.ledger, record)
             process.stdin.write(engine.stdin(attempt, self.compose_prompt(job)))
             await process.stdin.drain()
+            if engine.closes_stdin:
+                process.stdin.close()
             reader = asyncio.create_task(read_events())
             stop_wait = asyncio.create_task(stopped.wait())
             try:
@@ -552,10 +769,7 @@ class Runner:
         async with self.client:
             while True:
                 try:
-                    response = await self.post(
-                        "/heartbeat",
-                        self.heartbeat_payload(self.engines["pi"]),
-                    )
+                    response = await self.post("/heartbeat", self.heartbeat_payload())
                     identity = response.get("kernel_instance_id")
                     if self.kernel_instance_id and identity != self.kernel_instance_id:
                         raise RuntimeError("KERNEL_IDENTITY_MISMATCH: refuse old ledger and new jobs")
