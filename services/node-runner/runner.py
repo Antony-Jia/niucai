@@ -1,4 +1,4 @@
-"""Linux node service. Owns one isolated Pi CLI process group, not model reasoning."""
+"""Linux node service. Owns one isolated engine CLI process group, not model reasoning."""
 
 import asyncio
 import base64
@@ -46,30 +46,15 @@ async def kill_group(pid):
         os.killpg(pid, signal.SIGKILL)
 
 
-class Runner:
-    def __init__(self):
-        self.root = Path(os.environ.get("NIUCAI_NODE_DATA", "/data"))
-        self.control = self.root / "control"
-        self.control.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.ledger = self.control / "active.json"
-        self.lock = (self.control / "runner.lock").open("a+")
-        fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        self.node_id = os.environ["NIUCAI_NODE_ID"]
-        identity_file = self.root / "kernel-identity.json"
-        self.identity_file = identity_file
-        self.kernel_instance_id = os.environ.get("NIUCAI_KERNEL_INSTANCE_ID") or (
-            json.loads(identity_file.read_text()).get("kernel_instance_id")
-            if identity_file.exists()
-            else None
-        )
-        self.prefix = f"/api/remote/runner/{self.node_id}"
-        self.client = httpx.AsyncClient(
-            base_url=os.environ["NIUCAI_KERNEL_URL"].rstrip("/"),
-            headers={"Authorization": f"Bearer {os.environ['NIUCAI_NODE_TOKEN']}"},
-            timeout=5,
-        )
+class PiEngine:
+    """Pi RPC engine: the only engine today. Owns its Unix UID, HOME and CLI protocol."""
+
+    name = "pi"
+    label = "Pi"
+
+    def __init__(self, root):
         self.uid = int(os.environ.get("NIUCAI_PI_UID", "10001"))
-        self.home = self.root / "pi-home"
+        self.home = root / "pi-home"
         self.home.mkdir(exist_ok=True)
         os.chown(self.home, self.uid, self.uid)
         self.provider = os.environ.get("NIUCAI_PI_PROVIDER", "openrouter")
@@ -106,6 +91,120 @@ class Runner:
                 owner=self.uid,
             )
 
+    def heartbeat(self):
+        return {
+            "executor": self.name,
+            "available": True,
+            "version": "1.1.0",
+            "protocol_version": 2,
+            "features": ["artifact-v2", "managed-workspace"],
+            "node_model": {"provider": self.provider, "model": self.model},
+        }
+
+    def environment(self):
+        # Runner credentials are never inherited by Pi; Pi runs under another Unix UID.
+        result = {
+            "PATH": os.environ["PATH"],
+            "HOME": str(self.home),
+            "PI_CODING_AGENT_DIR": str(self.home),
+            "LANG": "C.UTF-8",
+            "PI_PROVIDER_KEY": os.environ.get("NIUCAI_PI_PROVIDER_KEY", ""),
+        }
+        for name in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+            if name in os.environ:
+                result[name] = os.environ[name]
+        return result
+
+    def drop_privileges(self):
+        os.setgroups([])
+        os.setgid(self.uid)
+        os.setuid(self.uid)
+
+    def command(self, session):
+        return [
+            "pi",
+            "--mode",
+            "rpc",
+            "--provider",
+            self.provider,
+            "--model",
+            self.model,
+            "--session",
+            str(session),
+            "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-approve",
+            "--no-context-files",
+            "--no-mcp",
+            "--offline",
+        ]
+
+    @staticmethod
+    def stdin(attempt, message):
+        frames = (
+            {"type": "get_state", "id": "state"},
+            {"type": "prompt", "id": attempt, "message": message},
+        )
+        return "".join(json.dumps(frame) + "\n" for frame in frames).encode()
+
+    def translate(self, frame, state):
+        """Map one raw frame to (events, final). `final` is the result dict when finished."""
+        kind = frame.get("type", "")
+        if kind == "response" and not frame.get("success", True):
+            raise RuntimeError(str(frame.get("error", "Pi RPC command rejected"))[:500])
+        if kind == "response" and frame.get("command") == "get_state":
+            data = {"session_id": frame.get("data", {}).get("sessionId", state["job_id"])}
+            return [("session", data)], None
+        if kind == "message_end" and frame.get("message", {}).get("role") == "assistant":
+            message = frame["message"]
+            state["failed"] = message.get("stopReason") in {"error", "aborted"}
+            state["answer"] = "\n".join(
+                b["text"] for b in message.get("content", []) if b.get("type") == "text"
+            )
+            data = {"text": state["answer"][:4000], "stop_reason": message.get("stopReason")}
+            return [("assistant", data)], None
+        if kind in {"tool_execution_start", "tool_execution_end"}:
+            data = {
+                "tool": str(frame.get("toolName", ""))[:100],
+                "is_error": bool(frame.get("isError")),
+            }
+            return [(kind, data)], None
+        if kind in {"agent_end", "agent_settled"}:
+            if not state["answer"] or state["failed"]:
+                raise RuntimeError("Pi ended without a successful final answer")
+            return [], {
+                "answer": state["answer"][:16000],
+                "executor": self.name,
+                "session_path": state["session_path"],
+            }
+        return [], None
+
+
+class Runner:
+    def __init__(self):
+        self.root = Path(os.environ.get("NIUCAI_NODE_DATA", "/data"))
+        self.control = self.root / "control"
+        self.control.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.ledger = self.control / "active.json"
+        self.lock = (self.control / "runner.lock").open("a+")
+        fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.node_id = os.environ["NIUCAI_NODE_ID"]
+        identity_file = self.root / "kernel-identity.json"
+        self.identity_file = identity_file
+        self.kernel_instance_id = os.environ.get("NIUCAI_KERNEL_INSTANCE_ID") or (
+            json.loads(identity_file.read_text()).get("kernel_instance_id")
+            if identity_file.exists()
+            else None
+        )
+        self.prefix = f"/api/remote/runner/{self.node_id}"
+        self.client = httpx.AsyncClient(
+            base_url=os.environ["NIUCAI_KERNEL_URL"].rstrip("/"),
+            headers={"Authorization": f"Bearer {os.environ['NIUCAI_NODE_TOKEN']}"},
+            timeout=5,
+        )
+        self.engines = {engine.name: engine for engine in (PiEngine(self.root),)}
+
     async def post(self, suffix, data=None):
         response = await self.client.post(self.prefix + suffix, json=data)
         response.raise_for_status()
@@ -134,62 +233,55 @@ class Runner:
         )
         self.ledger.unlink()
 
-    def pi_environment(self):
-        # Runner credentials are never inherited by Pi; Pi runs under another Unix UID.
-        result = {
-            "PATH": os.environ["PATH"],
-            "HOME": str(self.home),
-            "PI_CODING_AGENT_DIR": str(self.home),
-            "LANG": "C.UTF-8",
-            "PI_PROVIDER_KEY": os.environ.get("NIUCAI_PI_PROVIDER_KEY", ""),
-        }
-        for name in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
-            if name in os.environ:
-                result[name] = os.environ[name]
-        return result
+    def heartbeat_payload(self, engine):
+        return {**engine.heartbeat(), "kernel_instance_id": self.kernel_instance_id}
 
-    def drop_privileges(self):
-        os.setgroups([])
-        os.setgid(self.uid)
-        os.setuid(self.uid)
+    @staticmethod
+    def compose_prompt(job):
+        return (
+            "Work in the assigned workspace. Return evidence and file outputs.\n"
+            + "Bot role and delivery configuration:\n"
+            + json.dumps(job.get("config_snapshot", {}), ensure_ascii=False)
+            + "\n"
+            + job["prompt"]
+            + (
+                "\nAuthorized input artifact IDs are materialized under inputs/. "
+                + json.dumps(job["input_artifacts"])
+                if job.get("input_artifacts")
+                else ""
+            )
+        )
 
     async def execute(self, job):
         ident, attempt = job["id"], job["attempt_id"]
         base = f"/jobs/{ident}"
         record = {"id": ident, "attempt_id": attempt}
         atomic_json(self.ledger, record)  # Durable admission before starting a process.
+        engine = self.engines.get(job.get("engine") or "pi")
+        if engine is None:
+            record["finish"] = {
+                "status": "FAILED",
+                "result": {"error": f"engine not available on this node: {job.get('engine')}"[:500]},
+            }
+            atomic_json(self.ledger, record)
+            await self.finish_ledger()
+            return
+        uid = engine.uid
         workspace = self.root / "workspaces" / ident
         sessions = self.root / "sessions"
         workspace.mkdir(parents=True, exist_ok=True)
         sessions.mkdir(exist_ok=True)
-        os.chown(workspace, self.uid, self.uid)
-        os.chown(sessions, self.uid, self.uid)
+        os.chown(workspace, uid, uid)
+        os.chown(sessions, uid, uid)
         session = sessions / f"{ident}.jsonl"
-        args = [
-            "pi",
-            "--mode",
-            "rpc",
-            "--provider",
-            self.provider,
-            "--model",
-            self.model,
-            "--session",
-            str(session),
-            "--no-extensions",
-            "--no-skills",
-            "--no-prompt-templates",
-            "--no-approve",
-            "--no-context-files",
-            "--no-mcp",
-            "--offline",
-        ]
+        args = engine.command(session)
         process = None
         heartbeat = None
         stopped = asyncio.Event()
         sequence = 0
         outcome = {
             "status": "FAILED",
-            "result": {"error": "Pi did not produce a final answer"},
+            "result": {"error": f"{engine.label} did not produce a final answer"},
         }
         last_lease = time.monotonic()
         lease_seconds = 5
@@ -200,15 +292,7 @@ class Runner:
                 try:
                     await self.post(
                         "/heartbeat",
-                        {
-                            "executor": "pi",
-                            "available": True,
-                            "version": "1.1.0",
-                            "protocol_version": 2,
-                            "kernel_instance_id": self.kernel_instance_id,
-                            "features": ["artifact-v2", "managed-workspace"],
-                            "node_model": {"provider": self.provider, "model": self.model},
-                        },
+                        self.heartbeat_payload(engine),
                     )
                     response = await self.post(base + "/heartbeat", {"attempt_id": attempt})
                     if response["stop"]:
@@ -246,51 +330,20 @@ class Runner:
 
         async def read_events():
             nonlocal outcome
-            answer, failed = "", False
+            state = {
+                "job_id": ident,
+                "answer": "",
+                "failed": False,
+                "session_path": str(session),
+            }
             while raw := await process.stdout.readline():
-                frame = json.loads(raw)
-                kind = frame.get("type", "")
-                if kind == "response" and not frame.get("success", True):
-                    raise RuntimeError(str(frame.get("error", "Pi RPC command rejected"))[:500])
-                if kind == "response" and frame.get("command") == "get_state":
-                    await progress(
-                        "session",
-                        {"session_id": frame.get("data", {}).get("sessionId", ident)},
-                    )
-                elif kind == "message_end" and frame.get("message", {}).get("role") == "assistant":
-                    message = frame["message"]
-                    failed = message.get("stopReason") in {"error", "aborted"}
-                    answer = "\n".join(
-                        b["text"] for b in message.get("content", []) if b.get("type") == "text"
-                    )
-                    await progress(
-                        "assistant",
-                        {
-                            "text": answer[:4000],
-                            "stop_reason": message.get("stopReason"),
-                        },
-                    )
-                elif kind in {"tool_execution_start", "tool_execution_end"}:
-                    await progress(
-                        kind,
-                        {
-                            "tool": str(frame.get("toolName", ""))[:100],
-                            "is_error": bool(frame.get("isError")),
-                        },
-                    )
-                elif kind in {"agent_end", "agent_settled"}:
-                    if not answer or failed:
-                        raise RuntimeError("Pi ended without a successful final answer")
-                    outcome = {
-                        "status": "COMPLETED",
-                        "result": {
-                            "answer": answer[:16000],
-                            "executor": "pi",
-                            "session_path": str(session),
-                        },
-                    }
+                events, final = engine.translate(json.loads(raw), state)
+                for kind, data in events:
+                    await progress(kind, data)
+                if final is not None:
+                    outcome = {"status": "COMPLETED", "result": final}
                     return
-            raise RuntimeError("Pi exited before completion")
+            raise RuntimeError(f"{engine.label} exited before completion")
 
         try:
             first = await self.post(base + "/heartbeat", {"attempt_id": attempt})
@@ -305,7 +358,7 @@ class Runner:
                     raise RuntimeError("invalid input artifact id")
                 inputs = workspace / "inputs"
                 inputs.mkdir(exist_ok=True)
-                os.chown(inputs, self.uid, self.uid)
+                os.chown(inputs, uid, uid)
                 path = inputs / reference["id"]
                 digest, size = sha256(), 0
                 async with self.client.stream(
@@ -324,13 +377,13 @@ class Runner:
                 if digest.hexdigest() != reference["content_hash"]:
                     path.unlink(missing_ok=True)
                     raise RuntimeError("input artifact hash mismatch")
-                os.chown(path, self.uid, self.uid)
+                os.chown(path, uid, uid)
             process = await asyncio.create_subprocess_exec(
                 *args,
                 cwd=workspace,
-                env=self.pi_environment(),
+                env=engine.environment(),
                 start_new_session=True,
-                preexec_fn=self.drop_privileges,
+                preexec_fn=engine.drop_privileges,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
@@ -338,29 +391,7 @@ class Runner:
             )
             record.update(pid=process.pid, process_start=process_start(process.pid))
             atomic_json(self.ledger, record)
-            process.stdin.write((json.dumps({"type": "get_state", "id": "state"}) + "\n").encode())
-            process.stdin.write(
-                (
-                    json.dumps(
-                        {
-                            "type": "prompt",
-                            "id": attempt,
-                            "message": "Work in the assigned workspace. Return evidence and file outputs.\n"
-                            + "Bot role and delivery configuration:\n"
-                            + json.dumps(job.get("config_snapshot", {}), ensure_ascii=False)
-                            + "\n"
-                            + job["prompt"]
-                            + (
-                                "\nAuthorized input artifact IDs are materialized under inputs/. "
-                                + json.dumps(job["input_artifacts"])
-                                if job.get("input_artifacts")
-                                else ""
-                            ),
-                        }
-                    )
-                    + "\n"
-                ).encode()
-            )
+            process.stdin.write(engine.stdin(attempt, self.compose_prompt(job)))
             await process.stdin.drain()
             reader = asyncio.create_task(read_events())
             stop_wait = asyncio.create_task(stopped.wait())
@@ -378,7 +409,7 @@ class Runner:
                         "result": {"error": "cancelled or lease revoked"},
                     }
                 else:
-                    raise TimeoutError("remote Pi job execution timeout")
+                    raise TimeoutError(f"remote {engine.label} job execution timeout")
             finally:
                 reader.cancel()
                 stop_wait.cancel()
@@ -523,15 +554,7 @@ class Runner:
                 try:
                     response = await self.post(
                         "/heartbeat",
-                        {
-                            "executor": "pi",
-                            "available": True,
-                            "version": "1.1.0",
-                            "protocol_version": 2,
-                            "kernel_instance_id": self.kernel_instance_id,
-                            "features": ["artifact-v2", "managed-workspace"],
-                            "node_model": {"provider": self.provider, "model": self.model},
-                        },
+                        self.heartbeat_payload(self.engines["pi"]),
                     )
                     identity = response.get("kernel_instance_id")
                     if self.kernel_instance_id and identity != self.kernel_instance_id:
