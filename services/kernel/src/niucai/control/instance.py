@@ -7,7 +7,7 @@ from sqlalchemy import select, text
 from niucai.storage.db import KernelInstance, RemoteJob, Task, TaskRun, WorkerHealth, now, uid
 
 PROTOCOL_VERSION = 2
-MIGRATION_HEAD = "a3d21022d007"
+MIGRATION_HEAD = "b4e21024d008"
 
 
 def instance(session):

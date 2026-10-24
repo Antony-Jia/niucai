@@ -51,6 +51,7 @@ class JobCreate(BaseModel):
     allowed_nodes: list[str] = Field(default_factory=list, max_length=32)
     parent_task_id: str | None = None
     artifacts: list[dict] = Field(default_factory=list, max_length=16)
+    engine: Literal["pi", "codex", "claude"] = "pi"
 
 
 class Attempt(BaseModel):
@@ -117,9 +118,17 @@ def remote_router(db, settings, auth):
                 validate_connection(self.connection)
             return self
 
+    class ExecutorStatus(BaseModel):
+        available: bool
+        version: str = Field(default="", max_length=100)
+        model: str = Field(default="", max_length=200)
+        profiles: list[str] = Field(default_factory=list, max_length=8)
+        reason: str = Field(default="", max_length=100)
+
     class Capabilities(BaseModel):
         executor: Literal["pi"] = "pi"
         available: bool
+        executors: dict[Literal["pi", "codex", "claude"], ExecutorStatus] | None = None
         version: str = Field(default="", max_length=100)
         protocol_version: int | None = Field(default=None, ge=1)
         kernel_instance_id: str | None = Field(default=None, max_length=36)
@@ -172,6 +181,7 @@ def remote_router(db, settings, auth):
             request.allowed_nodes,
             request.parent_task_id,
             artifacts=request.artifacts,
+            engine=request.engine,
         )
 
     @router.get("/api/remote/jobs", dependencies=auth)

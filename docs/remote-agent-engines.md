@@ -188,7 +188,10 @@ V1 不改工具名，避免牵动 `permitted(..., "remote_pi_submit")`、固定�
 | E4 编排 | `remote_pi_submit` 的 `engine` / `permission_profile` 参数；`remote_pi_nodes` 返回引擎；审批卡片显示引擎与档位 | 主 Pi 在同一会话中把两个工作包分别派给 `codex` 和 `pi` 并完成汇总 |
 | E5 后续 | 会话续接（`claude --resume`、`codex exec resume`）、订阅登录、逐工具审批、多执行槽 | 单独立项 |
 
-进度：E0 的代码已改（`PiEngine` 与 `Runner` 拆分，未知 `engine` 的工作包经账本以 `FAILED` 结案）。验证：`ruff` 检查与格式检查；`PiEngine` 的事件翻译 / stdin / 提示词 / 命令行 / 心跳单元对照；`deploy/compose/remote-pi-demo.ps1` 重新构建镜像后，`verify-remote-pi.py` 四项全部通过（双节点并行与第三任务排队、取消与原节点重试、停机后不重复执行并核对旧 attempt、主 Pi 委派与聚合），节点容器内确认运行的是拆分后的 runner，证据在 `build-cache/remote-pi/verification.json`（gitignored）。模拟模型为确定性服务，不代表真实模型质量。尚未运行 `verify-resource-nodes.py`。E1 起尚未开始。
+进度：E0 的代码已改（`PiEngine` 与 `Runner` 拆分，未知 `engine` 的工作包经账本以 `FAILED` 结案）。验证：`ruff` 检查与格式检查；`PiEngine` 的事件翻译 / stdin / 提示词 / 命令行 / 心跳单元对照；`deploy/compose/remote-pi-demo.ps1` 重新构建镜像后，`verify-remote-pi.py` 四项全部通过（双节点并行与第三任务排队、取消与原节点重试、停机后不重复执行并核对旧 attempt、主 Pi 委派与聚合），节点容器内确认运行的是拆分后的 runner，证据在 `build-cache/remote-pi/verification.json`（gitignored）。模拟模型为确定性服务，不代表真实模型质量。尚未运行 `verify-resource-nodes.py`。
+
+进度（E1）：Kernel 基础已实现并通过测试。`remote_jobs.engine`（迁移 `b4e21024d008`，默认 `pi`）；`POST /api/remote/jobs` 接受 `engine`，心跳接受 protocol 3 的 `executors`；`claim()` 只把工作包派给对应引擎可用的节点，protocol 1/2 节点只视为单一 Pi 执行器；Bot `allowed_engines`（默认 `["pi"]`）在提交（快照策略与当前定义）和 claim/心跳时校验；非 Pi 引擎无可用节点时等待原因为 `ENGINE_NOT_READY`。验证：`ruff`、`alembic upgrade head` + `alembic check`，`test_remote_pi` 新增 5 项，相关套件（remote/resource/kernel_anywhere/multi_bot）通过；全量中 `test_desktop_api::test_artifact_download_and_latest_event_cursor` 与 `test_kernel::test_workspace_containment_and_file_read_limit` 失败，在 E1 之前的基线同样失败，与本改动无关。
+E1 有意未做：Runner 仍发送 protocol 2（避免旧 Kernel 拒绝 protocol 3 节点，留到 E2 随第二个引擎一起切换）；Desktop 引擎标签、`permission_profile`、主 Pi 工具的 `engine` 参数留给 E4。
 
 兼容性：
 

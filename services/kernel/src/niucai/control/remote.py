@@ -11,6 +11,22 @@ from niucai.storage.db import Event, RemoteJob, RemoteNode, Task, as_dict, emit,
 
 ACTIVE = {"RUNNING", "CANCELLING", "LOST"}
 TERMINAL = {"COMPLETED", "FAILED", "CANCELLED", "DENIED"}
+ENGINES = ("pi", "codex", "claude")
+NODE_PROTOCOLS = {1, 2, 3}
+
+
+def node_engines(capabilities):
+    """Per-engine status reported by a node. Protocol <3 nodes are a single legacy Pi executor."""
+    executors = capabilities.get("executors")
+    if capabilities.get("protocol_version", 1) >= 3 and isinstance(executors, dict):
+        return {k: v for k, v in executors.items() if k in ENGINES and isinstance(v, dict)}
+    if capabilities.get("executor") == "pi":
+        return {"pi": {"available": bool(capabilities.get("available"))}}
+    return {}
+
+
+def engine_ready(capabilities, engine):
+    return bool(node_engines(capabilities).get(engine, {}).get("available"))
 
 
 def scheduling_lock(s):
@@ -73,10 +89,15 @@ class RemoteManager:
             else "OFFLINE"
         )
         value["capacity"] = 1
+        value["engines"] = node_engines(node.capabilities)
         value["connection_status"] = value["status"] if node.heartbeat_at else "PENDING"
         protocol = node.capabilities.get("protocol_version")
         value["protocol_status"] = (
-            "UNVERIFIED" if protocol is None else "COMPATIBLE" if protocol in {1, 2} else "INCOMPATIBLE"
+            "UNVERIFIED"
+            if protocol is None
+            else "COMPATIBLE"
+            if protocol in NODE_PROTOCOLS
+            else "INCOMPATIBLE"
         )
         return value
 
@@ -170,8 +191,8 @@ class RemoteManager:
             compatible = [
                 n
                 for n in online
-                if n.capabilities.get("protocol_version", 1) in {1, 2}
-                and (not needs_v2 or n.capabilities.get("protocol_version") == 2)
+                if n.capabilities.get("protocol_version", 1) in NODE_PROTOCOLS
+                and (not needs_v2 or n.capabilities.get("protocol_version", 1) >= 2)
             ]
             capable = [
                 n
@@ -187,8 +208,8 @@ class RemoteManager:
                 if not compatible
                 else "CAPABILITY_MISSING"
                 if not capable
-                else "PI_NOT_READY"
-                if not any(n.capabilities.get("available") for n in capable)
+                else ("PI_NOT_READY" if job.engine == "pi" else "ENGINE_NOT_READY")
+                if not any(engine_ready(n.capabilities, job.engine) for n in capable)
                 else "NODE_BUSY"
                 if all(n.id in occupied for n in capable)
                 else "QUEUED"
@@ -205,8 +226,19 @@ class RemoteManager:
             if job.wait_state != state:
                 job.wait_state = state
 
-    def submit(self, prompt, key, allowed_nodes=(), parent_task_id=None, parent_token=None, artifacts=None):
+    def submit(
+        self,
+        prompt,
+        key,
+        allowed_nodes=(),
+        parent_task_id=None,
+        parent_token=None,
+        artifacts=None,
+        engine="pi",
+    ):
         self.enabled()
+        if engine not in ENGINES:
+            raise ValueError(f"unknown remote engine: {engine}")
         with self.db.sessions.begin() as s:
             from niucai.control.bots import permitted
             from niucai.control.collaboration import gate
@@ -224,6 +256,8 @@ class RemoteManager:
                 current = definition(require(s, Agent, task.agent_id))
                 if policy.allowed_nodes == []:
                     raise PermissionError("Bot has no authorized remote nodes")
+                if engine not in policy.allowed_engines or engine not in current.allowed_engines:
+                    raise PermissionError(f"Bot is not authorized to use the {engine} engine")
                 # V1 remote CLI cannot enforce a per-tool bridge inside the node.
                 if (
                     policy.tools != ["*"]
@@ -277,10 +311,11 @@ class RemoteManager:
             if existing:
                 if existing.input_artifacts != references:
                     raise Conflict("remote input artifact versions changed on replay")
-                if (existing.prompt, existing.allowed_nodes, existing.parent_task_id) != (
+                if (existing.prompt, existing.allowed_nodes, existing.parent_task_id, existing.engine) != (
                     prompt,
                     allowed_nodes,
                     parent_task_id,
+                    engine,
                 ):
                     raise Conflict("idempotency key reused with a different job")
                 return as_dict(existing)
@@ -299,6 +334,7 @@ class RemoteManager:
                 require(s, RemoteNode, ident)
             job = RemoteJob(
                 prompt=prompt,
+                engine=engine,
                 idempotency_key=key,
                 allowed_nodes=allowed_nodes,
                 parent_task_id=parent_task_id,
@@ -373,7 +409,7 @@ class RemoteManager:
             return {
                 "enabled": bool(node.enabled)
                 and (not expected or expected == ident)
-                and capabilities.get("protocol_version", 1) in {1, 2},
+                and capabilities.get("protocol_version", 1) in NODE_PROTOCOLS,
                 "kernel_instance_id": ident,
                 "protocol_version": PROTOCOL_VERSION,
                 "reason": "KERNEL_IDENTITY_MISMATCH" if expected and expected != ident else None,
@@ -394,6 +430,7 @@ class RemoteManager:
                 current.tools == ["*"]
                 and parent.status in {"PENDING", "RUNNING", "WAITING_HUMAN", "WAITING_BOT"}
                 and (current.allowed_nodes is None or node_id in current.allowed_nodes)
+                and job.engine in current.allowed_engines
             )
         except PermissionError:
             return False
@@ -421,9 +458,9 @@ class RemoteManager:
                 .limit(1)
             ):
                 return None
-            if node.capabilities.get("executor") != "pi" or not node.capabilities.get("available"):
+            if node.capabilities.get("protocol_version", 1) not in NODE_PROTOCOLS:
                 return None
-            if node.capabilities.get("protocol_version", 1) not in {1, 2}:
+            if not any(v.get("available") for v in node_engines(node.capabilities).values()):
                 return None
             from niucai.control.instance import instance
 
@@ -437,12 +474,14 @@ class RemoteManager:
                     continue
                 if job.allowed_nodes and node_id not in job.allowed_nodes:
                     continue
+                if not engine_ready(node.capabilities, job.engine):
+                    continue
                 if not self.authorized(s, job, node_id):
                     continue
                 policy = job.config_snapshot.get("resource_policy", {})
                 if (
                     policy.get("strategy") == "fixed" or job.config_snapshot.get("instructions")
-                ) and node.capabilities.get("protocol_version") != 2:
+                ) and node.capabilities.get("protocol_version", 1) < 2:
                     # Legacy runners cannot consume role/configuration snapshots.
                     # Keep the basic legacy protocol, never pretend new contracts were enforced.
                     continue

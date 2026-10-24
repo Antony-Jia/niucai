@@ -356,6 +356,7 @@ class RemoteJob(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     parent_task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), index=True)
     idempotency_key: Mapped[str] = mapped_column(String(200), unique=True)
+    engine: Mapped[str] = mapped_column(String(20), default="pi", server_default="pi")
     prompt: Mapped[str] = mapped_column(Text)
     input_artifacts: Mapped[list] = mapped_column(JSON, default=list)
     config_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
