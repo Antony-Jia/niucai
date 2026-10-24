@@ -48,6 +48,17 @@ async def kill_group(pid):
         os.killpg(pid, signal.SIGKILL)
 
 
+def resume_session(job):
+    """Engine session id of a continuation job, or None; validated before it reaches a command line."""
+    resume = ((job or {}).get("config_snapshot") or {}).get("resume")
+    if not resume:
+        return None
+    session = str(resume.get("session_id", ""))
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}", session):
+        raise ValueError("invalid resume session id")
+    return session
+
+
 class PiEngine:
     """Pi RPC engine: the only engine today. Owns its Unix UID, HOME and CLI protocol."""
 
@@ -283,14 +294,24 @@ class CodexEngine:
         profile = ((job or {}).get("config_snapshot") or {}).get("permission_profile") or "workspace"
         if profile not in self.sandboxes or profile not in self.profiles:
             raise ValueError(f"permission profile not enabled on this node: {str(profile)[:40]}")
+        # Without the engine sandbox the container is the boundary; `workspace` is labelled as such.
+        sandbox = self.sandboxes[profile] if self.sandbox == "engine" else "danger-full-access"
+        resume = resume_session(job)
+        if resume:
+            # `codex exec resume` has no --sandbox flag; the same policy goes through configuration.
+            head = [
+                "codex",
+                "exec",
+                "resume",
+                "--json",
+                "--skip-git-repo-check",
+                "-c",
+                f'sandbox_mode="{sandbox}"',
+            ]
+        else:
+            head = ["codex", "exec", "--json", "--skip-git-repo-check", "--sandbox", sandbox]
         args = [
-            "codex",
-            "exec",
-            "--json",
-            "--skip-git-repo-check",
-            "--sandbox",
-            # Without the engine sandbox the container is the boundary; `workspace` is labelled as such.
-            self.sandboxes[profile] if self.sandbox == "engine" else "danger-full-access",
+            *head,
             "--output-last-message",
             str(session.with_suffix(".txt")),
             "-c",
@@ -316,7 +337,7 @@ class CodexEngine:
                 "-c",
                 f'{provider}.wire_api="responses"',
             ]
-        return [*args, "-"]
+        return [*args, *([resume] if resume else []), "-"]
 
     @staticmethod
     def stdin(attempt, message):
@@ -480,6 +501,8 @@ class ClaudeEngine:
             "--disallowedTools",
             *self.web_tools,
         ]
+        if resume := resume_session(job):
+            args += ["--resume", resume]
         if profile == "read":
             # Read-only is enforced by removing every tool that can write or run commands.
             args += ["--tools", "Read,Glob,Grep", "--permission-mode", "dontAsk"]
@@ -652,8 +675,21 @@ class Runner:
             await self.finish_ledger()
             return
         uid = engine.uid
-        workspace = self.root / "workspaces" / ident
+        resume = (job.get("config_snapshot") or {}).get("resume")
+        previous = str(resume.get("job_id", "")) if resume else ""
+        # A continuation reuses the previous job's workspace: the engine session is keyed by its path.
+        workspace = (
+            self.root / "workspaces" / (previous if re.fullmatch(r"[a-zA-Z0-9-]{1,36}", previous) else ident)
+        )
         sessions = self.root / "sessions"
+        if resume and (workspace.name == ident or not workspace.is_dir()):
+            record["finish"] = {
+                "status": "FAILED",
+                "result": {"error": "workspace of the previous job is gone; cannot resume"},
+            }
+            atomic_json(self.ledger, record)
+            await self.finish_ledger()
+            return
         workspace.mkdir(parents=True, exist_ok=True)
         sessions.mkdir(exist_ok=True)
         os.chown(workspace, uid, uid)

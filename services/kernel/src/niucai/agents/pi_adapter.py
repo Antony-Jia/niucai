@@ -436,7 +436,8 @@ class PiDurableRuntime:
                             idempotency_key=f"{task_id}:remote:{sha256(str(params['toolTaskId']).encode()).hexdigest()}",
                             parent_task_id=task_id,
                             artifacts=params.get("artifacts", []),
-                            engine=params.get("engine") or "pi",
+                            engine=params.get("engine") or None,
+                            resume_job_id=params.get("resume_job_id") or None,
                             permission_profile=params.get("permission_profile") or None,
                         )
                         return jsonable_encoder(
@@ -450,6 +451,7 @@ class PiDurableRuntime:
                                 request.artifacts,
                                 request.engine,
                                 request.permission_profile,
+                                request.resume_job_id,
                             )
                         )
                     if method == "remote.result":

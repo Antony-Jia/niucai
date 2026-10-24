@@ -186,7 +186,7 @@ V1 不改工具名，避免牵动 `permitted(..., "remote_pi_submit")`、固定�
 | E2 Codex 引擎 | `CodexEngine`、镜像构建参数、接入向导字段；实测容器内 sandbox 档位 | 夹具单测覆盖成功、失败、取消、超时、未知帧；真实 Codex 在 Docker 节点完成一个带产物的工作包 |
 | E3 Claude Code 引擎 | `ClaudeEngine`，禁用用户级设置和 MCP，工具白名单 | 同 E2 |
 | E4 编排 | `remote_pi_submit` 的 `engine` / `permission_profile` 参数；`remote_pi_nodes` 返回引擎；审批卡片显示引擎与档位 | 主 Pi 在同一会话中把两个工作包分别派给 `codex` 和 `pi` 并完成汇总 |
-| E5 后续 | 会话续接（`claude --resume`、`codex exec resume`）、订阅登录、逐工具审批、多执行槽 | 单独立项 |
+| E5 | 会话续接（`claude --resume`、`codex exec resume`）已实现；订阅登录、逐工具审批、多执行槽仍待单独立项 | 已部分完成 |
 
 进度：E0 的代码已改（`PiEngine` 与 `Runner` 拆分，未知 `engine` 的工作包经账本以 `FAILED` 结案）。验证：`ruff` 检查与格式检查；`PiEngine` 的事件翻译 / stdin / 提示词 / 命令行 / 心跳单元对照；`deploy/compose/remote-pi-demo.ps1` 重新构建镜像后，`verify-remote-pi.py` 四项全部通过（双节点并行与第三任务排队、取消与原节点重试、停机后不重复执行并核对旧 attempt、主 Pi 委派与聚合），节点容器内确认运行的是拆分后的 runner，证据在 `build-cache/remote-pi/verification.json`（gitignored）。模拟模型为确定性服务，不代表真实模型质量。尚未运行 `verify-resource-nodes.py`。
 
@@ -231,3 +231,11 @@ E2 有意未做：`permission_profile` 目前只从 `config_snapshot` 读取，A
 进度（E4）：`POST /api/remote/jobs` 新增可选 `permission_profile`（`read` / `workspace` / `full`，非法值 422），写入作业 `config_snapshot.permission_profile`，不传则由节点按 `workspace` 执行；它与 `engine` 一样是幂等键的一部分，同键不同档位返回 409。`submitted` 事件记录 `engine` 与生效档位。`full` 绕过引擎自身的权限询问，因此永远不随会话 YOLO 自动入队，必须人工批准，并且节点需通过 `NIUCAI_*_PROFILES` 显式启用，否则作业以 `FAILED` 结束。主 Pi 的 `remote_pi_submit` 工具新增可选 `engine` 与 `permission_profile`，由桥接层转发到同一 `RemoteManager.submit`，仍受 Bot `allowed_engines` 约束。Desktop 的远程任务页提交表单可选引擎与档位，作业列表、详情与批准卡片显示“引擎 · 档位”，选择 `full` 时给出提示。
 
 验证：Kernel 测试覆盖档位校验、存储、幂等冲突与 API；Desktop 测试覆盖提交参数与批准卡片文案；`verify-remote-engines.py` 在真实容器内确认 Codex 与 Claude 节点拒绝未启用的 `full`，Claude 的 `read` 作业在没有 Bash 工具的情况下完成且未写出 `proof.txt`。Codex 节点在加固容器中只提供 `workspace`，`read` 档位因此跳过。尚未做：接入向导的引擎环境变量字段、`phone PWA` 显示（`apps/web` 当前没有远程作业页面）、会话续接（E5）。
+
+进度（E5 会话续接）：`POST /api/remote/jobs` 新增可选 `resume_job_id`，主 Pi 的 `remote_pi_submit` 同名参数。续接只支持 Codex 与 Claude Code：上一个作业必须已结束（`COMPLETED` / `FAILED` / `CANCELLED`）、属于同一个父任务（独立作业则无父任务）、有引擎上报的会话 id（引擎只回落到作业 id 的视为不可续接）。新作业沿用上一个作业的引擎并固定到同一节点，`config_snapshot.resume = {job_id, session_id}`；显式指定其它引擎返回错误，Pi 作业不可续接。`resume_job_id` 与引擎、档位一样参与幂等判断。
+
+Runner：续接作业复用上一个作业的工作区目录（引擎会话以工作区路径为键），目录已不存在则以明确原因失败。Claude 追加 `--resume <session>`；Codex 改用 `codex exec resume <session> -`，该子命令没有 `--sandbox`，同等策略通过 `-c sandbox_mode=...` 传入。会话 id 先按 `[A-Za-z0-9][A-Za-z0-9_.-]{0,99}` 校验，防止被当作命令行选项。权限档位按新作业的 `permission_profile` 重新计算，不继承上一次。
+
+Desktop：已结束的 Codex / Claude 作业详情出现「继续此会话」，提交表单改为续接模式（节点与引擎沿用、选择框禁用，可取消续接）。
+
+验证：Kernel 与 Runner 单测覆盖关联规则、拒绝场景、命令行与会话 id 校验；`verify-remote-engines.py` 在真实 Codex 0.164.0 与 Claude Code 2.1.307 容器内各跑一次续接，模拟模型仅在历史里没有工具结果时才调用工具，续接作业不再调用工具即证明历史被重新载入。限制：续接依赖节点上的工作区与会话目录，节点数据被清理后无法续接；订阅登录、逐工具审批、多执行槽仍未做。

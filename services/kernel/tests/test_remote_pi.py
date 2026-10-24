@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from niucai.api.app import create_app
 from niucai.control.remote import RemoteManager
-from niucai.control.tasks import Conflict
+from niucai.control.tasks import Conflict, Missing
 from niucai.domain.schemas import TaskCreate
 from niucai.storage.db import RemoteJob, now
 
@@ -310,3 +310,43 @@ def test_permission_profile_is_validated_stored_and_part_of_idempotency(setup):
         assert (
             created.status_code == 201 and created.json()["config_snapshot"]["permission_profile"] == "full"
         )
+
+
+def finished_job(setup, manager, key, engine, node_id, session_id="thread-1", status="COMPLETED"):
+    value = engine_job(manager, key, engine)
+    with setup[0].sessions.begin() as s:
+        row = s.get(RemoteJob, value["id"])
+        row.status, row.node_id, row.session_id = status, node_id, session_id
+    return value
+
+
+def test_resume_continues_on_the_same_node_with_the_same_engine(setup):
+    manager = remote(setup)
+    home = engine_node(manager, {"pi": {"available": True}, "claude": {"available": True}})
+    previous = finished_job(setup, manager, "first", "claude", home["id"], "sess-1")
+    child = manager.submit("Now fix it", "second", resume_job_id=previous["id"])
+    assert child["engine"] == "claude" and child["allowed_nodes"] == [home["id"]]
+    assert child["config_snapshot"]["resume"] == {"job_id": previous["id"], "session_id": "sess-1"}
+    assert manager.submit("Now fix it", "second", resume_job_id=previous["id"])["id"] == child["id"]
+    with pytest.raises(Conflict):
+        manager.submit("Now fix it", "second")  # a replay must not silently drop the continuation
+    with pytest.raises(ValueError):
+        manager.submit("x", "other-engine", engine="codex", resume_job_id=previous["id"])
+    with pytest.raises(PermissionError):
+        manager.submit("x", "other-node", [engine_node(manager, {})["id"]], resume_job_id=previous["id"])
+
+
+def test_resume_rejects_unfinished_pi_and_unresumable_jobs(setup):
+    manager = remote(setup)
+    home = engine_node(manager, {"codex": {"available": True}, "pi": {"available": True}})
+    running = finished_job(setup, manager, "run", "codex", home["id"], status="RUNNING")
+    with pytest.raises(Conflict):
+        manager.submit("x", "k1", resume_job_id=running["id"])
+    pi = finished_job(setup, manager, "pi", "pi", home["id"])
+    with pytest.raises(ValueError):
+        manager.submit("x", "k2", resume_job_id=pi["id"])
+    fallback = finished_job(setup, manager, "fb", "codex", home["id"], session_id=None)
+    with pytest.raises(Conflict):  # an engine that never reported a thread id cannot be resumed
+        manager.submit("x", "k3", resume_job_id=fallback["id"])
+    with pytest.raises(Missing):
+        manager.submit("x", "k4", resume_job_id="missing")

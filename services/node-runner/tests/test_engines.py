@@ -369,3 +369,34 @@ def test_claude_status_reports_reason_without_leaking_credentials(claude, monkey
     assert claude.status() == {"available": False, "reason": "credential_missing"}
     monkeypatch.setattr(runner.shutil, "which", lambda name: None)
     assert claude.status() == {"available": False, "reason": "not_installed"}
+
+
+def test_resume_session_is_validated():
+    job = {"config_snapshot": {"resume": {"job_id": "j", "session_id": "0199-abc_DEF"}}}
+    assert runner.resume_session(job) == "0199-abc_DEF"
+    assert runner.resume_session({"config_snapshot": {}}) is None
+    for bad in ("--last", "a b", "", "x" * 101, "$(id)"):
+        with pytest.raises(ValueError):
+            runner.resume_session({"config_snapshot": {"resume": {"session_id": bad}}})
+
+
+def test_claude_resume_adds_session_flag(claude, tmp_path):
+    job = {"config_snapshot": {"resume": {"job_id": "j", "session_id": "sess-1"}}}
+    args = claude.command(tmp_path / "n.jsonl", job)
+    assert args[args.index("--resume") + 1] == "sess-1"
+    assert "--resume" not in claude.command(tmp_path / "n.jsonl", {"config_snapshot": {}})
+
+
+def test_codex_resume_uses_resume_subcommand_and_config_sandbox(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner.os, "chown", lambda *a: None, raising=False)
+    monkeypatch.setenv("NIUCAI_CODEX_API_KEY", "sk-codex")
+    monkeypatch.setattr(runner.shutil, "which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr(runner.CodexEngine, "probe_sandbox", lambda self: "engine")
+    engine = runner.CodexEngine(tmp_path)
+    job = {"config_snapshot": {"resume": {"job_id": "j", "session_id": "thread-1"}}}
+    args = engine.command(tmp_path / "n.jsonl", job)
+    assert args[:3] == ["codex", "exec", "resume"] and "--sandbox" not in args
+    assert 'sandbox_mode="workspace-write"' in args
+    assert args[-2:] == ["thread-1", "-"]
+    fresh = engine.command(tmp_path / "n.jsonl", {"config_snapshot": {}})
+    assert fresh[:2] == ["codex", "exec"] and "resume" not in fresh and fresh[-1] == "-"

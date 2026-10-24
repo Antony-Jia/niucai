@@ -146,3 +146,33 @@ it("submits the chosen engine and permission profile", async () => {
     ),
   );
 });
+
+it("continues a finished Claude session instead of starting a new one", async () => {
+  mount("COMPLETED", { engine: "claude", session_id: "sess-1", node_id: "n1" });
+  fireEvent.click(await screen.findByRole("button", { name: "Fix login" }));
+  fireEvent.click(screen.getByRole("button", { name: "继续此会话" }));
+  fireEvent.change(screen.getByLabelText("工作要求"), {
+    target: { value: "Now add tests" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "提交并查看授权" }));
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith(
+      "/api/remote/jobs",
+      "POST",
+      expect.objectContaining({ resume_job_id: "child" }),
+    ),
+  );
+  const body = vi
+    .mocked(request)
+    .mock.calls.find((call) => call[1] === "POST")?.[2] as object;
+  expect(body).not.toHaveProperty("engine");
+  expect(body).not.toHaveProperty("allowed_nodes");
+});
+
+it("does not offer to continue a Pi job", async () => {
+  mount("COMPLETED", { engine: "pi", session_id: "s", node_id: "n1" });
+  fireEvent.click(await screen.findByRole("button", { name: "Fix login" }));
+  expect(
+    screen.queryByRole("button", { name: "继续此会话" }),
+  ).not.toBeInTheDocument();
+});

@@ -235,10 +235,19 @@ class RemoteManager:
         parent_task_id=None,
         parent_token=None,
         artifacts=None,
-        engine="pi",
+        engine=None,
         permission_profile=None,
+        resume_job_id=None,
     ):
         self.enabled()
+        if resume_job_id:
+            # 续接沿用上一个作业的引擎，调用方显式指定了其它引擎则拒绝。
+            with self.db.sessions() as s:
+                previous = require(s, RemoteJob, resume_job_id)
+                if engine and engine != previous.engine:
+                    raise ValueError("resume must use the engine of the previous job")
+                engine = previous.engine
+        engine = engine or "pi"
         if engine not in ENGINES:
             raise ValueError(f"unknown remote engine: {engine}")
         if permission_profile is not None and permission_profile not in PROFILES:
@@ -314,6 +323,22 @@ class RemoteManager:
             allowed_nodes = sorted(set(allowed_nodes))
             if permission_profile:
                 saved = {**saved, "permission_profile": permission_profile}
+            if resume_job_id:
+                previous = require(s, RemoteJob, resume_job_id)
+                if engine == "pi":
+                    raise ValueError("pi jobs cannot be resumed")
+                if previous.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
+                    raise Conflict("only a finished job can be resumed")
+                if previous.parent_task_id != parent_task_id:
+                    raise PermissionError("job belongs to another parent task")
+                # Engines that never reported a thread id fall back to the job id, which cannot be resumed.
+                if not previous.session_id or previous.session_id == previous.id or not previous.node_id:
+                    raise Conflict("previous job has no resumable session")
+                # The session and workspace live on the node that ran the previous job.
+                if allowed_nodes and set(allowed_nodes) != {previous.node_id}:
+                    raise PermissionError("resume must run on the node of the previous job")
+                allowed_nodes = [previous.node_id]
+                saved = {**saved, "resume": {"job_id": previous.id, "session_id": previous.session_id}}
             if existing:
                 if existing.input_artifacts != references:
                     raise Conflict("remote input artifact versions changed on replay")
@@ -323,7 +348,8 @@ class RemoteManager:
                     existing.parent_task_id,
                     existing.engine,
                     existing.config_snapshot.get("permission_profile"),
-                ) != (prompt, allowed_nodes, parent_task_id, engine, permission_profile):
+                    existing.config_snapshot.get("resume", {}).get("job_id"),
+                ) != (prompt, allowed_nodes, parent_task_id, engine, permission_profile, resume_job_id):
                     raise Conflict("idempotency key reused with a different job")
                 return as_dict(existing)
             if parent_task_id and self.settings.multi_bot_enabled:
@@ -357,6 +383,7 @@ class RemoteManager:
                 execution_policy="isolated-node-autonomous",
                 engine=engine,
                 permission_profile=permission_profile or "workspace",
+                resume_job_id=resume_job_id,
             )
             if parent_task_id:
                 from niucai.control.autonomy import yolo

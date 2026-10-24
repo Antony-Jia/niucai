@@ -44,14 +44,14 @@ def wait(predicate, timeout=120):
     raise TimeoutError("live verification condition did not become true")
 
 
-def submit(engine, allowed=None, profile=None):
+def submit(engine, allowed=None, profile=None, resume=None):
     value = request(
         "/api/remote/jobs",
         {
             "prompt": "Write proof.txt and provide evidence",
             "idempotency_key": f"engine-{time.time_ns()}-{engine}",
             "allowed_nodes": allowed or [],
-            "engine": engine,
+            **({"resume_job_id": resume} if resume else {"engine": engine}),
             **({"permission_profile": profile} if profile else {}),
         },
     )
@@ -96,6 +96,16 @@ def check_engine(engine, node, proof_text, answer_prefix):
         "tool_execution_end",
     ], kinds
     assert "echo" not in json.dumps(kinds), "command text must not be reported"
+    # Continuation: the CLI reloads the earlier session. The simulation only calls its tool while the
+    # history holds no tool result, so a resumed run answering without one proves the history was loaded.
+    follow = submit(engine, None, None, ident)
+    resumed = wait(lambda: finished(follow))
+    assert resumed["status"] == "COMPLETED", resumed
+    assert resumed["node_id"] == node and resumed["config_snapshot"]["resume"]["job_id"] == ident, resumed
+    tools = [e for e in events(follow) if str(e["data"].get("kind", "")).startswith("tool_execution")]
+    assert not tools, tools
+    print(f"PASS resume: {engine} continuation ran on the same node and reloaded the earlier session")
+    evidence[f"{engine}_resume"] = {"session": resumed["session_id"], "previous_session": job["session_id"]}
     evidence[f"{engine}_job"] = {"status": job["status"], "events": [k for k, _ in kinds]}
     print(f"PASS {engine} job: completed on the {engine} node with proof.txt, usage and engine-tagged events")
 

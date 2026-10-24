@@ -21,6 +21,15 @@ const profileNames: Record<Profile, string> = {
   full: "完全访问",
 };
 
+function canResume(value: Job) {
+  return (
+    ["codex", "claude"].includes(value.engine || "pi") &&
+    ["COMPLETED", "FAILED", "CANCELLED"].includes(value.status) &&
+    !!value.session_id &&
+    !!value.node_id
+  );
+}
+
 function describeJob(value: Job) {
   const engine = engineNames[value.engine || "pi"] || value.engine;
   const profile = value.config_snapshot?.permission_profile || "workspace";
@@ -33,7 +42,11 @@ interface Job {
   status: string;
   node_id: string | null;
   engine?: Engine;
-  config_snapshot?: { permission_profile?: Profile };
+  session_id?: string | null;
+  config_snapshot?: {
+    permission_profile?: Profile;
+    resume?: { job_id: string };
+  };
   parent_task_id: string | null;
   result: {
     answer?: string;
@@ -69,6 +82,7 @@ export function RemotePi() {
   const [node, setNode] = useState("");
   const [engine, setEngine] = useState<Engine>("pi");
   const [profile, setProfile] = useState<Profile>("workspace");
+  const [resumeJob, setResumeJob] = useState<Job | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [submissionKey, setSubmissionKey] = useState<string | null>(null);
@@ -129,21 +143,41 @@ export function RemotePi() {
                 setSubmissionKey(key);
                 const value = await request<Job>("/api/remote/jobs", "POST", {
                   prompt,
-                  allowed_nodes: node ? [node] : [],
-                  engine,
+                  // A continuation inherits the node, engine and session of the earlier job.
+                  ...(resumeJob
+                    ? { resume_job_id: resumeJob.id }
+                    : { allowed_nodes: node ? [node] : [], engine }),
                   permission_profile: profile,
                   idempotency_key: key,
                 });
                 setSelected(value.id);
                 setPrompt("");
+                setResumeJob(null);
                 setSubmissionKey(null);
               });
             }}
           >
+            {resumeJob && (
+              <p>
+                续接任务「{resumeJob.prompt.slice(0, 40)}」：沿用{" "}
+                {describeJob(resumeJob)}、同一节点与会话，提示词只需写后续要求。{" "}
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => {
+                    setResumeJob(null);
+                    setSubmissionKey(null);
+                  }}
+                >
+                  取消续接
+                </button>
+              </p>
+            )}
             <label>
               执行节点
               <select
                 value={node}
+                disabled={!!resumeJob}
                 onChange={(event) => {
                   setNode(event.target.value);
                   setSubmissionKey(null);
@@ -161,6 +195,7 @@ export function RemotePi() {
               执行引擎
               <select
                 value={engine}
+                disabled={!!resumeJob}
                 onChange={(event) => {
                   setEngine(event.target.value as Engine);
                   setSubmissionKey(null);
@@ -284,6 +319,20 @@ export function RemotePi() {
               >
                 取消任务
               </button>
+            )}
+            {canResume(job) && (
+              <button
+                disabled={busy}
+                onClick={() => {
+                  setResumeJob(job);
+                  setSubmissionKey(null);
+                }}
+              >
+                继续此会话
+              </button>
+            )}
+            {job.config_snapshot?.resume && (
+              <p>续接自任务 {job.config_snapshot.resume.job_id}</p>
             )}
             {["FAILED", "CANCELLED"].includes(job.status) && (
               <button

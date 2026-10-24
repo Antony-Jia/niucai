@@ -51,8 +51,9 @@ class JobCreate(BaseModel):
     allowed_nodes: list[str] = Field(default_factory=list, max_length=32)
     parent_task_id: str | None = None
     artifacts: list[dict] = Field(default_factory=list, max_length=16)
-    engine: Literal["pi", "codex", "claude"] = "pi"
+    engine: Literal["pi", "codex", "claude"] | None = None
     permission_profile: Literal["read", "workspace", "full"] | None = None
+    resume_job_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
 class Attempt(BaseModel):
@@ -185,6 +186,7 @@ def remote_router(db, settings, auth):
             artifacts=request.artifacts,
             engine=request.engine,
             permission_profile=request.permission_profile,
+            resume_job_id=request.resume_job_id,
         )
 
     @router.get("/api/remote/jobs", dependencies=auth)
