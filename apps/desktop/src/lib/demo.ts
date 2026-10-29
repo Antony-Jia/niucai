@@ -133,6 +133,22 @@ export async function demoRequest(
   const route = path.split("?")[0];
   if (route === "/api/collaboration/status")
     return { enabled: false, stopped: false, worker_slots: 1 };
+  if (route === "/api/kanban")
+    return {
+      columns: [],
+      tasks: tasks.map((t) => ({
+        id: t.id,
+        title: t.title,
+        status: t.status,
+        column: ["COMPLETED", "FAILED", "CANCELLED"].includes(t.status)
+          ? "DONE"
+          : t.status,
+        updated_at: t.updated_at,
+        agents: [{ id: "main", name: "Main Agent", role: "lead" }],
+        remote_jobs: [],
+      })),
+      resources: [],
+    };
   if (route === "/api/agents")
     return [
       {

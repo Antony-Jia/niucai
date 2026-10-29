@@ -176,6 +176,7 @@ export interface ConnectionProbe {
 }
 export const connectionKey = (p: Profile) => p.kernel_instance_id || p.base_url;
 export type Page =
+  | "kanban"
   | "bots"
   | "extensions"
   | "remote"

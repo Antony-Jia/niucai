@@ -9,6 +9,7 @@ import {
   X,
   RefreshCw,
   Puzzle,
+  Kanban as KanbanIcon,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useApp, useData } from "./lib/state";
@@ -18,6 +19,7 @@ import { api } from "./lib/api";
 import { Files, MemoryPage } from "./pages/FilesMemory";
 import { Settings } from "./pages/Settings";
 import { RemotePi } from "./pages/RemotePi";
+import { Kanban } from "./pages/Kanban";
 import { Bots } from "./pages/Bots";
 import { Extensions } from "./pages/Extensions";
 import { ConnectionSwitcher } from "./components/Connections";
@@ -25,6 +27,7 @@ import type { Page } from "./lib/types";
 const navigation: { id: Page; label: string; icon: typeof Monitor }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "computer", label: "会话", icon: Monitor },
+  { id: "kanban", label: "看板", icon: KanbanIcon },
   { id: "files", label: "Files", icon: Folder },
   { id: "memory", label: "Memory", icon: Brain },
   { id: "remote", label: "远程 Pi", icon: Monitor },
@@ -76,6 +79,7 @@ export function App() {
     chat: Workbench,
     tasks: Workbench,
     computer: Workbench,
+    kanban: Kanban,
     files: Files,
     memory: MemoryPage,
     settings: Settings,

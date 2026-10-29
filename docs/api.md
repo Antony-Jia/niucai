@@ -127,3 +127,7 @@ FAILED 若仍有待审批动作，retry 只恢复为 WAITING_HUMAN，必须显�
 任务相关业务事件在同一事务中携带 `data.progress`，与 REST 使用同一投影。新增 task.phase_changed、task.plan_updated、task.step_completed、task.computer_control_changed；租约续期不生成业务进展。
 已失效 Worker 的迟到模型事件不携带 progress，也不会覆盖新一轮任务的进度。客户端按事件 ID 去重，并在事件或重连后刷新 REST；队列对电脑占用的依赖也以最新 REST 为准。
 旧 Kernel 没有 progress 时，客户端只显示旧状态和兼容提示，不猜测模型执行阶段或进展时间。
+
+## 任务看板
+
+`GET /api/kanban`（只读，需认证）：返回 `tasks`（进行中及近 24 小时结束的任务，含按 `column` 分列、支撑的 `agents` 及其角色、关联的 `remote_jobs`）与 `resources`（远程/资源节点和电脑的在线状态、是否忙碌及正在处理的任务）。Desktop 的“看板”页每 3 秒轮询。

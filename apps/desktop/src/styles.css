@@ -1956,3 +1956,65 @@ footer span:last-child {
   border: 1px solid rgba(127, 140, 150, 0.3);
   border-radius: 6px;
 }
+.kanban-resources {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+  margin: 12px 0 16px;
+}
+.kanban-resource {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(127, 140, 150, 0.3);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.kanban-resource.busy {
+  border-color: rgba(56, 160, 120, 0.7);
+}
+.kanban-resource small,
+.kanban-card small {
+  opacity: 0.7;
+}
+.kanban-board {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(230px, 1fr);
+  gap: 12px;
+  overflow-x: auto;
+  align-items: start;
+  margin-top: 16px;
+}
+.kanban-column {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(127, 140, 150, 0.08);
+}
+.kanban-column h3 {
+  display: flex;
+  justify-content: space-between;
+  margin: 0;
+  font-size: 13px;
+}
+.kanban-card {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid rgba(127, 140, 150, 0.3);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.kanban-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.kanban-chip {
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: rgba(127, 140, 150, 0.18);
+  font-size: 11px;
+}
