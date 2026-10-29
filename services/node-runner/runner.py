@@ -308,6 +308,14 @@ def write_skills(root, skills, uid):
     return written
 
 
+def job_timeout(snapshot):
+    """卡片的 budget.max_minutes 随快照下发为 timeout_seconds，取代节点默认超时（最长 24 小时）。"""
+    value = snapshot.get("timeout_seconds")
+    if isinstance(value, int) and not isinstance(value, bool) and 0 < value <= 86400:
+        return float(value)
+    return float(os.environ.get("NIUCAI_PI_JOB_TIMEOUT", "1800"))
+
+
 def write_card_inputs(workspace, inputs, uid):
     """依赖卡片的内联文件写到 inputs/<card_id>/，路径不得逃出该目录。"""
     root = workspace / "inputs"
@@ -997,11 +1005,36 @@ class Runner:
                 atomic_json(self.ledgers / f"{record['id']}.json", record)
             legacy.unlink()
 
+    async def replay_events(self, record, events):
+        """按序补交台账旁事件日志里尚未确认的事件；Kernel 按序号去重，重复补交无害。"""
+        if not events.exists():
+            return
+        acked = int(record.get("acked") or 0)
+        for line in events.read_text(encoding="utf-8").splitlines():
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                break  # 崩溃时写了一半的最后一行
+            if payload.get("attempt_id") != record["attempt_id"] or payload["sequence"] <= acked:
+                continue
+            try:
+                await self.post(f"/jobs/{record['id']}/events", payload, timeout=30)
+            except httpx.HTTPStatusError as exc:
+                # 409/404：作业已不在运行或序号断档，Kernel 不再接收事件，直接交结论。
+                if exc.response.status_code in {404, 409}:
+                    return
+                raise
+            acked = payload["sequence"]
+            record["acked"] = acked
+
     async def finish_ledger(self, ledger):
         record = json.loads(ledger.read_text())
+        events = ledger.with_suffix(".events.jsonl")
         pid = record.get("pid")
         if pid and process_start(pid) == record.get("process_start"):
             await kill_group(pid)
+        # finish 之后 Kernel 拒收事件，所以先补齐断网或崩溃时没送达的进度事件。
+        await self.replay_events(record, events)
         # Always reconcile the old attempt before claiming another job.
         result = record.get(
             "finish",
@@ -1023,6 +1056,7 @@ class Runner:
             if exc.response.status_code not in {404, 409}:
                 raise
         ledger.unlink()
+        events.unlink(missing_ok=True)
 
     async def reconcile(self):
         """交付不在执行中的台账：重启前的进程、或断网时没交出去的结果。"""
@@ -1210,6 +1244,8 @@ class Runner:
         stopped = asyncio.Event()
         sequence = 0
         outbox = asyncio.Queue()
+        # 事件先追加到台账旁的日志再入发件箱：Runner 崩溃或断网超过等待时间时，由 finish_ledger 补交。
+        event_log = ledger.with_suffix(".events.jsonl").open("w", encoding="utf-8")
         outcome = {
             "status": "FAILED",
             "result": {"error": f"{engine.label} did not produce a final answer"},
@@ -1258,6 +1294,9 @@ class Runner:
                     try:
                         await self.post(base + "/events", payload)
                         delay = 0.2
+                        record["acked"] = payload["sequence"]
+                        if outbox.empty():
+                            atomic_json(ledger, record)  # 确认游标可以滞后：补交时 Kernel 会去重
                         break
                     except httpx.HTTPStatusError as exc:
                         if exc.response.status_code in {404, 409}:
@@ -1272,14 +1311,15 @@ class Runner:
         def progress(kind, data):
             nonlocal sequence
             sequence += 1
-            outbox.put_nowait(
-                {
-                    "attempt_id": attempt,
-                    "sequence": sequence,
-                    "kind": kind,
-                    "data": {**data, "engine": engine.name},
-                }
-            )
+            payload = {
+                "attempt_id": attempt,
+                "sequence": sequence,
+                "kind": kind,
+                "data": {**data, "engine": engine.name},
+            }
+            event_log.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            event_log.flush()
+            outbox.put_nowait(payload)
 
         async def read_events():
             nonlocal outcome
@@ -1376,7 +1416,7 @@ class Runner:
             try:
                 done, _ = await asyncio.wait(
                     {reader, stop_wait},
-                    timeout=float(os.environ.get("NIUCAI_PI_JOB_TIMEOUT", "1800")),
+                    timeout=job_timeout(snapshot),
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if reader in done:
@@ -1428,6 +1468,7 @@ class Runner:
             if heartbeat:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
+            event_log.close()
             record["finish"] = outcome
             atomic_json(ledger, record)
         # 交付失败时台账保留，由主循环 reconcile 重试。
@@ -1454,7 +1495,7 @@ class Runner:
                 size = path.stat().st_size
                 if size > 20 * 1024 * 1024 or size > budget:
                     raise RuntimeError("output file exceeds configured transport quota")
-                relative = str(path.relative_to(workspace))
+                relative = path.relative_to(workspace).as_posix()  # 传输路径统一用 POSIX 格式
                 filename = re.sub(r"[^a-zA-Z0-9._ -]", "_", name)[:150]
                 filename = sha256(relative.encode()).hexdigest()[:12] + "-" + filename
                 digest = sha256()
@@ -1522,7 +1563,7 @@ class Runner:
                 size = path.stat().st_size
             except OSError:
                 continue
-            relative = str(path.relative_to(workspace))
+            relative = path.relative_to(workspace).as_posix()  # Windows 上也输出 a/b，依赖卡片才能写入
             if len(relative) > 1024:
                 continue
             entry = {"path": relative, "bytes": size}

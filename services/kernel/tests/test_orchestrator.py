@@ -199,6 +199,28 @@ def test_one_run_per_goal_lease_recovery_and_failures(setup):
     assert orchestrator.claim() is None  # 每小时运行数已达上限
 
 
+def test_crashed_run_recovers_without_new_events(setup):
+    db, settings, remote, cards, node = board(setup)
+    api, headers = client(setup)
+    goal(api, headers)
+    orchestrator = Orchestrator(db, settings, ScriptedGateway("done"))
+    for attempt in range(3):
+        claimed = orchestrator.claim()
+        assert claimed and claimed["triggers"][-1]["kind"] in {"message", "recovered"}
+        assert any(t["kind"] == "message" for t in claimed["triggers"])
+        with db.sessions.begin() as s:  # Worker 在运行途中崩溃，之后没有任何新事件
+            s.get(OrchestratorRun, claimed["id"]).lease_until = now() - timedelta(seconds=1)
+        if attempt == 0:
+            first = claimed
+    # 崩溃两次后不再自动重试，避免崩溃循环。
+    assert orchestrator.claim() is None
+    # 过期的执行者不能再写入已被回收的运行。
+    orchestrator.close(first["id"], "COMPLETED", [], {}, "late", None)
+    with db.sessions() as s:
+        late = s.get(OrchestratorRun, first["id"])
+        assert late.status == "FAILED" and late.error == "lease expired"
+
+
 def test_goal_api_guards(setup):
     db, settings, *_ = setup
     api = TestClient(create_app(settings, db))
@@ -216,3 +238,44 @@ def test_goal_api_guards(setup):
     )
     assert again.json() == {"message_id": first.json()["message_id"], "duplicate": True}
     assert api.get("/api/goals/missing", headers=headers).status_code == 404
+
+
+def test_inbox_is_scoped_to_the_cards_goal(setup):
+    db, settings, remote, cards, node = board(setup)
+    bot(cards, node)
+    api, headers = client(setup)
+    mine, other = goal(api, headers, "目标一"), goal(api, headers, "目标二")
+    task = cards.create_card({"title": "a", "goal": "x", "conversation_id": mine})
+    elsewhere = cards.create_card({"title": "b", "goal": "y", "conversation_id": other, "draft": True})
+    loose = cards.create_card({"title": "c", "goal": "z", "draft": True})
+    cards.comment(elsewhere["id"], "@coder 别的目标的机密")
+    cards.comment(loose["id"], "@coder 无目标的卡片")
+    cards.comment(task["id"], "@coder 本目标")
+    claimed = remote.claim(node["id"])
+    assert claimed["card_id"] == task["id"]
+    inbox = cards.board_call(node["id"], claimed["id"], claimed["board_token"], "inbox", {})
+    assert [m["body"] for m in inbox["messages"]] == ["@coder 本目标"]
+
+
+def test_card_update_requires_version(setup):
+    db, settings, remote, cards, node = board(setup)
+    api, headers = client(setup)
+    goal_id = goal(api, headers)
+    task = cards.create_card({"title": "a", "goal": "x", "conversation_id": goal_id, "draft": True})
+    with db.sessions.begin() as s:
+        s.query(OrchestratorRun).delete()
+    gateway = ScriptedGateway(
+        [
+            ("card_update", {"card_id": task["id"], "title": "无版本"}),
+            ("card_update", {"card_id": task["id"], "version": task["version"] + 1, "title": "旧版本"}),
+            ("card_update", {"card_id": task["id"], "version": task["version"], "title": "新标题"}),
+        ],
+    )
+    orchestrator = Orchestrator(db, settings, gateway)
+    api.post(f"/api/goals/{goal_id}/run", headers=headers)
+    run(orchestrator)
+    [done] = runs(db, goal_id)
+    results = [json.loads(step["result"]) for step in done.steps]
+    assert "version" in results[0]["error"] and "error" in results[1]
+    with db.sessions() as s:
+        assert s.get(Card, task["id"]).title == "新标题"

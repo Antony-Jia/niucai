@@ -516,7 +516,7 @@ Settings
 - 节点 `slots`、Bot `concurrency` 两层并发限制；卡片 `review` 字段（默认 `none`）。
 - 执行历史（§9.6）：卡片时间线、Attempt 事件流补传与去重、Desktop 卡片详情页。
 - 验收：用户手动建两张卡分给 VPS 上的 Codex Bot 和 Pi Bot，第二张依赖第一张的产物；两者都通过白板工具汇报，进度实时出现在 Desktop 和手机上；Runner 断网 1 分钟后恢复，事件完整补齐且不重复；把节点 `slots` 调为 2 后两张无依赖的卡并行执行。
-- 实现状态（2026-10-29）：迁移 `d6e21029d010`（`bots`、`cards`、`card_events`，`remote_jobs` 加 `card_id` / `bot_id` / `board_token_hash`）、`control/cards.py`、`api/board.py`、长轮询领取与两层并发、LOST 宽限期续接已完成并有测试（`tests/test_cards.py`）。Runner（`p2`）支持多作业并发（每作业一个台账 `control/active/<id>.json`）、事件发件箱断网重试、卡片工作区与依赖输入、Bot 模型覆盖，并以 `board_mcp.py`（标准库 stdio MCP 服务器）把白板工具接给 Claude Code / Codex：引擎经每作业的 Unix socket 调 Runner 代理，节点令牌与板令牌都不进入引擎进程。Desktop 新增“白板”页（建卡、指定 Bot、详情时间线与 Attempt 事件、批准/回答/验收/退回/重开/评论）和节点下的 Bot 增删改，拓扑图显示 Bot。接口见 [API](api.md#bot-与白板重构-p2)。
+- 实现状态（2026-10-29）：迁移 `d6e21029d010`（`bots`、`cards`、`card_events`，`remote_jobs` 加 `card_id` / `bot_id` / `board_token_hash`）、`control/cards.py`、`api/board.py`、长轮询领取与两层并发、LOST 宽限期续接已完成并有测试（`tests/test_cards.py`）。Runner（`p2`）支持多作业并发（每作业一个台账 `control/active/<id>.json`）、事件发件箱断网重试、卡片工作区与依赖输入、Bot 模型覆盖，并以 `board_mcp.py`（标准库 stdio MCP 服务器）把白板工具接给 Claude Code / Codex：引擎经每作业的 Unix socket 调 Runner 代理，节点令牌与板令牌都不进入引擎进程。Desktop 新增“白板”页（建卡、指定 Bot、详情时间线与 Attempt 事件、批准/回答/验收/退回/重开/评论）和节点下的 Bot 增删改，拓扑图显示 Bot。接口见 [API](api.md#bot-与白板重构-p2)。评审修复（2026-10-29）：Attempt 事件先写入台账旁的事件日志并记录确认游标，Runner 崩溃或长时间断网后交 finish 前补齐（§9.6）；`budget.max_attempts` 在领取入口统一检查（验收退回、阻塞续接都计入），`max_minutes` 下发为 Attempt 超时并由 Kernel 心跳兜底停止；`inbox` 限定在同一 Goal 内。
 - 与方案的差异 / 延后：
   - 产物不走 `artifact_put` / `artifact_get` 工具：依赖卡片的文件随领取内联下发到 `inputs/<card_id>/`，结果文件仍随 finish 内联回传。
   - Pi 暂不接白板工具（没有 MCP，扩展延后），Pi Bot 通过最终回答提交，进度来自引擎事件。
@@ -529,14 +529,14 @@ Settings
 - `orchestrator_runs`、编排工具、触发器、预算。
 - 对话页改为 Goal：用户发一句话，编排 LLM 建卡、分配并汇总；指定 `review=llm` 的卡片由编排 LLM 验收。
 - 简单 Memory（§9.5）：自动写入、`memory_search`、Desktop Memory 页。
-- 实现状态（2026-10-29）：迁移 `e7a21029d011`（`orchestrator_runs`、`memories` 加 `kind` / `ref_id` 等）、`control/orchestrator.py`（事件驱动触发、同 Goal 运行合并、步数 / 工具调用 / 每小时运行数预算、租约）、`api/goals.py` 与 Desktop“目标”页已完成并有测试（`tests/test_orchestrator.py`）。Goal 是 `mode=goal` 的会话；Memory 在卡片完成与 Goal 汇总时自动写入，关键词检索。需 `NIUCAI_ORCHESTRATOR_ENABLED=true`。接口见 [API](api.md#goal编排-llm-与-memory重构-p3)。端到端验收（真实模型、浏览器 Bot、手机回答）待完成；手机 PWA 的 Goal 页未做。
+- 实现状态（2026-10-29）：迁移 `e7a21029d011`（`orchestrator_runs`、`memories` 加 `kind` / `ref_id` 等）、`control/orchestrator.py`（事件驱动触发、同 Goal 运行合并、步数 / 工具调用 / 每小时运行数预算、租约）、`api/goals.py` 与 Desktop“目标”页已完成并有测试（`tests/test_orchestrator.py`）。Goal 是 `mode=goal` 的会话；Memory 在卡片完成与 Goal 汇总时自动写入，关键词检索。需 `NIUCAI_ORCHESTRATOR_ENABLED=true`。接口见 [API](api.md#goal编排-llm-与-memory重构-p3)。评审修复（2026-10-29）：Worker 崩溃后租约过期的运行由领取前的独立扫描回收并重新排队原触发（最多 2 次）；编排的 `card_update` 必须带 `version`。端到端验收（真实模型、浏览器 Bot、手机回答）待完成；手机 PWA 的 Goal 页未做。
 - 验收：一个需要"浏览器查资料 → 代码 Bot 写脚本 → 汇总"的目标端到端完成；Bot 提议被接受、拒绝各一次；`@user` 提问在手机上回答后继续执行；一张 `review=llm` 的卡被打回一次后通过；再次提出类似目标时，编排 LLM 能检索到上次的结论。
 
 ### P4 Windows Runner
 
 - 平台分支、Job Object、工作目录白名单。
 - 打包为单文件 exe 并作为 Tauri sidecar；Desktop"把本机加为节点"一键配对、启动、守护、退出时优雅停止。
-- 实现状态（2026-10-29）：Runner 平台分支（`win_job.py` Job Object、`NIUCAI_WORKDIR_ALLOW` 白名单、回环 TCP + 每作业密钥的白板 MCP、stdin `drain` / `stop` 控制）、卡片 `workdir`（迁移 `f8a21029d012`）、`resource_type=windows_local`；`services/node-runner/build-windows.ps1` 用 PyInstaller 打成单文件 exe 放到 `apps/desktop/src-tauri/binaries/`，`npm run desktop:build:runner` 打包为 sidecar；Desktop `src-tauri/src/local_node.rs` 负责启动、守护（2→60 秒退避重启，配对类致命错误不重启）、日志、退出时 drain，Settings“节点与 Bot”页的“本机节点”面板一键配对并提示安全边界；Windows 节点上新建的 Bot 默认“只读 + 需审批”。有自动化测试（Runner、Rust、vitest）。待实机验证：PyInstaller 构建、无 Python 机器上的完整流程、Codex Windows 沙箱参数、Claude Code 复用登录（不加 `--bare`）。
+- 实现状态（2026-10-29）：Runner 平台分支（`win_job.py` Job Object、`NIUCAI_WORKDIR_ALLOW` 白名单、回环 TCP + 每作业密钥的白板 MCP、stdin `drain` / `stop` 控制）、卡片 `workdir`（迁移 `f8a21029d012`）、`resource_type=windows_local`；`services/node-runner/build-windows.ps1` 用 PyInstaller 打成单文件 exe 放到 `apps/desktop/src-tauri/binaries/`，`npm run desktop:build:runner` 打包为 sidecar；Desktop `src-tauri/src/local_node.rs` 负责启动、守护（2→60 秒退避重启，配对类致命错误不重启）、日志、退出时 drain，Settings“节点与 Bot”页的“本机节点”面板一键配对并提示安全边界；Windows 节点上新建的 Bot 默认“只读 + 需审批”（由 Kernel 在创建时按节点平台设置，不只是前端默认值）；回传文件路径统一为 POSIX 格式。有自动化测试（Runner、Rust、vitest）。待实机验证：PyInstaller 构建、无 Python 机器上的完整流程、Codex Windows 沙箱参数、Claude Code 复用登录（不加 `--bare`）。
 - 验收：在一台只装了 Desktop 和 Claude Code / Codex CLI（没有 Python / uv）的 Windows 上，打开开关即完成配对；Claude Code 和 Codex 各完成一张指定本地仓库的卡，`slots=2` 时可同时运行；取消时进程树被完整结束；白名单外的目录被拒绝；强制结束 Runner 后卡片在租约过期后回到 `READY`。
 
 ### P5 Skills / MCP 下发与浏览器迁移

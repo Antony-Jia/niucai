@@ -72,6 +72,24 @@ def max_attempts(card):
     return int(card.budget.get("max_attempts", 3))
 
 
+def max_seconds(card):
+    minutes = card.budget.get("max_minutes")
+    return int(minutes) * 60 if minutes else None
+
+
+def over_time(s, job):
+    """卡片 Attempt 超过 budget.max_minutes（留 60 秒余量给 Runner 自己结束）时，心跳让 Runner 停止。"""
+    if not job.card_id:
+        return False
+    card = s.get(Card, job.card_id)
+    limit = max_seconds(card) if card else None
+    return bool(limit) and job.created_at + timedelta(seconds=limit + 60) < now()
+
+
+def is_windows_node(node):
+    return bool(node) and (node.resource_type == "windows_local" or node.platform == "windows")
+
+
 def card_event(s, card, kind, actor, body="", data=None, mentions=(), key=None):
     """调用方须已锁定卡片行；seq 在卡片锁下分配。重复的幂等键返回已有事件。"""
     if key:
@@ -296,6 +314,12 @@ def claim_card(s, settings, node):
             bot = min(pool, key=lambda b: running.get(b.id, 0), default=None)
         if bot is None:
             continue
+        if card.attempts >= max_attempts(card):
+            # 预算在领取入口统一检查：验收退回、阻塞续接与失败重试都计入执行次数。
+            reason = f"已达最大执行次数（{max_attempts(card)}）"
+            card.result = {**card.result, "error": reason}
+            set_status(s, card, "FAILED", "kernel", reason)
+            continue
         return start_attempt(s, settings, card, bot, node)
     return None
 
@@ -384,6 +408,8 @@ def start_attempt(s, settings, card, bot, node):
     }
     if card.workdir:
         snapshot["workdir"] = card.workdir
+    if max_seconds(card):
+        snapshot["timeout_seconds"] = max_seconds(card)
     assets = bot_assets(s, bot)
     # P5：skill 正文与 MCP 定义随 Attempt 下发，Runner 按引擎落地；解绑后下一次 Attempt 即不再带上。
     if assets["skills"]:
@@ -508,6 +534,14 @@ class CardManager:
     def create_bot(self, values):
         with self.db.sessions.begin() as s:
             self.validate_bot(s, values)
+            # §11：Windows 本机节点在用户自己的账户下运行，默认只读且每张卡需人工批准；显式放开仍保留。
+            node = s.get(RemoteNode, values["node_id"])
+            local = is_windows_node(node)
+            values = {
+                "permission_profile": "read" if local else "workspace",
+                "requires_approval": local,
+                **values,
+            }
             if s.scalar(select(Bot.id).where(Bot.name == values["name"])):
                 raise Conflict("Bot 名称已存在")
             bot = Bot(**{**values, "requires_approval": int(values.get("requires_approval", False))})
@@ -804,18 +838,25 @@ class CardManager:
 
     def tool_inbox(self, s, job, card, bot, actor, args):
         cursor = int(job.wait_state.get("inbox_cursor", 0))
-        rows = [
-            e
-            for e in s.scalars(
+        # 卡片令牌只授权当前 Goal（无 Goal 的卡片只看无 Goal 的卡片）：不能读到别的 Goal 里的评论。
+        scope = (
+            Card.conversation_id == card.conversation_id
+            if card.conversation_id
+            else Card.conversation_id.is_(None)
+        )
+        scanned = list(
+            s.scalars(
                 select(CardEvent)
-                .where(CardEvent.id > cursor, CardEvent.actor != actor)
+                .join(Card, Card.id == CardEvent.card_id)
+                .where(CardEvent.id > cursor, CardEvent.actor != actor, scope)
                 .order_by(CardEvent.id)
                 .limit(500)
             )
-            if bot.name in (e.mentions or [])
-        ][:50]
-        if rows:
-            job.wait_state = {**job.wait_state, "inbox_cursor": rows[-1].id}
+        )
+        rows = [e for e in scanned if bot.name in (e.mentions or [])][:50]
+        last = rows[-1].id if len(rows) == 50 else (scanned[-1].id if scanned else None)
+        if last:
+            job.wait_state = {**job.wait_state, "inbox_cursor": last}
         return {
             "messages": [
                 {"card_id": e.card_id, "actor": e.actor, "kind": e.kind, "body": e.body[:2000]} for e in rows

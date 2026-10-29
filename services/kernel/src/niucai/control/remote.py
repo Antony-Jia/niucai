@@ -589,7 +589,7 @@ class RemoteManager:
             scheduling_lock(s)
             self.expire(s)
             job = self.owned(s, node_id, job_id, attempt_id)
-            from niucai.control.cards import revive
+            from niucai.control.cards import over_time, revive
 
             revive(s, job)
             parent = s.get(Task, job.parent_task_id) if job.parent_task_id else None
@@ -600,6 +600,7 @@ class RemoteManager:
                 or not self.authorized(s, job, node_id)
                 or job.status != "RUNNING"
                 or (parent and parent.status not in {"PENDING", "RUNNING", "WAITING_HUMAN", "WAITING_BOT"})
+                or over_time(s, job)
             )
             if not stop:
                 job.lease_until = now() + timedelta(seconds=self.settings.remote_lease_seconds)

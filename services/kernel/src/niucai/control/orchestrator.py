@@ -35,6 +35,7 @@ ACTOR = "kernel"
 TRIGGER_LIMIT = 20  # 一个运行最多合并的触发数，更早的丢弃（上下文里只看最近的）
 CARD_LIMIT = 50  # 每个 Goal 的卡片上限，防止编排失控拆卡
 MESSAGE_WINDOW = 20
+RECOVER_LIMIT = 2  # 同一批触发因 Worker 崩溃被重新排队的次数上限，防止崩溃循环
 
 SYSTEM_PROMPT = """你是 niucai Kernel 的编排者（@kernel）。
 用户给出一个 Goal，你负责把它拆成白板卡片交给 Bot 执行。
@@ -87,9 +88,10 @@ TOOLS = [
     ),
     tool(
         "card_update",
-        "修改未运行卡片的标题、目标、验收标准、指派、依赖或优先级",
+        "修改未运行卡片的标题、目标、验收标准、指派、依赖或优先级；version 取自 card_get，卡片已变则拒绝",
         {
             "card_id": STRING,
+            "version": INT,
             "title": STRING,
             "goal": STRING,
             "acceptance": STRING,
@@ -97,7 +99,7 @@ TOOLS = [
             "depends_on": STRINGS,
             "priority": INT,
         },
-        ["card_id"],
+        ["card_id", "version"],
     ),
     tool(
         "card_review",
@@ -238,6 +240,8 @@ class Orchestrator:
     def claim(self):
         """领取最早的 PENDING 运行；同一 Goal 已有未过期 RUNNING 时跳过，并合并同 Goal 的其它 PENDING。"""
         with self.db.sessions.begin() as s:
+            self.recover(s)
+        with self.db.sessions.begin() as s:
             pending = s.execute(
                 select(OrchestratorRun.id, OrchestratorRun.conversation_id)
                 .where(OrchestratorRun.status == "PENDING")
@@ -270,6 +274,32 @@ class Orchestrator:
                 return {"id": run.id, "conversation_id": conversation_id, "triggers": list(run.triggers)}
         return None
 
+    def recover(self, s):
+        """独立扫描租约过期的 RUNNING 运行：判失败，并把原触发重新排队，不依赖同一 Goal 再有新事件。"""
+        expired = list(
+            s.scalars(
+                select(OrchestratorRun)
+                .where(OrchestratorRun.status == "RUNNING", OrchestratorRun.lease_until < now())
+                .order_by(OrchestratorRun.lease_until)
+                .limit(20)
+                .with_for_update(skip_locked=True)
+            )
+        )
+        for run in expired:
+            self.expire(s, run)
+
+    def expire(self, s, run):
+        run.status, run.finished_at, run.error, run.lease_until = "FAILED", now(), "lease expired", None
+        emit(s, "orchestrator.failed", conversation_id=run.conversation_id, run_id=run.id)
+        triggers = [t for t in run.triggers or [] if t.get("kind") != "recovered"]
+        attempts = sum(1 for t in run.triggers or [] if t.get("kind") == "recovered")
+        if not triggers or attempts >= RECOVER_LIMIT:
+            log.warning("orchestrator run %s expired and will not be retried", run.id)
+            return
+        pending = enqueue(s, run.conversation_id, {"kind": "recovered", "run_id": run.id})
+        marks = [{"kind": "recovered", "run_id": run.id}] * attempts
+        pending.triggers = [*marks, *triggers, *pending.triggers][-TRIGGER_LIMIT:]
+
     def busy(self, s, conversation_id):
         running = s.scalar(
             select(OrchestratorRun)
@@ -277,9 +307,8 @@ class Orchestrator:
             .limit(1)
         )
         if running and running.lease_until and running.lease_until < now():
-            # Worker 在运行中退出：租约过期的运行判失败，Goal 可以继续被编排。
-            running.status, running.finished_at, running.error = "FAILED", now(), "lease expired"
-            emit(s, "orchestrator.failed", conversation_id=conversation_id, run_id=running.id)
+            # Worker 在运行中退出：租约过期的运行判失败并重新排队原触发，Goal 可以继续被编排。
+            self.expire(s, running)
             return False
         return running is not None
 
@@ -347,12 +376,16 @@ class Orchestrator:
     def checkpoint(self, run_id, steps, usage):
         with self.db.sessions.begin() as s:
             run = require(s, OrchestratorRun, run_id, lock=True)
+            if run.status != "RUNNING":
+                raise Conflict("orchestrator run lease was lost")  # 已被回收，停止本次运行
             run.steps, run.usage = list(steps), dict(usage)
             run.lease_until = now() + timedelta(seconds=self.settings.orchestrator_lease_seconds)
 
     def close(self, run_id, status, steps, usage, output, error):
         with self.db.sessions.begin() as s:
             run = require(s, OrchestratorRun, run_id, lock=True)
+            if run.status != "RUNNING":
+                return  # 租约已过期并被回收，过期的执行者不再写入
             run.status, run.steps, run.usage = status, list(steps), dict(usage)
             run.output, run.error, run.finished_at, run.lease_until = output[:16000], error, now(), None
             emit(
@@ -528,7 +561,9 @@ class Orchestrator:
             changes["priority"] = max(-100, min(100, int(args["priority"] or 0)))
         if not changes:
             raise ValueError("nothing to update")
-        card = self.cards.update_card(str(args["card_id"]), None, changes, actor=ACTOR)
+        if not isinstance(args.get("version"), int):
+            raise ValueError("version is required; read it with card_get")
+        card = self.cards.update_card(str(args["card_id"]), args["version"], changes, actor=ACTOR)
         return {"card_id": card["id"], "status": card["status"], "version": card["version"]}
 
     def tool_card_review(self, goal_id, args):

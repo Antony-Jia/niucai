@@ -21,10 +21,11 @@ class BotFields(BaseModel):
     instructions: str = Field(default="", max_length=32000)
     tags: list[str] = Field(default_factory=list, max_length=20)
     model: str = Field(default="", max_length=200)
-    permission_profile: Profile = "workspace"
+    # 省略时由 Kernel 按节点平台给默认值：Windows 本机节点为 read + 需审批，其它为 workspace + 免审批。
+    permission_profile: Profile | None = None
     skills: list[str] = Field(default_factory=list, max_length=32)
     mcp_servers: list[str] = Field(default_factory=list, max_length=32)
-    requires_approval: bool = False
+    requires_approval: bool | None = None
     concurrency: int = Field(default=1, ge=1, le=16)
 
 
@@ -120,7 +121,7 @@ def board_router(db, settings, auth):
 
     @router.post("/api/bots", dependencies=auth, status_code=201)
     def create_bot(request: BotCreate):
-        return manager.create_bot(request.model_dump())
+        return manager.create_bot(request.model_dump(exclude_none=True))
 
     @router.patch("/api/bots/{bot_id}", dependencies=auth)
     def update_bot(bot_id: str, request: BotUpdate):

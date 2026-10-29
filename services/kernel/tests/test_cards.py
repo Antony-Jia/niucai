@@ -312,3 +312,54 @@ def test_bot_skills_and_mcp_servers_reach_snapshot(setup):
             "config": {"command": "npx", "args": ["fs"], "env": {"TOKEN": "env:FS_TOKEN"}},
         }
     ]
+
+
+def test_attempt_budget_counts_rejects_and_reopen_resets(setup):
+    db, settings, remote, cards, node = board(setup)
+    bot(cards, node, engine="pi")
+    task = card(cards, "doc", review="llm", budget={"max_attempts": 1})
+    claimed = remote.claim(node["id"])
+    remote.finish(node["id"], claimed["id"], claimed["attempt_id"], "COMPLETED", {"answer": "draft"})
+    cards.action(task["id"], "reject", body="再改")
+    # 退回后回到 READY，但领取入口发现执行次数已用完，直接判失败而不是再跑一次。
+    assert remote.claim(node["id"]) is None
+    detail = cards.get(task["id"])
+    assert detail["status"] == "FAILED" and "最大执行次数" in detail["result"]["error"]
+    cards.action(task["id"], "reopen")
+    assert remote.claim(node["id"])["card_id"] == task["id"]
+
+
+def test_time_budget_reaches_snapshot_and_heartbeat_stops(setup):
+    db, settings, remote, cards, node = board(setup)
+    bot(cards, node)
+    card(cards, budget={"max_minutes": 5, "max_attempts": 1})
+    claimed = remote.claim(node["id"])
+    assert claimed["config_snapshot"]["timeout_seconds"] == 300
+    assert remote.heartbeat(node["id"], claimed["id"], claimed["attempt_id"])["stop"] is False
+    with db.sessions.begin() as s:
+        s.get(RemoteJob, claimed["id"]).created_at = now() - timedelta(seconds=300 + 61)
+    assert remote.heartbeat(node["id"], claimed["id"], claimed["attempt_id"])["stop"] is True
+    card(cards, "no budget")
+    remote.finish(node["id"], claimed["id"], claimed["attempt_id"], "FAILED", {"error": "timeout"})
+    assert "timeout_seconds" not in remote.claim(node["id"])["config_snapshot"]
+
+
+def test_windows_node_bots_default_to_read_and_approval(setup):
+    db, settings, remote, cards, node = board(setup)
+    local = remote.create_node("this-pc", resource_type="windows_local")
+    default = bot(cards, local, name="local")
+    assert default["permission_profile"] == "read" and default["requires_approval"] is True
+    opened = bot(cards, local, name="opened", permission_profile="workspace", requires_approval=False)
+    assert opened["permission_profile"] == "workspace" and opened["requires_approval"] is False
+    vps = bot(cards, node, name="vps")
+    assert vps["permission_profile"] == "workspace" and vps["requires_approval"] is False
+    # 平台由 Runner 心跳上报：配对时未标注类型的 Windows 节点同样适用。
+    remote.node_heartbeat(node["id"], {"available": True, "platform": "windows", "executors": ENGINES})
+    assert bot(cards, node, name="win")["permission_profile"] == "read"
+    # HTTP 省略字段时也走 Kernel 默认值。
+    api = TestClient(create_app(settings, db))
+    auth = {"Authorization": f"Bearer {settings.api_token.get_secret_value()}"}
+    created = api.post(
+        "/api/bots", json={"name": "http", "node_id": local["id"], "engine": "claude"}, headers=auth
+    ).json()
+    assert created["permission_profile"] == "read" and created["requires_approval"] is True

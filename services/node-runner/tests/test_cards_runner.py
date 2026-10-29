@@ -274,3 +274,53 @@ def test_skills_are_written_and_listed_in_prompt(tmp_path, monkeypatch):
         {"prompt": "go", "config_snapshot": {"skills": skills}}, None, written
     )
     assert "先读 diff" not in legacy and "review" in legacy
+
+
+def test_unacked_events_replay_before_finish(instance):
+    calls = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append((request.url.path.rsplit("/", 1)[-1], body.get("sequence")))
+        return httpx.Response(200, json={"accepted": True})
+
+    instance.client = httpx.AsyncClient(base_url="http://kernel", transport=httpx.MockTransport(handler))
+    ledger = instance.ledgers / "job-1.json"
+    finish = {"status": "COMPLETED", "result": {"answer": "ok"}}
+    ledger.write_text(json.dumps({"id": "job-1", "attempt_id": "a1", "acked": 1, "finish": finish}))
+    events = [{"attempt_id": "a1", "sequence": n, "kind": "log", "data": {}} for n in (1, 2, 3)]
+    events.insert(1, {"attempt_id": "old", "sequence": 9, "kind": "log", "data": {}})
+    lines = [json.dumps(e) for e in events] + ['{"attempt_id": "a1", "seq']  # 崩溃时的半行
+    ledger.with_suffix(".events.jsonl").write_text("\n".join(lines), encoding="utf-8")
+    asyncio.run(instance.reconcile())
+    # 已确认的 1 号与其它 Attempt 的事件不补交；补齐后才交结论，台账与事件日志一并清理。
+    assert calls == [("events", 2), ("events", 3), ("finish", None)]
+    assert list(instance.ledgers.iterdir()) == []
+
+
+def test_replay_stops_when_kernel_rejects_events(instance):
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path.rsplit("/", 1)[-1])
+        if request.url.path.endswith("/events"):
+            return httpx.Response(409, json={"detail": "job is not running"})
+        return httpx.Response(409, json={})
+
+    instance.client = httpx.AsyncClient(base_url="http://kernel", transport=httpx.MockTransport(handler))
+    ledger = instance.ledgers / "job-1.json"
+    ledger.write_text(json.dumps({"id": "job-1", "attempt_id": "a1"}))
+    lines = [json.dumps({"attempt_id": "a1", "sequence": n, "kind": "log", "data": {}}) for n in (1, 2)]
+    ledger.with_suffix(".events.jsonl").write_text("\n".join(lines), encoding="utf-8")
+    asyncio.run(instance.reconcile())
+    assert calls == ["events", "finish"] and list(instance.ledgers.iterdir()) == []
+
+
+def test_transport_paths_are_posix_and_card_timeout(tmp_path, monkeypatch):
+    (tmp_path / "src" / "pages").mkdir(parents=True)
+    (tmp_path / "src" / "pages" / "login.tsx").write_text("x")
+    assert [f["path"] for f in runner.Runner.collect_files(tmp_path)] == ["src/pages/login.tsx"]
+    monkeypatch.setenv("NIUCAI_PI_JOB_TIMEOUT", "1800")
+    assert runner.job_timeout({"timeout_seconds": 600}) == 600
+    for bad in (None, 0, -5, 90000, "600", True):
+        assert runner.job_timeout({"timeout_seconds": bad}) == 1800
