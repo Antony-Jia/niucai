@@ -89,7 +89,7 @@ class RemoteManager:
             and node.heartbeat_at > now() - timedelta(seconds=self.settings.remote_lease_seconds)
             else "OFFLINE"
         )
-        value["capacity"] = 1
+        value["capacity"] = node.slots
         value["engines"] = node_engines(node.capabilities)
         value["connection_status"] = value["status"] if node.heartbeat_at else "PENDING"
         protocol = node.capabilities.get("protocol_version")
@@ -122,7 +122,7 @@ class RemoteManager:
             node = require(s, RemoteNode, node_id, lock=True)
             if changes.get("enabled") is False:
                 self.require_idle(s, node_id)
-            for key in ("name", "resource_type", "enabled", "connection"):
+            for key in ("name", "resource_type", "enabled", "connection", "slots"):
                 if key in changes:
                     setattr(node, key, changes[key])
             emit(s, "remote.node.updated", node_id=node_id)
@@ -443,6 +443,10 @@ class RemoteManager:
             node = require(s, RemoteNode, node_id)
             self.check_credential(node, token_hash)
             node.heartbeat_at, node.capabilities = now(), capabilities
+            # Runner 自报的平台/版本/预览地址；字段缺失时保留旧值（旧 Runner 不上报）。
+            for key in ("platform", "runner_version", "preview_url"):
+                if capabilities.get(key) is not None:
+                    setattr(node, key, capabilities[key])
             self.expire(s)
             from niucai.control.instance import PROTOCOL_VERSION, instance
 

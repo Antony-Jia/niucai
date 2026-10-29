@@ -5,6 +5,12 @@ import { useApp } from "../lib/state";
 import { Header } from "../components/ui";
 import { KernelManager } from "../components/KernelManager";
 import { ConnectionList } from "../components/Connections";
+import { NodesPanel } from "../components/NodesPanel";
+
+const tabs = [
+  ["kernel", "Kernel"],
+  ["nodes", "节点与 Bot"],
+] as const;
 export function Settings() {
   const {
     profile,
@@ -21,6 +27,7 @@ export function Settings() {
   const [token, setToken] = useState("");
   const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState<(typeof tabs)[number][0]>("kernel");
   useEffect(() => {
     if (profile) {
       setName(profile.name ?? "");
@@ -56,11 +63,25 @@ export function Settings() {
   return (
     <>
       <Header
-        eyebrow="CONNECTION SETTINGS"
-        title="连接你的 Kernel。"
-        description="桌面负责管理；Kernel 可在本机、局域网或 VPS 运行。"
+        eyebrow="SETTINGS"
+        title="设置"
+        description="Kernel 负责状态与授权；节点与 Bot 负责执行。"
       />
-      <div className="settings-grid">
+      <div className="settings-tabs" role="tablist">
+        {tabs.map(([key, label]) => (
+          <button
+            key={key}
+            role="tab"
+            aria-selected={tab === key}
+            className={tab === key ? "active" : ""}
+            onClick={() => setTab(key)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {tab === "nodes" && <NodesPanel />}
+      <div className="settings-grid" hidden={tab !== "kernel"}>
         <KernelManager />
         <ConnectionList onAdd={addConnection} />
         <section className="panel">

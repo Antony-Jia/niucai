@@ -196,8 +196,16 @@ form > button {
 }
 .sidebar-bottom {
   margin-top: auto;
+  border: none;
   border-top: 1px solid #293439;
-  padding: 22px 12px 0;
+  border-radius: 0;
+  background: transparent;
+  justify-content: space-between;
+  padding: 18px 12px 4px;
+  color: #9fb0b5;
+}
+.sidebar-bottom:hover {
+  color: #dce5e7;
 }
 .connection-dot {
   display: flex;
@@ -2017,4 +2025,98 @@ footer span:last-child {
   border-radius: 10px;
   background: rgba(127, 140, 150, 0.18);
   font-size: 11px;
+}
+
+/* Settings：Kernel / 节点与 Bot */
+.settings-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+.settings-tabs button.active {
+  border-color: #9be4b8;
+  color: #9be4b8;
+}
+.settings-grid[hidden] {
+  display: none;
+}
+.nodes-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 360px) 1fr;
+  gap: 18px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .nodes-layout {
+    grid-template-columns: 1fr;
+  }
+}
+.topology {
+  width: 100%;
+  max-width: 320px;
+  display: block;
+  margin: 0 auto;
+}
+.topology text {
+  fill: #c5d1d4;
+  font-size: 11px;
+}
+.topology-kernel circle {
+  fill: #1c3a2c;
+  stroke: #9be4b8;
+}
+.topology-node line {
+  stroke: #343f43;
+  stroke-dasharray: 4 4;
+}
+.topology-node.online line {
+  stroke: #6fbf8e;
+  stroke-dasharray: none;
+}
+.topology-node circle {
+  fill: #202a2e;
+  stroke: #60727b;
+}
+.topology-node.online circle {
+  stroke: #a4e8bc;
+}
+.topology-node.disabled circle {
+  stroke-dasharray: 3 3;
+}
+.topology-slots {
+  font-size: 10px !important;
+}
+.node-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 0;
+  border-top: 1px solid #293439;
+}
+.node-row .badge {
+  margin-left: 8px;
+}
+.slots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.slots input {
+  width: 56px;
+}
+.pairing-code {
+  display: block;
+  font-size: 24px;
+  letter-spacing: 3px;
+  margin: 8px 0;
+  color: #9be4b8;
+}
+.pairing-command {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: #0b1012;
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 12px;
 }

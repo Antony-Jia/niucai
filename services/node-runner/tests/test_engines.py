@@ -400,3 +400,29 @@ def test_codex_resume_uses_resume_subcommand_and_config_sandbox(tmp_path, monkey
     assert args[-2:] == ["thread-1", "-"]
     fresh = engine.command(tmp_path / "n.jsonl", {"config_snapshot": {}})
     assert fresh[:2] == ["codex", "exec"] and "resume" not in fresh and fresh[-1] == "-"
+
+
+def test_node_credentials_pair_once_and_persist(tmp_path, monkeypatch):
+    for key in ("NIUCAI_NODE_ID", "NIUCAI_NODE_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("NIUCAI_PAIRING_CODE", "ABCD-EFGH")
+    calls = []
+
+    def post(url, json, timeout):
+        calls.append((url, json))
+        body = {"node_id": "n1", "token": "t1", "name": "VPS", "kernel_instance_id": "k1"}
+        return types.SimpleNamespace(status_code=201, raise_for_status=lambda: None, json=lambda: body)
+
+    monkeypatch.setattr(runner.httpx, "post", post)
+    assert runner.node_credentials(tmp_path, "http://kernel") == ("n1", "t1", "k1")
+    assert calls[0][0] == "http://kernel/api/pairing/redeem" and calls[0][1]["code"] == "ABCD-EFGH"
+    # 第二次启动读取本地凭据，不再兑换
+    assert runner.node_credentials(tmp_path, "http://kernel") == ("n1", "t1", None)
+    assert len(calls) == 1
+
+
+def test_node_credentials_require_pairing_code(tmp_path, monkeypatch):
+    for key in ("NIUCAI_NODE_ID", "NIUCAI_NODE_TOKEN", "NIUCAI_PAIRING_CODE"):
+        monkeypatch.delenv(key, raising=False)
+    with pytest.raises(SystemExit, match="PAIRING_REQUIRED"):
+        runner.node_credentials(tmp_path, "http://kernel")

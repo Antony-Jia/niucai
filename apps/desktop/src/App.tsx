@@ -22,7 +22,6 @@ import { RemotePi } from "./pages/RemotePi";
 import { Kanban } from "./pages/Kanban";
 import { Bots } from "./pages/Bots";
 import { Extensions } from "./pages/Extensions";
-import { ConnectionSwitcher } from "./components/Connections";
 import type { Page } from "./lib/types";
 const navigation: { id: Page; label: string; icon: typeof Monitor }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -138,8 +137,16 @@ export function App() {
             </button>
           ))}
         </div>
-        <div className="sidebar-bottom">
-          <div className="connection-dot">
+        <button
+          className="sidebar-bottom"
+          onClick={() => setPage("settings")}
+          title={
+            demo
+              ? "数据仅用于体验"
+              : profile?.name || profile?.base_url || "打开设置以连接 Kernel"
+          }
+        >
+          <span className="connection-dot">
             <i className={connected && !stale ? "connected" : ""} />
             <strong>
               {demo
@@ -150,19 +157,9 @@ export function App() {
                     : "Kernel 已连接"
                   : "Kernel 未连接"}
             </strong>
-          </div>
-          <p>
-            {demo
-              ? "数据仅用于体验"
-              : profile?.name ||
-                profile?.base_url ||
-                "准备好时，连接你的电脑。"}
-          </p>
-          <ConnectionSwitcher />
-          <button className="text-button" onClick={() => setPage("settings")}>
-            连接设置 <ChevronRight size={14} />
-          </button>
-        </div>
+          </span>
+          <ChevronRight size={14} />
+        </button>
       </aside>
       <main className="main">
         <div className="topbar">

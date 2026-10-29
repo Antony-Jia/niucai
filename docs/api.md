@@ -131,3 +131,13 @@ FAILED 若仍有待审批动作，retry 只恢复为 WAITING_HUMAN，必须显�
 ## 任务看板
 
 `GET /api/kanban`（只读，需认证）：返回 `tasks`（进行中及近 24 小时结束的任务，含按 `column` 分列、支撑的 `agents` 及其角色、关联的 `remote_jobs`）与 `resources`（远程/资源节点和电脑的在线状态、是否忙碌及正在处理的任务）。Desktop 的“看板”页每 3 秒轮询。
+
+## 节点配对与拓扑（重构 P1）
+
+需 `NIUCAI_REMOTE_PI_ENABLED=true`，否则返回 409。
+
+- `POST /api/pairing`（需认证）：`{name, resource_type}` → `{code, expires_at, name}`。配对码形如 `ABCD-EFGH`，10 分钟有效、仅可兑换一次，Kernel 只存哈希；响应 `Cache-Control: no-store`。
+- `POST /api/pairing/redeem`（无 Bearer，配对码即凭据）：`{code, platform, runner_version}` → `{node_id, token, name, kernel_instance_id, protocol_version}`。码不存在、过期或已用统一返回 409。Runner 设置 `NIUCAI_PAIRING_CODE` 且无凭据时自动兑换，并把凭据写入 `/data/control/credentials.json`（0600）；之后重启直接读取，环境变量 `NIUCAI_NODE_ID`/`NIUCAI_NODE_TOKEN` 仍优先。
+- `GET /api/topology`（需认证）：`{kernel: {instance_id, remote_enabled}, nodes: [{id, name, resource_type, platform, runner_version, status: ONLINE|OFFLINE|DISABLED, enabled, slots, busy, engines, preview_url, paired_at, heartbeat_at, bots: []}]}`。`bots` 在 P2 之前恒为空。
+- 节点心跳新增可选字段 `platform`（linux/windows/macos）、`runner_version`、`preview_url`；`preview_url` 须为 HTTPS（回环地址可用 HTTP），不得含凭据、query 或 fragment。Kernel 只记录预览地址，Desktop 直连节点，不经 Kernel 代理。Runner 从 `NIUCAI_PREVIEW_URL` 读取。
+- `PATCH /api/remote/nodes/{id}` 新增 `slots`（1–16，默认 1），节点视图的 `capacity` 改为返回该值；P1 调度仍按每节点单任务占用，多槽位领取在 P2 随卡片领取实现。

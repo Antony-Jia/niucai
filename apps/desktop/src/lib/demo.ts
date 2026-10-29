@@ -133,6 +133,28 @@ export async function demoRequest(
   const route = path.split("?")[0];
   if (route === "/api/collaboration/status")
     return { enabled: false, stopped: false, worker_slots: 1 };
+  if (route === "/api/topology")
+    return {
+      kernel: { instance_id: "demo", remote_enabled: true },
+      nodes: [
+        {
+          id: "demo-vps",
+          name: "示例 VPS",
+          resource_type: "remote_vps",
+          platform: "linux",
+          runner_version: "p1",
+          status: "ONLINE",
+          enabled: true,
+          slots: 1,
+          busy: 0,
+          engines: { pi: { available: true } },
+          preview_url: "",
+          paired_at: new Date().toISOString(),
+          heartbeat_at: new Date().toISOString(),
+          bots: [],
+        },
+      ],
+    };
   if (route === "/api/kanban")
     return {
       columns: [],

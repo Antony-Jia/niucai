@@ -17,6 +17,8 @@ from pathlib import Path
 
 import httpx
 
+RUNNER_VERSION = "p1"
+
 
 def atomic_json(path, value, owner=None):
     descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=".runner-")
@@ -31,6 +33,32 @@ def atomic_json(path, value, owner=None):
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def node_credentials(control, kernel_url):
+    """节点凭据来源：环境变量 > control/credentials.json > 用 NIUCAI_PAIRING_CODE 一次性兑换。"""
+    if os.environ.get("NIUCAI_NODE_ID") and os.environ.get("NIUCAI_NODE_TOKEN"):
+        return os.environ["NIUCAI_NODE_ID"], os.environ["NIUCAI_NODE_TOKEN"], None
+    stored = control / "credentials.json"
+    if stored.exists():
+        value = json.loads(stored.read_text())
+        return value["node_id"], value["token"], None
+    code = os.environ.get("NIUCAI_PAIRING_CODE", "").strip()
+    if not code:
+        raise SystemExit("PAIRING_REQUIRED: set NIUCAI_PAIRING_CODE or NIUCAI_NODE_ID/NIUCAI_NODE_TOKEN")
+    response = httpx.post(
+        kernel_url + "/api/pairing/redeem",
+        json={"code": code, "platform": "linux", "runner_version": RUNNER_VERSION},
+        timeout=10,
+    )
+    if response.status_code == 409:
+        raise SystemExit("PAIRING_CODE_INVALID: code expired or already used; generate a new one")
+    response.raise_for_status()
+    value = response.json()
+    # 先落盘再使用（mkstemp 为 0600）：配对码只能兑换一次，丢失令牌只能重新配对。
+    atomic_json(stored, {"node_id": value["node_id"], "token": value["token"]})
+    print(f"PAIRED: node {value['node_id']} ({value['name']})", flush=True)
+    return value["node_id"], value["token"], value.get("kernel_instance_id")
 
 
 def process_start(pid):
@@ -585,9 +613,12 @@ class Runner:
         self.ledger = self.control / "active.json"
         self.lock = (self.control / "runner.lock").open("a+")
         fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        self.node_id = os.environ["NIUCAI_NODE_ID"]
+        kernel_url = os.environ["NIUCAI_KERNEL_URL"].rstrip("/")
+        self.node_id, token, paired_identity = node_credentials(self.control, kernel_url)
         identity_file = self.root / "kernel-identity.json"
         self.identity_file = identity_file
+        if paired_identity and not identity_file.exists():
+            atomic_json(identity_file, {"kernel_instance_id": paired_identity})
         self.kernel_instance_id = os.environ.get("NIUCAI_KERNEL_INSTANCE_ID") or (
             json.loads(identity_file.read_text()).get("kernel_instance_id")
             if identity_file.exists()
@@ -595,8 +626,8 @@ class Runner:
         )
         self.prefix = f"/api/remote/runner/{self.node_id}"
         self.client = httpx.AsyncClient(
-            base_url=os.environ["NIUCAI_KERNEL_URL"].rstrip("/"),
-            headers={"Authorization": f"Bearer {os.environ['NIUCAI_NODE_TOKEN']}"},
+            base_url=kernel_url,
+            headers={"Authorization": f"Bearer {token}"},
             timeout=5,
         )
         self.requested = {e.strip() for e in os.environ.get("NIUCAI_ENGINES", "pi").split(",")}
@@ -642,6 +673,10 @@ class Runner:
             "protocol_version": 3,
             "executors": executors,
             "kernel_instance_id": self.kernel_instance_id,
+            "platform": "linux",
+            "runner_version": RUNNER_VERSION,
+            # 画面预览由 Desktop 直连节点；地址由部署者配置，Kernel 只记录不代理。
+            **({"preview_url": url} if (url := os.environ.get("NIUCAI_PREVIEW_URL")) else {}),
         }
 
     @staticmethod

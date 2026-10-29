@@ -348,6 +348,25 @@ class RemoteNode(Base):
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime)
     capabilities: Mapped[dict] = mapped_column(JSON, default=dict)
     connection: Mapped[dict] = mapped_column(JSON, default=dict)
+    platform: Mapped[str] = mapped_column(String(20), default="", server_default="")
+    runner_version: Mapped[str] = mapped_column(String(50), default="", server_default="")
+    slots: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    preview_url: Mapped[str] = mapped_column(String(500), default="", server_default="")
+    paired_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class PairingCode(Base):
+    """一次性节点配对码；只存哈希，兑换后生成节点令牌。"""
+
+    __tablename__ = "pairing_codes"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    name: Mapped[str] = mapped_column(String(200))
+    resource_type: Mapped[str] = mapped_column(String(30), default="unspecified")
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime)
+    node_id: Mapped[str | None] = mapped_column(ForeignKey("remote_nodes.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 

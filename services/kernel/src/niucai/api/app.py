@@ -105,6 +105,9 @@ def create_app(settings=None, db=None, chat_gateway=None):
     from niucai.api.remote import remote_router
 
     app.include_router(remote_router(db, settings, auth))
+    from niucai.api.nodes import nodes_router
+
+    app.include_router(nodes_router(db, settings, auth))
     from niucai.api.kanban import kanban_router
 
     app.include_router(kanban_router(db, settings, auth))

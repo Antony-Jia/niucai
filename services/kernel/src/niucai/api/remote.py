@@ -10,6 +10,21 @@ from niucai.control.remote import RemoteManager
 from niucai.storage.db import RemoteNode
 
 
+def validate_preview_url(value):
+    """节点画面预览地址：Desktop 直连，必须 HTTPS（回环地址允许 HTTP），不得内嵌凭据。"""
+    from urllib.parse import urlsplit
+
+    if not value:
+        return value
+    url = urlsplit(value)
+    loopback = url.hostname in {"localhost", "127.0.0.1", "::1"}
+    if url.scheme not in ({"https", "http"} if loopback else {"https"}) or not url.hostname:
+        raise ValueError("preview_url must be HTTPS (HTTP only for loopback)")
+    if url.username or url.password or url.query or url.fragment:
+        raise ValueError("preview_url cannot contain credentials, query or fragment")
+    return value
+
+
 def validate_connection(value):
     from urllib.parse import urlsplit
 
@@ -111,6 +126,7 @@ def remote_router(db, settings, auth):
         resource_type: Literal["local_docker", "remote_vps", "unspecified"] | None = None
         enabled: bool | None = None
         connection: dict | None = None
+        slots: int | None = Field(default=None, ge=1, le=16)
 
         @model_validator(mode="after")
         def not_null(self):
@@ -137,6 +153,14 @@ def remote_router(db, settings, auth):
         kernel_instance_id: str | None = Field(default=None, max_length=36)
         features: list[str] = Field(default_factory=list, max_length=32)
         node_model: dict[str, str] = Field(default_factory=dict)
+        platform: Literal["linux", "windows", "macos"] | None = None
+        runner_version: str | None = Field(default=None, max_length=50)
+        preview_url: str | None = Field(default=None, max_length=500)
+
+        @model_validator(mode="after")
+        def valid_preview(self):
+            validate_preview_url(self.preview_url)
+            return self
 
     def node_auth(node_id: str, authorization: str = Header(default="")):
         with db.sessions() as s:
