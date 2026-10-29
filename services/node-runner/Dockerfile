@@ -11,5 +11,6 @@ RUN case " $ENGINES " in *" codex "*) npm install -g @openai/codex@0.164.0 --no-
 RUN case " $ENGINES " in *" claude "*) npm install -g @anthropic-ai/claude-code@2.1.307 --no-audit --no-fund && \
     useradd --uid 10003 --create-home claudeworker;; esac
 COPY services/node-runner/runner.py services/node-runner/board_mcp.py /opt/runner/
+COPY services/node-runner/browser-extension.ts services/node-runner/browser-cdp.mjs services/node-runner/board-extension.ts /opt/runner/
 ENV PYTHONUNBUFFERED=1
 ENTRYPOINT ["/opt/runner/bin/python", "/opt/runner/runner.py"]

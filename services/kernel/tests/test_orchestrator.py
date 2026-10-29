@@ -170,6 +170,8 @@ def test_blocked_question_and_proposal_are_decided(setup):
         assert s.get(Card, task["id"]).status == "READY"
         titles = sorted(c.title for c in s.query(Card).filter(Card.conversation_id == goal_id))
         assert titles == ["补监控", "部署"]
+        follow_up = s.query(Card).filter(Card.title == "补监控").one()
+        assert follow_up.depends_on == [task["id"]]  # 采纳的提议默认排在原卡之后
         [done] = runs(db, goal_id)
         results = [json.loads(step["result"]) for step in done.steps]
         assert results[0]["answered"] is True

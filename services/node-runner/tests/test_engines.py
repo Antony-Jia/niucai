@@ -5,6 +5,7 @@ Run from services/kernel: `uv run --no-sync pytest ../node-runner/tests -q`.
 
 import importlib.util
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -17,6 +18,9 @@ if "fcntl" not in sys.modules:  # runner.py is Linux-only; unit tests also run o
 spec = importlib.util.spec_from_file_location("node_runner", Path(__file__).parents[1] / "runner.py")
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
+sys.path.insert(0, str(Path(__file__).parents[1]))
+import board_mcp  # noqa: E402
+
 runner.WINDOWS = False  # 这些用例覆盖 Linux 分支；Windows 分支见 test_windows_runner.py
 
 
@@ -193,6 +197,68 @@ def test_pi_wire_behaviour_is_unchanged(tmp_path, monkeypatch):
     )
     _, final = pi.translate({"type": "agent_end"}, current)
     assert final["answer"] == "hi" and final["executor"] == "pi"
+
+
+def test_pi_browser_is_explicit_and_has_no_shell_tools(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner.os, "chown", lambda *a: None, raising=False)
+    monkeypatch.setenv("NIUCAI_PI_MODEL", "pi-model")
+    monkeypatch.delenv("NIUCAI_PI_BROWSER_ENABLED", raising=False)
+    engine = runner.PiEngine(tmp_path)
+    assert "--extension" not in engine.command(tmp_path / "s.jsonl")
+    assert "NIUCAI_BROWSER_CDP_URL" not in engine.environment()
+    monkeypatch.setenv("NIUCAI_PI_BROWSER_ENABLED", "true")
+    args = engine.command(tmp_path / "s.jsonl", {"config_snapshot": {"permission_profile": "workspace"}})
+    assert "--no-builtin-tools" in args
+    assert args[args.index("--tools") + 1] == "browser"
+    assert args[args.index("--extension") + 1].endswith("browser-extension.ts")
+    assert engine.environment()["NIUCAI_BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
+    with pytest.raises(ValueError, match="Visible browser requires"):
+        engine.command(tmp_path / "s.jsonl", {"config_snapshot": {"permission_profile": "read"}})
+
+
+def test_pi_board_extension_loads_only_for_card_jobs(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner.os, "chown", lambda *a: None, raising=False)
+    monkeypatch.setenv("NIUCAI_PI_MODEL", "pi-model")
+    monkeypatch.delenv("NIUCAI_PI_BROWSER_ENABLED", raising=False)
+    engine = runner.PiEngine(tmp_path)
+    assert "--extension" not in engine.command(tmp_path / "s.jsonl", {})
+    args = engine.command(tmp_path / "s.jsonl", {}, tmp_path / "job.sock")
+    assert args[args.index("--extension") + 1].endswith("board-extension.ts") and "--tools" not in args
+    sock = tmp_path / "job.sock"
+    assert engine.board_environment(sock) == {"NIUCAI_BOARD_ADDRESS": str(sock)}
+    windows = engine.board_environment({"address": "tcp:127.0.0.1:9", "secret": "s"})
+    assert windows == {"NIUCAI_BOARD_ADDRESS": "tcp:127.0.0.1:9", "NIUCAI_BOARD_SECRET": "s"}
+    # 浏览器节点只放开 browser 与白板工具，不恢复 Shell。
+    monkeypatch.setenv("NIUCAI_PI_BROWSER_ENABLED", "true")
+    snapshot = {"config_snapshot": {"permission_profile": "workspace"}}
+    tools = engine.command(tmp_path / "s.jsonl", snapshot, tmp_path / "job.sock")
+    assert tools[tools.index("--tools") + 1] == ",".join(["browser", *runner.BOARD_TOOLS])
+    assert "pi-board" in engine.heartbeat()["features"]
+
+
+def test_pi_board_tools_match_the_mcp_server():
+    source = runner.BOARD_EXTENSION.read_text(encoding="utf-8")
+    declared = re.findall(r'^ {2}\[?\s*"([a-z_]+)",', source, re.M)
+    assert declared == list(runner.BOARD_TOOLS) == [tool["name"] for tool in board_mcp.TOOLS]
+
+
+def test_pi_submit_without_final_text_completes(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner.os, "chown", lambda *a: None, raising=False)
+    monkeypatch.setenv("NIUCAI_PI_MODEL", "pi-model")
+    pi = runner.PiEngine(tmp_path)
+    current = state(tmp_path)
+    tool_only = {"role": "assistant", "content": [{"type": "toolCall"}], "stopReason": "toolUse"}
+    pi.translate({"type": "message_end", "message": tool_only}, current)
+    pi.translate({"type": "tool_execution_end", "toolName": "card_progress"}, current)
+    with pytest.raises(RuntimeError):
+        pi.translate({"type": "agent_end"}, dict(current))
+    pi.translate({"type": "tool_execution_end", "toolName": "card_submit", "isError": False}, current)
+    _, final = pi.translate({"type": "agent_end"}, current)
+    assert "card_submit" in final["answer"]
+    failed = state(tmp_path)
+    pi.translate({"type": "tool_execution_end", "toolName": "card_submit", "isError": True}, failed)
+    with pytest.raises(RuntimeError):
+        pi.translate({"type": "agent_end"}, failed)
 
 
 def test_codex_without_engine_sandbox_offers_only_container_isolated_profiles(tmp_path, monkeypatch):

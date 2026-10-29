@@ -35,6 +35,18 @@ CARD_WORKSPACE = re.compile(r"card-[a-zA-Z0-9-]{1,36}")
 MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}")
 BOARD_TOOL = re.compile(r"[a-z_]{1,40}")
 BOARD_SCRIPT = Path(__file__).with_name("board_mcp.py")
+# Pi 没有接 MCP：白板工具由扩展注册，同名同参（见 board-extension.ts）。
+BOARD_EXTENSION = Path(__file__).with_name("board-extension.ts")
+BOARD_TOOLS = (
+    "board_view",
+    "card_get",
+    "inbox",
+    "card_progress",
+    "card_comment",
+    "card_propose",
+    "card_block",
+    "card_submit",
+)
 ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}")
 HEADER_KEY = re.compile(r"[A-Za-z0-9-]{1,100}")
@@ -409,7 +421,7 @@ class PiEngine:
             "executor": self.name,
             "available": True,
             "version": "1.1.0",
-            "features": ["artifact-v2", "managed-workspace", "card-board"],
+            "features": ["artifact-v2", "managed-workspace", "card-board", "pi-board"],
             "node_model": {"provider": self.provider, "model": self.model},
         }
 
@@ -426,7 +438,21 @@ class PiEngine:
         for name in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
             if name in os.environ:
                 result[name] = os.environ[name]
+        if os.environ.get("NIUCAI_PI_BROWSER_ENABLED") == "true":
+            result["NIUCAI_BROWSER_CDP_URL"] = os.environ.get(
+                "NIUCAI_BROWSER_CDP_URL", "http://127.0.0.1:9222"
+            )
         return result
+
+    @staticmethod
+    def board_environment(board):
+        """白板扩展经环境变量找到本作业的 Runner 代理；与 board_server_config 同一地址形式。"""
+        if isinstance(board, dict):
+            return {
+                "NIUCAI_BOARD_ADDRESS": board["address"],
+                "NIUCAI_BOARD_SECRET": board.get("secret") or "",
+            }
+        return {"NIUCAI_BOARD_ADDRESS": str(board)}
 
     def drop_privileges(self):
         os.setgroups([])
@@ -434,8 +460,9 @@ class PiEngine:
         os.setuid(self.uid)
 
     def command(self, session, job=None, board=None, extra_dirs=(), mcp=None):
-        # Pi 暂不接 MCP（board 与外部 MCP 均忽略），卡片结果经最终回答提交。
-        return [
+        # Pi 不接外部 MCP；卡片作业加载白板扩展（board 为本作业代理地址）。
+        # 未调用 card_submit 时 Kernel 以最终回答作为提交摘要。
+        args = [
             "pi",
             "--mode",
             "rpc",
@@ -453,6 +480,15 @@ class PiEngine:
             "--no-mcp",
             "--offline",
         ]
+        if board:
+            args += ["--extension", str(BOARD_EXTENSION)]
+        if os.environ.get("NIUCAI_PI_BROWSER_ENABLED") == "true":
+            profile = ((job or {}).get("config_snapshot") or {}).get("permission_profile", "workspace")
+            if profile == "read":
+                raise ValueError("Visible browser requires workspace/full permission and card approval")
+            args += ["--extension", str(Path(__file__).with_name("browser-extension.ts"))]
+            args += ["--no-builtin-tools", "--tools", ",".join(["browser", *(BOARD_TOOLS if board else ())])]
+        return args
 
     @staticmethod
     def stdin(attempt, message):
@@ -479,12 +515,18 @@ class PiEngine:
             data = {"text": state["answer"][:4000], "stop_reason": message.get("stopReason")}
             return [("assistant", data)], None
         if kind in {"tool_execution_start", "tool_execution_end"}:
+            if kind == "tool_execution_end" and not frame.get("isError"):
+                if frame.get("toolName") in {"card_submit", "card_block"}:
+                    state["board_outcome"] = frame["toolName"]
             data = {
                 "tool": str(frame.get("toolName", ""))[:100],
                 "is_error": bool(frame.get("isError")),
             }
             return [(kind, data)], None
         if kind in {"agent_end", "agent_settled"}:
+            if state.get("board_outcome") and not state["failed"]:
+                # 提交或提问的工具结果会终止本轮，模型不再写最终回答；结论已由 Kernel 记在卡片上。
+                state["answer"] = state["answer"] or f"已通过 {state['board_outcome']} 交给白板"
             if not state["answer"] or state["failed"]:
                 raise RuntimeError("Pi ended without a successful final answer")
             return [], {
@@ -1175,8 +1217,9 @@ class Runner:
         path = self.board_dir / f"{job['id']}.sock"
         path.unlink(missing_ok=True)
         server = await asyncio.start_unix_server(handle, path=str(path), limit=64 * 1024)
-        os.chown(path, uid, uid)
+        # 先 chmod 再 chown：容器只授予 CAP_CHOWN、没有 CAP_FOWNER，文件归引擎 UID 后 root 不能再改权限。
         os.chmod(path, 0o600)
+        os.chown(path, uid, uid)
         return server, path
 
     def workspace_for(self, job):
@@ -1374,7 +1417,7 @@ class Runner:
                     raise RuntimeError("input artifact hash mismatch")
                 chown(path, uid)
             socket_path = None
-            if job.get("board_token") and engine.name != "pi":
+            if job.get("board_token"):
                 board, socket_path = await self.board_server(job, uid)
             inputs = workspace / "inputs" if workdir and (workspace / "inputs").exists() else None
             snapshot = job.get("config_snapshot") or {}
@@ -1394,7 +1437,10 @@ class Runner:
             process = await asyncio.create_subprocess_exec(
                 *resolve_command(args),
                 cwd=workdir or workspace,
-                env=engine.environment(),
+                env={
+                    **engine.environment(),
+                    **(engine.board_environment(socket_path) if socket_path and engine.name == "pi" else {}),
+                },
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,

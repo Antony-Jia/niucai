@@ -263,7 +263,7 @@ Bot 调用 `card_propose`，在当前卡片下写一条 `proposal` 事件（包�
 |---|---|---|
 | Claude Code | stdio MCP Server（`niucai-board-mcp`，Runner 自带的小程序），通过 MCP 配置文件传入 | 现有 Runner 用 `--bare`，不会自动发现 MCP，需要显式传 MCP 配置；具体参数以锁定版本为准 |
 | Codex | 同一个 stdio MCP Server，写入该 Bot 独立 HOME 下的 Codex 配置 `mcp_servers` 段 | 配置格式以锁定版本为准 |
-| Pi | Pi 本身不内置 MCP 客户端，改用 Pi 扩展注册同名自定义工具，直接调用 Runner 本地代理 | 现有 `pi-runtime/src/main.ts` 已有注册自定义工具的做法，可迁移到节点侧 |
+| Pi | 不接 MCP（Runner 以 `--no-mcp` 启动），改用 Pi 扩展注册同名自定义工具，直接调用 Runner 本地代理 | 已实现：`services/node-runner/board-extension.ts` |
 
 这样三种引擎看到的工具名和语义完全一致，编排 LLM 和用户也不用关心卡片由哪种引擎执行。
 
@@ -372,6 +372,8 @@ claim 返回一个**卡片级令牌**（随 Attempt 失效）。Runner 只把它
 - 原先"Kernel 内调用 MCP 经 ActionGateway"的路径随 Kernel 内执行一并下线（§14）。
 
 ### 10.3 浏览器
+
+补充（2026-10-29）：已新增可选 Pi 原生浏览器扩展与独立部署模板，工具直接连接与 Runner 共享网络的可见 Chrome loopback CDP；默认只启用浏览器工具，普通 Pi 节点不变。部署及验收边界见 [Pi 浏览器节点与 VNC](pi-browser-node.md)。这不代表通用 MCP 桥接、VPS 部署或节点 HTTPS 预览已验收。
 
 浏览器 Bot 和 Chrome / KasmVNC 部署在同一台 VPS（同一个 compose），Bot 通过 `127.0.0.1:9222` 直连 CDP，不再经过 relay：
 
@@ -519,7 +521,7 @@ Settings
 - 实现状态（2026-10-29）：迁移 `d6e21029d010`（`bots`、`cards`、`card_events`，`remote_jobs` 加 `card_id` / `bot_id` / `board_token_hash`）、`control/cards.py`、`api/board.py`、长轮询领取与两层并发、LOST 宽限期续接已完成并有测试（`tests/test_cards.py`）。Runner（`p2`）支持多作业并发（每作业一个台账 `control/active/<id>.json`）、事件发件箱断网重试、卡片工作区与依赖输入、Bot 模型覆盖，并以 `board_mcp.py`（标准库 stdio MCP 服务器）把白板工具接给 Claude Code / Codex：引擎经每作业的 Unix socket 调 Runner 代理，节点令牌与板令牌都不进入引擎进程。Desktop 新增“白板”页（建卡、指定 Bot、详情时间线与 Attempt 事件、批准/回答/验收/退回/重开/评论）和节点下的 Bot 增删改，拓扑图显示 Bot。接口见 [API](api.md#bot-与白板重构-p2)。评审修复（2026-10-29）：Attempt 事件先写入台账旁的事件日志并记录确认游标，Runner 崩溃或长时间断网后交 finish 前补齐（§9.6）；`budget.max_attempts` 在领取入口统一检查（验收退回、阻塞续接都计入），`max_minutes` 下发为 Attempt 超时并由 Kernel 心跳兜底停止；`inbox` 限定在同一 Goal 内。
 - 与方案的差异 / 延后：
   - 产物不走 `artifact_put` / `artifact_get` 工具：依赖卡片的文件随领取内联下发到 `inputs/<card_id>/`，结果文件仍随 finish 内联回传。
-  - Pi 暂不接白板工具（没有 MCP，扩展延后），Pi Bot 通过最终回答提交，进度来自引擎事件。
+  - Pi 白板扩展（2026-10-29 补齐）：`services/node-runner/board-extension.ts` 为卡片作业注册与 `board_mcp.py` 同名同参的 8 个工具，经同一个每作业代理调 Kernel；Runner 心跳带 `pi-board` 特性，Kernel 据此给 Pi 卡片下发白板工具说明，旧 Runner 仍以最终回答提交。`card_submit` / `card_block` 的工具结果终止本轮，Pi 不再写最终回答。Pi 不续接会话，`card_block` 回答后重新执行并在提示中带上回答。
   - Pi 的 Bot 模型覆盖只在节点 `models.json` 已定义该模型时生效（自定义 base_url 场景）。
   - `skills` / `mcp_servers` 仅保存，下发在 P5（已实现）；`review=llm` 的卡片由 P3 编排 LLM 验收（已实现），编排关闭时停在 `REVIEW` 由用户验收。
   - 手机 PWA 的白板页未做；验收场景中的断网、双槽位并行等实机验证待完成。
@@ -543,7 +545,7 @@ Settings
 
 - 配置落地（§10.2）、MCP 预热与状态上报、Bot 详情页绑定 skills / MCP。
 - 浏览器 Bot 迁移到 VPS 本机 CDP；节点 HTTPS 预览与 `preview_url` 上报。
-- 实现状态（2026-10-29）：Kernel 在每次领取时把 Bot 绑定且已启用的 skill / MCP 定义展开进 `config_snapshot`（不按 `config_version` 拉取，解绑后下一次 Attempt 即生效）；`env:NAME` 由 Runner 从节点环境变量解析，缺失则跳过该 MCP 并发出 `notice` 事件；`read` 档位不加载外部 MCP。skill 写到每作业的资产目录（Claude Code skill 目录结构），提示词列出路径，所有引擎都能读取；Claude Code 另以 `--add-dir` 提供。Bot 视图上报 `missing_assets` / `node_env`，Desktop 表单提示，Pi Bot 绑定 MCP 时提示“暂不支持”。与方案的差异 / 延后：不做 `<data>/bots/<bot-id>/` 常驻目录与 `/config` 拉取；MCP 预热与状态上报、浏览器 Bot 迁移到本机 CDP 与节点 HTTPS 预览（§10.3）未做；Codex 的 MCP 密钥经 `-c` 出现在命令行参数中。接口见 [API](api.md#bot-的-skills-与-mcp-下发重构-p5)。
+- 实现状态（2026-10-29）：Kernel 在每次领取时把 Bot 绑定且已启用的 skill / MCP 定义展开进 `config_snapshot`（不按 `config_version` 拉取，解绑后下一次 Attempt 即生效）；`env:NAME` 由 Runner 从节点环境变量解析，缺失则跳过该 MCP 并发出 `notice` 事件；`read` 档位不加载外部 MCP。skill 写到每作业的资产目录（Claude Code skill 目录结构），提示词列出路径，所有引擎都能读取；Claude Code 另以 `--add-dir` 提供。Bot 视图上报 `missing_assets` / `node_env`，Desktop 表单提示，Pi Bot 绑定 MCP 时提示“暂不支持”。与方案的差异 / 延后：不做 `<data>/bots/<bot-id>/` 常驻目录与 `/config` 拉取；MCP 预热与状态上报未做；Pi 浏览器 Bot 已新增可选原生扩展并完成本机 CDP/VNC 验证（见 [Pi 浏览器节点与 VNC](pi-browser-node.md)），节点 HTTPS 预览未做；Codex 的 MCP 密钥经 `-c` 出现在命令行参数中。接口见 [API](api.md#bot-的-skills-与-mcp-下发重构-p5)。
 - 验收：给 Claude / Codex Bot 绑定一个 skill 和一个 MCP，下一张卡就能用上；解绑后不可用；浏览器 Bot 不经 relay 完成登录态网页任务；Desktop 直连节点打开预览。
 
 ### P6 下线旧链路

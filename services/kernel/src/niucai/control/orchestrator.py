@@ -118,6 +118,10 @@ TOOLS = [
             "seq": INT,
             "decision": {"type": "string", "enum": ["accept", "reject"]},
             "bot": STRING,
+            "after_source": {
+                "type": "boolean",
+                "description": "默认 true：新卡依赖原卡并带上其产物；可并行的子任务传 false",
+            },
             "note": STRING,
         },
         ["card_id", "seq", "decision"],
@@ -610,6 +614,8 @@ class Orchestrator:
                     "acceptance": proposal.get("acceptance", ""),
                     "bot": args.get("bot") or proposal.get("bot") or None,
                     "tags": proposal.get("tags", []),
+                    # 提议多是原卡的后续：默认依赖原卡，新工作区经 inputs/ 拿到原卡产物。
+                    "depends_on": [card_id] if args.get("after_source", True) is not False else [],
                 },
             )
             body = f"提议「{proposal.get('title', '')}」已采纳，新卡片 {created['card_id']}"

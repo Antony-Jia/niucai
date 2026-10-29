@@ -235,7 +235,7 @@ def card_inputs(s, card):
     return inputs
 
 
-def compose_card_prompt(s, card, bot, inputs, since):
+def compose_card_prompt(s, card, bot, inputs, since, board_tools=True):
     parts = [f"# 卡片：{card.title}", card.goal or "(无补充说明)"]
     if card.acceptance:
         parts += ["## 验收标准", card.acceptance]
@@ -258,7 +258,7 @@ def compose_card_prompt(s, card, bot, inputs, since):
     if notes:
         parts.append("## 新的评论与回答")
         parts += [f"- [{n.actor}] {n.body[:2000]}" for n in notes]
-    if bot.engine == "pi":
+    if not board_tools:
         parts.append("完成后在最终回答中给出结果摘要；把要交付的文件写在工作区内。")
     else:
         parts.append(
@@ -428,7 +428,15 @@ def start_attempt(s, settings, card, bot, node):
         snapshot["resume"] = {"job_id": previous.id, "session_id": previous.session_id}
     token = secrets.token_urlsafe(32)
     job = RemoteJob(
-        prompt=compose_card_prompt(s, card, bot, inputs, since),
+        # Pi 的白板工具由 Runner 扩展提供（features 含 pi-board）；旧 Runner 上仍以最终回答交付。
+        prompt=compose_card_prompt(
+            s,
+            card,
+            bot,
+            inputs,
+            since,
+            bot.engine != "pi" or "pi-board" in (node.capabilities or {}).get("features", []),
+        ),
         engine=bot.engine,
         idempotency_key=f"card:{card.id}:{card.attempts + 1}:{uid()}",
         allowed_nodes=[node.id],
@@ -454,7 +462,7 @@ def start_attempt(s, settings, card, bot, node):
     return {**as_dict(job), "artifact_transport": False, "board_token": token}
 
 
-def revive(s, job):
+def revive(s, job, lease_seconds):
     """断网后同一 Attempt 回来：卡片仍指向它时把 LOST 恢复为 RUNNING，事件续传。"""
     if job.status != "LOST" or not job.card_id:
         return False
@@ -462,7 +470,8 @@ def revive(s, job):
     node = s.get(RemoteNode, job.node_id)
     if not card or card.current_job_id != job.id or card.status != "RUNNING" or not node or not node.enabled:
         return False
-    job.status = "RUNNING"
+    # 同时续租：否则补交的下一条事件又会被 expire 判为 LOST，反复丢失/恢复。
+    job.status, job.lease_until = "RUNNING", now() + timedelta(seconds=lease_seconds)
     job_event(s, job, "recovered")
     return True
 
@@ -778,7 +787,7 @@ class CardManager:
                 or not secrets.compare_digest(job.board_token_hash, sha256(token.encode()).hexdigest())
             ):
                 raise PermissionError("invalid board token")
-            revive(s, job)
+            revive(s, job, self.settings.remote_lease_seconds)
             card = s.scalar(select(Card).where(Card.id == job.card_id).with_for_update())
             live = job.status == "RUNNING" and card.current_job_id == job.id and card.status == "RUNNING"
             if not live and tool not in {"board_view", "card_get"}:

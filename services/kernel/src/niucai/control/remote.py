@@ -591,7 +591,7 @@ class RemoteManager:
             job = self.owned(s, node_id, job_id, attempt_id)
             from niucai.control.cards import over_time, revive
 
-            revive(s, job)
+            revive(s, job, self.settings.remote_lease_seconds)
             parent = s.get(Task, job.parent_task_id) if job.parent_task_id else None
             node = require(s, RemoteNode, node_id)
             stop = (
@@ -617,7 +617,7 @@ class RemoteManager:
             job = self.owned(s, node_id, job_id, attempt_id)
             from niucai.control.cards import revive
 
-            revive(s, job)
+            revive(s, job, self.settings.remote_lease_seconds)
             if job.status != "RUNNING":
                 raise Conflict("job is not running")
             if sequence <= job.event_sequence:
@@ -639,7 +639,7 @@ class RemoteManager:
                 return as_dict(job)  # Lost HTTP response: do not publish twice.
             from niucai.control.cards import job_finished, revive
 
-            revive(s, job)
+            revive(s, job, self.settings.remote_lease_seconds)
             if job.status not in ACTIVE:
                 raise Conflict("job is not owned by an execution attempt")
             if not self.authorized(s, job, node_id) and job.status == "RUNNING":

@@ -12,6 +12,7 @@ $name = "niucai-runner-x86_64-pc-windows-msvc"
 uv run --no-project --with pyinstaller --with httpx pyinstaller `
     --onefile --console --name $name `
     --hidden-import board_mcp --hidden-import win_job `
+    --add-data "$(Join-Path $here 'board-extension.ts');." `
     --distpath $out --workpath $work --specpath $work `
     --paths $here (Join-Path $here "runner.py")
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }

@@ -175,11 +175,28 @@ def test_review_reject_and_failure_budget(setup):
     cards.action(reviewed["id"], "reject", body="补充示例")
     retry = remote.claim(node["id"])
     assert "补充示例" in retry["prompt"] and "resume" not in retry["config_snapshot"]  # Pi 不续接
+    assert "最终回答" in retry["prompt"] and "card_submit" not in retry["prompt"]  # 旧 Runner 无白板扩展
     remote.finish(node["id"], retry["id"], retry["attempt_id"], "FAILED", {"error": "boom"})
     detail = cards.get(reviewed["id"])
     assert detail["status"] == "FAILED" and "boom" in detail["result"]["error"]
     cards.action(reviewed["id"], "reopen")
     assert status(db, reviewed["id"]) == "READY"
+
+
+def test_pi_runner_with_board_extension_gets_board_prompt_and_tools(setup):
+    db, settings, remote, cards, node = board(setup)
+    beat = {"available": True, "protocol_version": 3, "executors": ENGINES, "features": ["pi-board"]}
+    remote.node_heartbeat(node["id"], beat)
+    bot(cards, node, engine="pi")
+    task = card(cards)
+    claimed = remote.claim(node["id"])
+    assert "card_submit" in claimed["prompt"] and claimed["board_token"]
+    token = claimed["board_token"]
+    assert cards.board_call(node["id"], claimed["id"], token, "card_submit", {"summary": "pi 完成"})["ok"]
+    # 提交后 Pi 以占位回答结束：卡片摘要取 card_submit，而不是最终回答。
+    remote.finish(node["id"], claimed["id"], claimed["attempt_id"], "COMPLETED", {"answer": "已交给白板"})
+    final = cards.get(task["id"])
+    assert final["status"] == "DONE" and final["result"]["summary"] == "pi 完成"
 
 
 def test_cancel_stops_attempt_and_finish_does_not_reopen(setup):
@@ -214,8 +231,13 @@ def test_lost_attempt_revives_within_grace_and_requeues_after(setup):
     assert not remote.event(node["id"], claimed["id"], claimed["attempt_id"], 1, "text", {"text": "a"})[
         "accepted"
     ]
+    # 恢复时同时续租：后续补交的事件不会再被判为 LOST（不出现丢失/恢复反复）。
+    assert remote.event(node["id"], claimed["id"], claimed["attempt_id"], 2, "text", {"text": "b"})[
+        "accepted"
+    ]
     with db.sessions() as s:
-        assert s.get(RemoteJob, claimed["id"]).status == "RUNNING"
+        revived = s.get(RemoteJob, claimed["id"])
+        assert revived.status == "RUNNING" and revived.lease_until > now()
 
     with db.sessions.begin() as s:
         s.get(RemoteJob, claimed["id"]).lease_until = now() - timedelta(

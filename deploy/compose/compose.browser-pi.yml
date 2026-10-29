@@ -1,0 +1,33 @@
+# 给已运行的 Chrome/KasmVNC Computer 接入独立 Pi 节点。
+# Runner 共享 Computer 网络，直接连接其 127.0.0.1:9222；不发布 CDP。
+name: niucai-browser-pi
+services:
+  runner:
+    image: niucai-pi-browser:kernel-lite
+    build:
+      context: ../..
+      dockerfile: services/node-runner/Dockerfile
+      args: {ENGINES: pi}
+    network_mode: container:${NIUCAI_COMPUTER_CONTAINER:?set existing Computer container name}
+    environment:
+      NIUCAI_KERNEL_URL: ${NIUCAI_KERNEL_URL:?set Kernel URL reachable from Computer}
+      NIUCAI_PAIRING_CODE: ${NIUCAI_PAIRING_CODE:-}
+      NIUCAI_ENGINES: pi
+      NIUCAI_PI_PROVIDER: ${NIUCAI_PI_PROVIDER:-openrouter}
+      NIUCAI_PI_MODEL: ${NIUCAI_PI_MODEL:?set model}
+      NIUCAI_PI_BASE_URL: ${NIUCAI_PI_BASE_URL:-}
+      NIUCAI_PI_PROVIDER_KEY: ${NIUCAI_PI_PROVIDER_KEY:?set node model key}
+      OPENROUTER_API_KEY: ${NIUCAI_PI_PROVIDER_KEY}
+      NIUCAI_PI_BROWSER_ENABLED: "true"
+      NIUCAI_BROWSER_CDP_URL: http://127.0.0.1:9222
+      NIUCAI_PREVIEW_URL: ${NIUCAI_PREVIEW_URL:-}
+    volumes: [pi-data:/data]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, KILL, CHOWN, DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
+    init: true
+    restart: unless-stopped
+volumes:
+  pi-data:
