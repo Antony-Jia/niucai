@@ -23,6 +23,7 @@
 | Memory / Artifacts | 工作状态、episodic / semantic 记录与相关性筛选、文件元数据与认证下载 |
 | Computer Adapter | disabled / fake / local；local 接入私网 Chromium CDP，受控 workspace 文件与可选 Shell |
 | 运维 | Alembic、Docker Compose、Caddy 模板、CI、单元与核心流程测试 |
+| 轻量 Kernel 重构 | 设备配对与拓扑、节点 Bot（Pi / Codex / Claude Code）与白板卡片、Goal 与编排 LLM、Windows 本机节点（Desktop sidecar）、Bot skills / MCP 下发、旧执行链路开关 `NIUCAI_LEGACY_EXECUTION_ENABLED`；实机验收待完成，见 [重构方案](docs/kernel-lite-redesign.md) |
 
 ## 项目结构
 

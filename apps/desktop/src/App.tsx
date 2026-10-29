@@ -10,6 +10,8 @@ import {
   RefreshCw,
   Puzzle,
   Kanban as KanbanIcon,
+  StickyNote,
+  Target,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useApp, useData } from "./lib/state";
@@ -20,12 +22,16 @@ import { Files, MemoryPage } from "./pages/FilesMemory";
 import { Settings } from "./pages/Settings";
 import { RemotePi } from "./pages/RemotePi";
 import { Kanban } from "./pages/Kanban";
+import { Whiteboard } from "./pages/Whiteboard";
+import { Goals } from "./pages/Goals";
 import { Bots } from "./pages/Bots";
 import { Extensions } from "./pages/Extensions";
 import type { Page } from "./lib/types";
 const navigation: { id: Page; label: string; icon: typeof Monitor }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "computer", label: "会话", icon: Monitor },
+  { id: "goals", label: "Goal", icon: Target },
+  { id: "board", label: "白板", icon: StickyNote },
   { id: "kanban", label: "看板", icon: KanbanIcon },
   { id: "files", label: "Files", icon: Folder },
   { id: "memory", label: "Memory", icon: Brain },
@@ -79,6 +85,8 @@ export function App() {
     tasks: Workbench,
     computer: Workbench,
     kanban: Kanban,
+    board: Whiteboard,
+    goals: Goals,
     files: Files,
     memory: MemoryPage,
     settings: Settings,

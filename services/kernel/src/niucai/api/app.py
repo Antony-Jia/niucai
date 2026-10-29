@@ -111,6 +111,12 @@ def create_app(settings=None, db=None, chat_gateway=None):
     from niucai.api.kanban import kanban_router
 
     app.include_router(kanban_router(db, settings, auth))
+    from niucai.api.board import board_router
+
+    app.include_router(board_router(db, settings, auth))
+    from niucai.api.goals import goals_router
+
+    app.include_router(goals_router(db, settings, auth))
     from niucai.api.bots import bot_router
 
     app.include_router(bot_router(db, settings, auth))
@@ -163,8 +169,12 @@ def create_app(settings=None, db=None, chat_gateway=None):
 
         if not inspect(db.engine).has_table("alembic_version"):
             # create_schema is only a test/development path, never migration proof.
-            return {"api": "ready", "execution_ready": False,
-                    "migration": {"ready": False, "current": None}, "workers": []}
+            return {
+                "api": "ready",
+                "execution_ready": False,
+                "migration": {"ready": False, "current": None},
+                "workers": [],
+            }
         with db.sessions.begin() as s:
             return diagnostics(s, settings)
 

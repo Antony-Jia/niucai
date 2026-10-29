@@ -83,11 +83,14 @@ export interface Approval {
 }
 export interface Memory {
   id: string;
-  kind: "semantic" | "episodic";
+  /** card / goal 由 Kernel 在卡片结束、Goal 总结时自动写入。 */
+  kind: "semantic" | "episodic" | "card" | "goal";
   content: string;
   tags: string[];
   created_at: string;
   task_id: string | null;
+  ref_id?: string | null;
+  bot_id?: string | null;
 }
 export interface Artifact {
   id: string;
@@ -177,6 +180,8 @@ export interface ConnectionProbe {
 export const connectionKey = (p: Profile) => p.kernel_instance_id || p.base_url;
 export type Page =
   | "kanban"
+  | "board"
+  | "goals"
   | "bots"
   | "extensions"
   | "remote"

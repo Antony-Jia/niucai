@@ -78,11 +78,17 @@ class PairingManager:
             }
 
     def topology(self):
+        from niucai.control.cards import CardManager
         from niucai.control.instance import instance
 
         with self.db.sessions() as s:
             ident = instance(s).instance_id
         nodes = self.remote.nodes()
+        bots = {}
+        for bot in CardManager(self.db, self.settings).bots():
+            bots.setdefault(bot["node_id"], []).append(
+                {k: bot[k] for k in ("id", "name", "engine", "role", "enabled", "running", "concurrency")}
+            )
         return {
             "kernel": {"instance_id": ident, "remote_enabled": bool(self.settings.remote_pi_enabled)},
             "nodes": [
@@ -95,13 +101,12 @@ class PairingManager:
                     "status": n["status"] if n["enabled"] else "DISABLED",
                     "enabled": bool(n["enabled"]),
                     "slots": n["capacity"],
-                    "busy": 1 if n.get("active_job") else 0,
+                    "busy": n["busy"],
                     "engines": n["engines"],
                     "preview_url": n["preview_url"],
                     "paired_at": n["paired_at"],
                     "heartbeat_at": n["heartbeat_at"],
-                    # P2 起 Bot 挂在节点下；当前阶段始终为空列表
-                    "bots": [],
+                    "bots": bots.get(n["id"], []),
                 }
                 for n in nodes
             ],

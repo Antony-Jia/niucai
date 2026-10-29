@@ -1,3 +1,4 @@
+mod local_node;
 mod managed;
 mod transport;
 use serde::{Deserialize, Serialize};
@@ -852,10 +853,64 @@ async fn install_managed_runner(
         .map_err(|_| "Runner 安装被中断")?
 }
 
+#[tauri::command]
+async fn local_runner_start(
+    window: tauri::Webview,
+    state: State<'_, KernelState>,
+    runner: State<'_, local_node::LocalRunner>,
+    pairing_code: Option<String>,
+    workdir_allow: Option<Vec<String>>,
+) -> Result<(), String> {
+    trusted(&window)?;
+    let credentials = connection(&state)?;
+    let pairing_code = pairing_code
+        .map(|code| code.trim().to_string())
+        .filter(|code| !code.is_empty());
+    if let Some(code) = &pairing_code {
+        if !code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') || code.len() > 16 {
+            return Err("配对码格式无效".into());
+        }
+    }
+    runner.start(local_node::Launch {
+        kernel_url: credentials.base,
+        pairing_code,
+        workdir_allow: workdir_allow.unwrap_or_default(),
+    })
+}
+
+#[tauri::command]
+fn local_runner_stop(
+    window: tauri::Webview,
+    runner: State<'_, local_node::LocalRunner>,
+    mode: String,
+) -> Result<(), String> {
+    trusted(&window)?;
+    runner.stop(&mode)
+}
+
+#[tauri::command]
+fn local_runner_status(
+    window: tauri::Webview,
+    runner: State<'_, local_node::LocalRunner>,
+) -> Result<local_node::Status, String> {
+    trusted(&window)?;
+    Ok(runner.status())
+}
+
+#[tauri::command]
+fn local_runner_forget(
+    window: tauri::Webview,
+    runner: State<'_, local_node::LocalRunner>,
+) -> Result<(), String> {
+    trusted(&window)?;
+    runner.forget()
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(KernelState::default())
+        .manage(local_node::LocalRunner::default())
         .invoke_handler(tauri::generate_handler![
             load_profile,
             connect_kernel,
@@ -874,10 +929,19 @@ pub fn run() {
             download_artifact,
             save_resource_package,
             managed_kernel,
-            install_managed_runner
+            install_managed_runner,
+            local_runner_start,
+            local_runner_stop,
+            local_runner_status,
+            local_runner_forget
         ])
-        .run(tauri::generate_context!())
-        .expect("niucai desktop failed to start");
+        .build(tauri::generate_context!())
+        .expect("niucai desktop failed to start")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                app.state::<local_node::LocalRunner>().drain_on_exit();
+            }
+        });
 }
 #[cfg(test)]
 mod tests {

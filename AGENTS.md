@@ -29,6 +29,7 @@ Android Device Node 尚未实现；设备动作默认关闭，不得虚构 Compu
 - **Human Control**：AGENT / HUMAN / PAUSED；接管会撤销 Worker 租约，交还后恢复。
 - **Model Router/Gateway**：按角色（planner/executor/browser/fast/vision/summarizer/guard/memory）配置模型，OpenRouter 或自定义 OpenAI 兼容地址。
 - **远程 Pi 节点 / 资源节点**：主 Pi 委派、独立节点凭证、工作包授权、队列与租约（默认关闭，见 `docs/remote-pi-nodes.md`）。
+- **轻量 Kernel 重构**（`docs/kernel-lite-redesign.md`）：节点 Bot 经白板领取卡片、Goal 由编排 LLM 推进（`NIUCAI_ORCHESTRATOR_ENABLED`）、Windows 本机节点作为 Desktop sidecar、Bot skills/MCP 随 Attempt 下发；P1–P5 代码已实现，实机验收待完成。旧的 Kernel 内执行链路可用 `NIUCAI_LEGACY_EXECUTION_ENABLED=false` 关闭，验收后删除。
 - **多 Bot 协作**（B1–B5）与 **Kernel Anywhere**（本机受管/VPS 部署，见 `docs/kernel-anywhere-*.md`）：代码已实现，部分实机验收待完成。
 
 ## 常用命令

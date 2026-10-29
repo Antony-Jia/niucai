@@ -13,7 +13,7 @@ def nodes_router(db, settings, auth):
     class PairingCreate(BaseModel):
         model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
         name: str = Field(min_length=1, max_length=200)
-        resource_type: Literal["local_docker", "remote_vps", "unspecified"] = "unspecified"
+        resource_type: Literal["local_docker", "remote_vps", "windows_local", "unspecified"] = "unspecified"
 
     class PairingRedeem(BaseModel):
         model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)

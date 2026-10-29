@@ -1,5 +1,7 @@
 # 统一会话与执行架构
 
+> 注意：本文描述的 Kernel 内执行链路正被[轻量 Kernel 重构](kernel-lite-redesign.md)取代。新工作请使用 Goal、白板与节点 Bot；旧链路可用 `NIUCAI_LEGACY_EXECUTION_ENABLED=false` 关闭，验收通过后删除。
+
 用户在一个长期会话内讨论、执行、补充要求、审批和接管电脑。Chat 不再直接调用无工具模型，也不再需要手动转为任务。
 
 ```mermaid

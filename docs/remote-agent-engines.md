@@ -239,3 +239,5 @@ Runner：续接作业复用上一个作业的工作区目录（引擎会话以�
 Desktop：已结束的 Codex / Claude 作业详情出现「继续此会话」，提交表单改为续接模式（节点与引擎沿用、选择框禁用，可取消续接）。
 
 验证：Kernel 与 Runner 单测覆盖关联规则、拒绝场景、命令行与会话 id 校验；`verify-remote-engines.py` 在真实 Codex 0.164.0 与 Claude Code 2.1.307 容器内各跑一次续接，模拟模型仅在历史里没有工具结果时才调用工具，续接作业不再调用工具即证明历史被重新载入。限制：续接依赖节点上的工作区与会话目录，节点数据被清理后无法续接；订阅登录、逐工具审批、多执行槽仍未做。
+
+进度（重构 P2）：Runner 版本 `p2`，心跳 features 含 `card-board`。按心跳返回的 `slots` 同时执行多个作业，每个作业一个台账 `/data/control/active/<job_id>.json`（旧的 `active.json` 启动时迁移），主循环对没有对应任务的台账补发 finish。领取用 `?wait=15` 长轮询。事件先进发件箱，断网时退避重试，Kernel 按序号去重。卡片作业在断开时不会立即停止：最多容忍 `NIUCAI_OFFLINE_GRACE` 秒（默认 240，应小于 Kernel 的 `NIUCAI_CARD_LOST_GRACE_SECONDS` + 租约），独立作业仍在租约到期前停止。Claude Code 与 Codex 的卡片作业注册 `niucai-board` MCP 服务器（`board_mcp.py`，以引擎 UID 运行，经 `/data/board/<job_id>.sock`（0600，属引擎 UID）调用 Runner，Runner 带节点凭据与 `X-Board-Token` 转发给 Kernel）；Claude 的 `read` / `workspace` 档位额外放行 `mcp__niucai-board`。Bot 的 `model` 覆盖节点默认模型（三种引擎都用快照中的 `bot.model`）。镜像需同时复制 `runner.py` 与 `board_mcp.py`。

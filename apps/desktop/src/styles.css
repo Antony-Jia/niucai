@@ -2051,6 +2051,19 @@ footer span:last-child {
     grid-template-columns: 1fr;
   }
 }
+.nodes-side {
+  display: grid;
+  gap: 18px;
+}
+.local-node h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.local-node textarea {
+  width: 100%;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
 .topology {
   width: 100%;
   max-width: 320px;
@@ -2119,4 +2132,191 @@ footer span:last-child {
   padding: 10px;
   border-radius: 6px;
   font-size: 12px;
+}
+.topology-node .topology-bot line {
+  stroke: #4c5c63;
+  stroke-dasharray: none;
+}
+.topology-node .topology-bot circle {
+  fill: #2c3a40;
+  stroke: #8fa3ab;
+}
+.topology-node .topology-bot.busy circle {
+  fill: #6fbf8e;
+  stroke: #a4e8bc;
+}
+.topology-node .topology-bot.disabled circle {
+  opacity: 0.4;
+}
+.node-bots {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+.node-bots li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.node-bots li span {
+  flex: 1;
+}
+
+/* 白板 */
+.board-card {
+  text-align: left;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  width: 100%;
+}
+.board-card:hover {
+  border-color: rgba(155, 228, 184, 0.6);
+}
+.badge.card-running,
+.badge.card-ready {
+  color: #9be4b8;
+}
+.badge.card-blocked,
+.badge.card-review,
+.badge.card-waiting_approval {
+  color: #f0c674;
+}
+.badge.card-failed {
+  color: #f08c8c;
+}
+.card-detail {
+  display: grid;
+  gap: 12px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.card-detail h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+.card-goal {
+  white-space: pre-wrap;
+}
+.card-actions {
+  display: grid;
+  gap: 8px;
+}
+.card-timeline,
+.attempt-events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+.card-event p {
+  margin: 2px 0 0;
+  white-space: pre-wrap;
+}
+.card-event.question p,
+.card-event.answer p {
+  color: #f0c674;
+}
+.card-comment {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.card-comment input {
+  flex: 1;
+}
+.attempt-events {
+  padding: 6px 0 6px 12px;
+  font-size: 12px;
+}
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.goal-layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.goal-list {
+  display: grid;
+  gap: 4px;
+}
+.goal-list .nav-item {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+}
+.goal-list .nav-item small {
+  color: #829c93;
+  font-size: 11px;
+}
+.goal-main,
+.goal-view {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.goal-messages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.goal-message {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  max-width: 85%;
+}
+.goal-message small {
+  color: #829c93;
+  font-size: 11px;
+}
+.goal-message p {
+  margin: 4px 0 0;
+}
+.goal-message.from-user {
+  justify-self: end;
+  background: rgba(98, 196, 160, 0.12);
+}
+.goal-message.question p {
+  color: #f0c674;
+}
+.goal-message.final {
+  border-left: 3px solid #62c4a0;
+}
+.goal-runs h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.goal-runs .attempt {
+  padding: 4px 0;
+}
+.badge.goal-done {
+  color: #62c4a0;
+}
+.badge.goal-active {
+  color: #f0c674;
+}
+.error-text {
+  color: #ef8a80;
+}
+@media (max-width: 900px) {
+  .goal-layout {
+    grid-template-columns: 1fr;
+  }
 }

@@ -138,6 +138,52 @@ FAILED 若仍有待审批动作，retry 只恢复为 WAITING_HUMAN，必须显�
 
 - `POST /api/pairing`（需认证）：`{name, resource_type}` → `{code, expires_at, name}`。配对码形如 `ABCD-EFGH`，10 分钟有效、仅可兑换一次，Kernel 只存哈希；响应 `Cache-Control: no-store`。
 - `POST /api/pairing/redeem`（无 Bearer，配对码即凭据）：`{code, platform, runner_version}` → `{node_id, token, name, kernel_instance_id, protocol_version}`。码不存在、过期或已用统一返回 409。Runner 设置 `NIUCAI_PAIRING_CODE` 且无凭据时自动兑换，并把凭据写入 `/data/control/credentials.json`（0600）；之后重启直接读取，环境变量 `NIUCAI_NODE_ID`/`NIUCAI_NODE_TOKEN` 仍优先。
-- `GET /api/topology`（需认证）：`{kernel: {instance_id, remote_enabled}, nodes: [{id, name, resource_type, platform, runner_version, status: ONLINE|OFFLINE|DISABLED, enabled, slots, busy, engines, preview_url, paired_at, heartbeat_at, bots: []}]}`。`bots` 在 P2 之前恒为空。
+- `GET /api/topology`（需认证）：`{kernel: {instance_id, remote_enabled}, nodes: [{id, name, resource_type, platform, runner_version, status: ONLINE|OFFLINE|DISABLED, enabled, slots, busy, engines, preview_url, paired_at, heartbeat_at, bots: [{id, name, engine, role, enabled, running, concurrency}]}]}`。
 - 节点心跳新增可选字段 `platform`（linux/windows/macos）、`runner_version`、`preview_url`；`preview_url` 须为 HTTPS（回环地址可用 HTTP），不得含凭据、query 或 fragment。Kernel 只记录预览地址，Desktop 直连节点，不经 Kernel 代理。Runner 从 `NIUCAI_PREVIEW_URL` 读取。
-- `PATCH /api/remote/nodes/{id}` 新增 `slots`（1–16，默认 1），节点视图的 `capacity` 改为返回该值；P1 调度仍按每节点单任务占用，多槽位领取在 P2 随卡片领取实现。
+- `PATCH /api/remote/nodes/{id}` 新增 `slots`（1–16，默认 1），节点视图的 `capacity` 改为返回该值；P2 起领取按该值并行（见下节）。
+
+## Bot 与白板（重构 P2）
+
+需 `NIUCAI_REMOTE_PI_ENABLED=true`。Bot 是“节点 + 引擎 + 角色配置”，卡片是白板上的工作单元，每次领取生成一个远端作业（Attempt，复用 `remote_jobs`，带 `card_id` / `bot_id`）。
+
+- `GET /api/bots` / `POST /api/bots` / `PATCH /api/bots/{id}` / `DELETE /api/bots/{id}`（需认证）：字段 `name`（1–60，字母数字、`_`、`-`、中文，用于 `@` 提及，全局唯一）、`node_id`、`engine`（`pi`/`codex`/`claude`）、`role`、`instructions`、`tags`、`model`（空为节点默认）、`permission_profile`（`read`/`workspace`/`full`）、`skills`、`mcp_servers`、`requires_approval`（默认 false）、`concurrency`（1–16，默认 1）、`enabled`（仅 PATCH）。视图另含 `running`（活动 Attempt 数）、`node_name`、`config_version`（配置字段变更时递增）。已有执行记录或指派卡片的 Bot 不能删除（409），请改为停用；有执行中卡片时不能改 `node_id`。`skills` / `mcp_servers` 自 P5 起随 Attempt 下发（见下文）。
+- `GET /api/board[?conversation_id=]`：`{cards, bots: [{id, name, engine, enabled}], statuses}`。卡片视图含 `assignee_name`、`current_job`、`latest`（最近一条进度/状态/提问，执行中时取引擎最新事件）、`summary`。
+- `POST /api/cards`：`{title, goal, acceptance, conversation_id?, parent_card_id?, assignee_bot_id?, required_tags, depends_on, priority, review: none|llm, budget: {max_attempts (默认 3), max_minutes?}, draft}`。不指定 Bot 时进入公共池，由 `tags` 覆盖 `required_tags` 的 Bot 领取。依赖成环返回 422。
+- `GET /api/cards/{id}`：卡片视图 + `result`、`events`（卡片时间线，按 `seq`）、`runs`（全部 Attempt：`id, bot_id, engine, status, node_id, created_at, updated_at, error`）。Attempt 的引擎事件仍用 `GET /api/remote/jobs/{job_id}/events`。
+- `PATCH /api/cards/{id}`：需 `expected_version`，仅 `DRAFT/READY/WAITING_APPROVAL/BLOCKED/FAILED` 可改；`assignee_bot_id` 可置 null。版本不符返回 409。
+- `POST /api/cards/{id}/{ready|approve|cancel|accept|reject|answer|reopen}`：`{expected_version?, body}`。`reject` 与 `answer` 需要正文；`reject` 后同一 Bot 续接原会话。`POST /api/cards/{id}/comments`：`{body, idempotency_key?}`，正文中的 `@Bot名` 进入该 Bot 的收件箱。
+- 状态机：`DRAFT → READY | WAITING_APPROVAL → RUNNING → DONE`（`review=llm` 时先到 `REVIEW`），`RUNNING → BLOCKED`（`card_block`）→ 回答后重新排队；失败计入 `budget.max_attempts`，用尽为 `FAILED`。Bot 提交（或 Pi 最终回答）后，`review=none` 直接 `DONE`；`review=llm` 进入 `REVIEW`，P3 编排 LLM 实现前由用户 `accept` / `reject`。
+- 领取：`POST /api/remote/runner/{node_id}/claim?wait=0..25` 长轮询，有可领卡片或作业立即返回。领取受节点 `slots` 与 Bot `concurrency` 两层限制（`RUNNING`/`CANCELLING`/`LOST` 都占位）。卡片作业的响应带 `board_token`（每 Attempt 一个，Kernel 只存哈希）和 `config_snapshot.card_inputs`（依赖卡片的产物，内联 base64，总量 200 KB 上限），工作区为 `card-<id>`，同卡片多次 Attempt 共用。
+- 白板工具：`POST /api/remote/runner/{node_id}/jobs/{job_id}/board/{tool}`，节点认证 + `X-Board-Token`，body `{args}`。工具：`board_view`、`card_get`、`inbox`、`card_progress`、`card_comment`、`card_propose`、`card_block`、`card_submit`；写工具带 `idempotency_key` 去重。Attempt 结束后只允许读工具（409）；令牌错误 403，缺失 422；进度、评论、提议有每 Attempt / 卡片的频率上限（409）。
+- 断网：Attempt 租约过期后为 `LOST`，卡片在 `NIUCAI_CARD_LOST_GRACE_SECONDS`（默认 300）内保持 `RUNNING`，同一 Attempt 的心跳、事件、白板调用或 finish 回来即恢复，事件按序号去重；超时后卡片重新排队，LOST 作业在 finish 前仍占节点槽位。
+
+## Goal、编排 LLM 与 Memory（重构 P3）
+
+需 `NIUCAI_ORCHESTRATOR_ENABLED=true`（创建 Goal 与发消息在关闭时返回 409）并重启 Kernel 与 Worker；编排循环跑在 Worker 内，与 Task 执行槽分开。Goal 是 `settings.mode=goal` 的会话，旧的 `/api/conversations/{id}/messages` 对它返回 409。
+
+- `GET /api/goals?limit=`：`[{id, title, status: ACTIVE|DONE, cards: {状态: 数量}, created_at, updated_at}]`。
+- `POST /api/goals`：`{title?, message}` → `{id, title, status}`；写入用户消息并排队一次编排运行。
+- `GET /api/goals/{id}`：`{id, title, status, orchestrator_enabled, messages, runs（最近 20 次编排运行）, board（该 Goal 的卡片与 Bot）}`。
+- `POST /api/goals/{id}/messages`：`{content, client_id?}`，`client_id` 去重；已结束的 Goal 收到消息后重新 `ACTIVE`。`POST /api/goals/{id}/run`：手动再排一次运行。`GET /api/orchestrator/runs/{run_id}`：运行详情（触发器、步骤、工具调用）。
+- 触发：用户消息、卡片进入 `REVIEW`/`DONE`/`FAILED`/`BLOCKED`/`CANCELLED`（用户主动取消除外）、Bot 提议子任务、评论中 `@kernel`、Goal 下全部卡片关闭。同一 Goal 未开始的运行合并触发器；预算由 `NIUCAI_ORCHESTRATOR_MAX_STEPS` / `_MAX_TOOL_CALLS` / `_RUNS_PER_HOUR` / `_LEASE_SECONDS` 控制。
+- 编排工具：`bots_list`、`card_get`、`card_create`、`card_update`、`card_review`（`review=llm` 卡片的通过/打回）、`card_cancel`、`proposal_decide`、`card_comment`、`ask_user`、`goal_reply`、`memory_search`、`artifact_read`。模型走 Model Gateway 的 `planner` 角色。
+- Memory：卡片 `DONE` 与 Goal 汇总时按 `(kind, ref_id)` 自动覆盖写入（`kind` 为 `card` / `goal`）。`GET /api/memories/search?q=&kind=&limit=` 按空格分词做关键词（`ILIKE`）检索，最多 5 个词、任一命中；`PATCH /api/memories/{id}` `{content?, tags?}`；`DELETE /api/memories/{id}`。暂无向量检索。
+
+## Windows 本机节点（重构 P4）
+
+- 节点 `resource_type` 新增 `windows_local`（`POST /api/pairing`、`POST /api/remote/nodes` 均可用）。Runner 在 Windows 上上报 `platform=windows`，以当前用户身份运行，无独立 UID；进程树由 Job Object 管理，取消/超时整树结束。
+- 卡片 `workdir`（`POST/PATCH /api/cards`，≤500 字符）：指定节点本机目录作为工作目录。必须同时指派 Bot（不进公共池）；Runner 只接受位于 `NIUCAI_WORKDIR_ALLOW`（按 `os.pathsep` 分隔的绝对路径）内且已存在的目录，否则 Attempt 失败。用户目录中的改动留在原地，不回传文件；依赖卡片的输入写在 Runner 工作区 `inputs/`，作为附加目录提供给引擎。
+- 白板 MCP 在 Windows 上改为回环 TCP 端口 + 每作业密钥（`NIUCAI_BOARD_SECRET`），打包后的 exe 用 `niucai-runner.exe board-mcp <address>` 子命令提供。
+- Desktop sidecar：`NIUCAI_RUNNER_STDIN_CONTROL=1` 时 Runner 从 stdin 读取 `drain`（停止领取、等当前作业结束后退出）和 `stop`（取消当前作业后退出）。Desktop 只在首次启动时传 `NIUCAI_PAIRING_CODE`，凭据保存在 `%LOCALAPPDATA%\niucai-runner\control\`，日志在同目录 `runner.log`（5 MB 轮转一份）。
+
+## Bot 的 skills 与 MCP 下发（重构 P5）
+
+- Bot 的 `skills` / `mcp_servers` 是 Kernel 托管定义（`/api/skills`、`/api/mcp/servers`）的名称列表。每次领取时 Kernel 把**已启用**的定义展开进 `config_snapshot`：`skills: [{name, description, content, version}]`、`mcp_servers: [{name, transport: stdio|http, config: {command, args, env} | {url, headers}}]`。解绑或停用后，下一次 Attempt 即不再带上；Pi Bot 不下发 MCP（创建时已拒绝绑定）。
+- MCP 定义里的值可写成 `env:NAME`，由 Runner 从节点环境变量解析，密钥不经过也不保存在 Kernel。缺少变量、名称不合法（`[A-Za-z0-9][A-Za-z0-9_-]{0,63}`，`niucai-board` 保留）或定义不合法的服务器整体跳过，并产生一条 `notice` 事件；`read` 档位不加载任何外部 MCP。
+- `GET /api/bots` 的视图新增 `missing_assets`（绑定了但不存在或已停用的名称，形如 `skill:x`、`mcp:y`）与 `node_env`（需在节点上设置的变量名），Desktop Bot 表单据此提示。
+- Runner 落地：skill 写到 `<data>/assets/<job>/.claude/skills/<name>/SKILL.md`（无 frontmatter 时补上），提示词列出每个 skill 的名称、描述与路径，作业结束后删除；Claude Code 另以 `--add-dir` 提供该目录。Claude Code 的 MCP 合并进 `--mcp-config` 文件（含外部 MCP 时写成 0600 文件，不进命令行）并加入 `--allowedTools mcp__<name>`；Codex 通过 `-c mcp_servers.<name>.*` 传入（已知限制：解析后的密钥出现在 Codex 的命令行参数中）。
+- 未实现：MCP 预热与状态上报、浏览器 Bot 迁移到 VPS 本机 CDP（§10.3）。
+
+## 旧执行链路开关（重构 P6）
+
+`NIUCAI_LEGACY_EXECUTION_ENABLED`（默认 `true`）。设为 `false` 后，Kernel 内执行的入口返回 409（“Kernel 内执行已关闭…请改用 Goal 或白板”）：`POST /api/tasks`、`POST /api/chat`、`POST /api/conversations/{id}/messages`，以及多 Bot 工作流、群聊、Routine 的新建。已在执行或等待收尾的任务照常完成；Goal、白板、节点与 Bot 不受影响。旧代码与表在 P6 实机验收通过后再删除（新迁移）。

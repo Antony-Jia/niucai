@@ -17,6 +17,7 @@ if "fcntl" not in sys.modules:  # runner.py is Linux-only; unit tests also run o
 spec = importlib.util.spec_from_file_location("node_runner", Path(__file__).parents[1] / "runner.py")
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
+runner.WINDOWS = False  # 这些用例覆盖 Linux 分支；Windows 分支见 test_windows_runner.py
 
 
 @pytest.fixture

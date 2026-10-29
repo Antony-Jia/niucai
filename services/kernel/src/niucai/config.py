@@ -48,6 +48,17 @@ class Settings(BaseSettings):
     handoff_timeout_seconds: int = Field(default=900, ge=1)
     routines_enabled: bool = False
     remote_lease_seconds: int = Field(default=30, ge=5, le=300)
+    # 白板 Attempt 断网后的宽限期：期间同一 Attempt 回来可续传事件，超时卡片重新排队。
+    card_lost_grace_seconds: int = Field(default=300, ge=30, le=3600)
+    # 编排 LLM（P3）：Goal 事件驱动的 planner 工具循环；关闭时不能创建 Goal。
+    orchestrator_enabled: bool = False
+    # P6：旧的 Kernel 内执行链路（对话 Task、多 Bot 工作流、Routine）。关闭后不再接收新的执行，
+    # 已在执行的任务照常收尾；新工作请走 Goal 与白板。验收通过后再删代码与表。
+    legacy_execution_enabled: bool = True
+    orchestrator_max_steps: int = Field(default=12, ge=1, le=50)
+    orchestrator_max_tool_calls: int = Field(default=30, ge=1, le=200)
+    orchestrator_runs_per_hour: int = Field(default=30, ge=1, le=1000)
+    orchestrator_lease_seconds: int = Field(default=600, ge=30, le=3600)
     artifact_max_file_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     artifact_max_item_bytes: int = Field(default=100 * 1024 * 1024, ge=1)
     artifact_upload_ttl_seconds: int = Field(default=3600, ge=60)

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from niucai.control.autonomy import normalize
 from niucai.control.conversations import ConversationManager, lock_conversation
 from niucai.control.progress import task_snapshot
-from niucai.control.tasks import require
+from niucai.control.tasks import require, require_legacy
 from niucai.storage.db import Artifact, Conversation, Event, Message, Task, as_dict, emit
 
 
@@ -121,6 +121,14 @@ def chat_router(db, settings, auth, injected_gateway=None):
 
     @router.post("/api/conversations/{conversation_id}/messages", status_code=202)
     def send(conversation_id: str, request: MessageCreate):
+        with db.sessions() as session:
+            target = session.get(Conversation, conversation_id)
+            if target and (target.settings or {}).get("mode") == "goal":
+                from niucai.control.tasks import Conflict
+
+                # Goal 由编排 LLM 处理，不能走旧的 Pi 对话链路。
+                raise Conflict("Goal 会话请使用 /api/goals/{id}/messages")
+        require_legacy(settings)
         if settings.multi_bot_enabled:
             from niucai.control.groups import send_group
 
@@ -135,6 +143,7 @@ def chat_router(db, settings, auth, injected_gateway=None):
             return send(
                 request.conversation_id, MessageCreate(content=request.content, client_id=request.client_id)
             )
+        require_legacy(settings)
         return response(
             manager.send(
                 request.conversation_id, request.content, request.client_id, computer_id=request.computer_id

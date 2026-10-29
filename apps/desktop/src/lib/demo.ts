@@ -43,6 +43,55 @@ const task = (
       ? { result: "已整理结果，文件保存在 workspace。" }
       : {},
 });
+const demoBots = [
+  { id: "demo-bot", name: "researcher", engine: "pi", enabled: true },
+];
+function demoCards() {
+  const card = (
+    id: string,
+    title: string,
+    status: string,
+    latest: string,
+    summary = "",
+  ) => ({
+    id,
+    title,
+    goal: title,
+    acceptance: "",
+    status,
+    assignee_bot_id: "demo-bot",
+    assignee_name: "researcher",
+    required_tags: [],
+    depends_on: [],
+    priority: 0,
+    review: "none",
+    attempts: status === "READY" ? 0 : 1,
+    version: 1,
+    budget: { max_attempts: 3 },
+    current_job: null,
+    latest: latest ? { kind: "progress", body: latest, at: stamp } : null,
+    summary,
+    created_at: stamp,
+    updated_at: stamp,
+  });
+  return [
+    card(
+      "demo-card-1",
+      "整理三个 Agent Harness 的对比",
+      "RUNNING",
+      "已读完 2/3 个仓库",
+    ),
+    card("demo-card-2", "确认对比维度", "BLOCKED", "需要确认是否包含成本"),
+    card(
+      "demo-card-3",
+      "列出候选项目",
+      "DONE",
+      "",
+      "已列出 5 个候选，选出 3 个",
+    ),
+    card("demo-card-4", "写成报告", "READY", ""),
+  ];
+}
 export function resetDemo() {
   tasks = [
     task(
@@ -151,10 +200,66 @@ export async function demoRequest(
           preview_url: "",
           paired_at: new Date().toISOString(),
           heartbeat_at: new Date().toISOString(),
-          bots: [],
+          bots: [
+            {
+              id: "demo-bot",
+              name: "researcher",
+              engine: "pi",
+              role: "调研",
+              enabled: true,
+              running: 1,
+              concurrency: 1,
+            },
+          ],
         },
       ],
     };
+  if (route === "/api/bots")
+    return [
+      {
+        id: "demo-bot",
+        name: "researcher",
+        node_id: "demo-vps",
+        node_name: "示例 VPS",
+        engine: "pi",
+        role: "调研",
+        instructions: "先列来源，再交叉核对。",
+        tags: ["research"],
+        model: "",
+        permission_profile: "workspace",
+        skills: [],
+        mcp_servers: [],
+        requires_approval: false,
+        concurrency: 1,
+        enabled: true,
+        running: 1,
+        config_version: 1,
+      },
+    ];
+  if (route === "/api/board")
+    return { cards: demoCards(), bots: demoBots, statuses: [] };
+  if (/^\/api\/cards\/[^/]+$/.test(route)) {
+    const card = demoCards().find((c) => c.id === route.split("/")[3]);
+    if (!card) throw new Error("卡片不存在");
+    return {
+      ...card,
+      result: card.summary ? { summary: card.summary } : {},
+      events: [
+        {
+          id: 1,
+          seq: 1,
+          kind: "status",
+          actor: "user",
+          body: "创建卡片",
+          mentions: [],
+          data: { to: "READY" },
+          created_at: stamp,
+        },
+      ],
+      runs: [],
+    };
+  }
+  if (/^\/api\/remote\/jobs\/[^/]+\/events$/.test(route)) return [];
   if (route === "/api/kanban")
     return {
       columns: [],
@@ -252,6 +357,28 @@ export async function demoRequest(
   }
   if (route === "/api/memories" && method === "GET")
     return structuredClone(memories);
+  if (route === "/api/memories/search") {
+    const params = new URLSearchParams(path.split("?")[1] || "");
+    const q = (params.get("q") || "").toLowerCase();
+    const kind = params.get("kind");
+    return structuredClone(
+      memories.filter(
+        (m) =>
+          (!kind || m.kind === kind) &&
+          (!q || m.content.toLowerCase().includes(q)),
+      ),
+    );
+  }
+  if (route.startsWith("/api/memories/") && method === "DELETE") {
+    memories = memories.filter((m) => m.id !== route.split("/")[3]);
+    return {};
+  }
+  if (route.startsWith("/api/memories/") && method === "PATCH") {
+    const m = memories.find((x) => x.id === route.split("/")[3]);
+    if (m) Object.assign(m, body);
+    return structuredClone(m);
+  }
+  if (route === "/api/goals") return [];
   if (route === "/api/memories" && data) {
     const m: Memory = {
       id: crypto.randomUUID(),

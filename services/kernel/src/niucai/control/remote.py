@@ -106,12 +106,12 @@ class RemoteManager:
         with self.db.sessions.begin() as s:
             scheduling_lock(s)
             self.expire(s)
-            occupied = {
-                j.node_id: {"id": j.id, "status": j.status}
-                for j in s.scalars(select(RemoteJob).where(RemoteJob.status.in_(ACTIVE)))
-            }
+            occupied, busy = {}, {}
+            for j in s.scalars(select(RemoteJob).where(RemoteJob.status.in_(ACTIVE))):
+                occupied.setdefault(j.node_id, {"id": j.id, "status": j.status})
+                busy[j.node_id] = busy.get(j.node_id, 0) + 1
             return [
-                {**self.node_view(n), "active_job": occupied.get(n.id)}
+                {**self.node_view(n), "active_job": occupied.get(n.id), "busy": busy.get(n.id, 0)}
                 for n in s.scalars(select(RemoteNode).order_by(RemoteNode.created_at))
             ]
 
@@ -171,6 +171,9 @@ class RemoteManager:
             if job.lease_until and job.lease_until < now():
                 job.status = "LOST"
                 job_event(s, job, "lost")
+        from niucai.control.cards import expire_cards
+
+        expire_cards(s, self.settings)
         nodes = list(s.scalars(select(RemoteNode)))
         occupied = {j.node_id for j in s.scalars(select(RemoteJob).where(RemoteJob.status.in_(ACTIVE)))}
         for job in s.scalars(select(RemoteJob).where(RemoteJob.status == "QUEUED")):
@@ -453,6 +456,7 @@ class RemoteManager:
             expected = capabilities.get("kernel_instance_id")
             ident = instance(s).instance_id
             return {
+                "slots": node.slots,
                 "enabled": bool(node.enabled)
                 and (not expected or expected == ident)
                 and capabilities.get("protocol_version", 1) in NODE_PROTOCOLS,
@@ -463,6 +467,12 @@ class RemoteManager:
 
     def authorized(self, s, job, node_id):
         """Snapshot pins configuration; current policy can revoke permissions at every boundary."""
+        if job.bot_id:
+            from niucai.storage.db import Bot
+
+            # 白板 Attempt：Bot 停用或迁走即撤销执行权。
+            bot = s.get(Bot, job.bot_id)
+            return bool(bot and bot.enabled and bot.node_id == node_id)
         if not job.parent_task_id:
             return True
         from niucai.control.bots import definition, permitted
@@ -498,11 +508,10 @@ class RemoteManager:
                 or node.heartbeat_at < (now() - timedelta(seconds=self.settings.remote_lease_seconds))
             ):
                 return None
-            if s.scalar(
-                select(RemoteJob.id)
-                .where(RemoteJob.node_id == node_id, RemoteJob.status.in_(ACTIVE))
-                .limit(1)
-            ):
+            from niucai.control.cards import claim_card, node_occupancy
+
+            # 节点并发上限：运行/取消中/LOST 的 Attempt 都占用槽位。
+            if node_occupancy(s, node_id) >= node.slots:
                 return None
             if node.capabilities.get("protocol_version", 1) not in NODE_PROTOCOLS:
                 return None
@@ -566,7 +575,7 @@ class RemoteManager:
                     and s.scalar(select(WorkItem.id).where(WorkItem.task_id == job.parent_task_id))
                 )
                 return claimed
-            return None
+            return claim_card(s, self.settings, node)
 
     @staticmethod
     def owned(s, node_id, job_id, attempt_id):
@@ -580,6 +589,9 @@ class RemoteManager:
             scheduling_lock(s)
             self.expire(s)
             job = self.owned(s, node_id, job_id, attempt_id)
+            from niucai.control.cards import revive
+
+            revive(s, job)
             parent = s.get(Task, job.parent_task_id) if job.parent_task_id else None
             node = require(s, RemoteNode, node_id)
             stop = (
@@ -602,6 +614,9 @@ class RemoteManager:
             scheduling_lock(s)
             self.expire(s)
             job = self.owned(s, node_id, job_id, attempt_id)
+            from niucai.control.cards import revive
+
+            revive(s, job)
             if job.status != "RUNNING":
                 raise Conflict("job is not running")
             if sequence <= job.event_sequence:
@@ -621,6 +636,9 @@ class RemoteManager:
             job = self.owned(s, node_id, job_id, attempt_id)
             if job.status in TERMINAL:
                 return as_dict(job)  # Lost HTTP response: do not publish twice.
+            from niucai.control.cards import job_finished, revive
+
+            revive(s, job)
             if job.status not in ACTIVE:
                 raise Conflict("job is not owned by an execution attempt")
             if not self.authorized(s, job, node_id) and job.status == "RUNNING":
@@ -673,6 +691,8 @@ class RemoteManager:
                 result = {**result, "artifacts": outputs}
             job.status, job.result, job.lease_until = status, result, None
             job_event(s, job, "finished", result=result)
+            if job.card_id:
+                job_finished(s, job)
             return as_dict(job)
 
     def artifact_content(self, node_id, job_id, attempt_id, artifact_id):

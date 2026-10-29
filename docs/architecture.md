@@ -80,3 +80,7 @@ OpenTelemetry span 和模型/动作事件沿用现有实现；默认不向外部
 ## 统一会话
 
 Chat 与 Task 已合并为长期会话入口；Task 是一次逻辑执行，TaskRun 是 Worker 租约。新会话的 Pi 卷按 Conversation ID 定位，无需每轮先生成计划。用户消息通过持久收件箱接入 Pi steering。具体职责、协议、迁移和兼容策略见 [统一会话架构](unified-conversations.md)。
+
+## 轻量 Kernel（重构中）
+
+新工作走 Goal 与白板：Kernel 保存状态、授权与编排 LLM，节点上的 Bot（Pi / Codex / Claude Code，VPS 或 Windows 本机）领取卡片执行并回报。上述 Task / Worker 内执行链路可用 `NIUCAI_LEGACY_EXECUTION_ENABLED=false` 关闭，验收通过后删除。详见 [轻量 Kernel 重构方案](kernel-lite-redesign.md)。

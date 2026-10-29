@@ -201,6 +201,9 @@ class Memory(Base):
     content: Mapped[str] = mapped_column(Text)
     tags: Mapped[list] = mapped_column(JSON, default=list)
     task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"))
+    # 白板记忆（P3）：kind=card 时 ref_id 为卡片，kind=goal 时为 Goal 会话；同一 ref 只保留一条。
+    ref_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    bot_id: Mapped[str | None] = mapped_column(String(36))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -388,8 +391,99 @@ class RemoteJob(Base):
     session_id: Mapped[str | None] = mapped_column(String(200))
     event_sequence: Mapped[int] = mapped_column(Integer, default=0)
     result: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 白板链路：一张卡的每次执行就是一条 remote_jobs（Attempt）。
+    card_id: Mapped[str | None] = mapped_column(ForeignKey("cards.id"), index=True)
+    bot_id: Mapped[str | None] = mapped_column(ForeignKey("bots.id"), index=True)
+    board_token_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
+class Bot(Base):
+    """节点上的一个执行者：引擎 + 角色 + 权限档位；白板卡片的领取单位。"""
+
+    __tablename__ = "bots"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    name: Mapped[str] = mapped_column(String(60), unique=True)
+    node_id: Mapped[str] = mapped_column(ForeignKey("remote_nodes.id"), index=True)
+    engine: Mapped[str] = mapped_column(String(20))
+    role: Mapped[str] = mapped_column(String(500), default="")
+    instructions: Mapped[str] = mapped_column(Text, default="")
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    model: Mapped[str] = mapped_column(String(200), default="")
+    permission_profile: Mapped[str] = mapped_column(String(20), default="workspace")
+    skills: Mapped[list] = mapped_column(JSON, default=list)
+    mcp_servers: Mapped[list] = mapped_column(JSON, default=list)
+    requires_approval: Mapped[int] = mapped_column(Integer, default=0)
+    concurrency: Mapped[int] = mapped_column(Integer, default=1)
+    config_version: Mapped[int] = mapped_column(Integer, default=1)
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
+class Card(Base):
+    """白板卡片；状态机见 control/cards.py，修改带 expected_version。"""
+
+    __tablename__ = "cards"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    conversation_id: Mapped[str | None] = mapped_column(ForeignKey("conversations.id"), index=True)
+    parent_card_id: Mapped[str | None] = mapped_column(ForeignKey("cards.id"))
+    title: Mapped[str] = mapped_column(String(200))
+    goal: Mapped[str] = mapped_column(Text, default="")
+    acceptance: Mapped[str] = mapped_column(Text, default="")
+    assignee_bot_id: Mapped[str | None] = mapped_column(ForeignKey("bots.id"), index=True)
+    required_tags: Mapped[list] = mapped_column(JSON, default=list)
+    depends_on: Mapped[list] = mapped_column(JSON, default=list)
+    inputs: Mapped[list] = mapped_column(JSON, default=list)
+    # 节点本地目录（如某个仓库）；Runner 只接受节点白名单内的目录，空串为节点托管工作区。
+    workdir: Mapped[str] = mapped_column(String(500), default="")
+    status: Mapped[str] = mapped_column(String(30), default="READY", index=True)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    review: Mapped[str] = mapped_column(String(10), default="none")
+    created_by: Mapped[str] = mapped_column(String(60), default="user")
+    current_job_id: Mapped[str | None] = mapped_column(String(36))
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    budget: Mapped[dict] = mapped_column(JSON, default=dict)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
+class OrchestratorRun(Base):
+    """编排 LLM 的一次运行：触发原因、工具调用、输出与用量；每个 Goal 同时最多一个 RUNNING。"""
+
+    __tablename__ = "orchestrator_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
+    triggers: Mapped[list] = mapped_column(JSON, default=list)
+    steps: Mapped[list] = mapped_column(JSON, default=list)
+    output: Mapped[str] = mapped_column(Text, default="")
+    usage: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class CardEvent(Base):
+    """卡片时间线：只追加；(card_id, seq) 单调递增。"""
+
+    __tablename__ = "card_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    card_id: Mapped[str] = mapped_column(ForeignKey("cards.id"), index=True)
+    seq: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(20))
+    actor: Mapped[str] = mapped_column(String(60))
+    mentions: Mapped[list] = mapped_column(JSON, default=list)
+    body: Mapped[str] = mapped_column(Text, default="")
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    idempotency_key: Mapped[str | None] = mapped_column(String(200), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    __table_args__ = (UniqueConstraint("card_id", "seq"),)
 
 
 Index("ix_tasks_claim", Task.status, Task.lease_until, Task.created_at)

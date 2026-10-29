@@ -304,8 +304,23 @@ class Worker:
                     await asyncio.to_thread(fire_due, self.db, self.settings)
                 await asyncio.sleep(self.settings.poll_seconds)
 
+        async def orchestrator():
+            from niucai.control.orchestrator import Orchestrator
+
+            engine = Orchestrator(self.db, self.settings, self.runtime.gateway)
+            while True:
+                try:
+                    if await engine.run_once():
+                        continue
+                except Exception:
+                    log.exception("orchestrator loop failed")
+                await asyncio.sleep(self.settings.poll_seconds)
+
         runners = [asyncio.create_task(slot()) for _ in range(self.settings.worker_slots)]
         runners.append(asyncio.create_task(scheduler()))
+        if self.settings.orchestrator_enabled:
+            # 编排运行与任务槽位分开：一个 Goal 的 LLM 循环不占用 Task 执行槽。
+            runners.append(asyncio.create_task(orchestrator()))
         try:
             await asyncio.gather(*runners)
         finally:

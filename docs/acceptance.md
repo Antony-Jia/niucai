@@ -32,6 +32,8 @@
 - YOLO 会话在真实浏览器上的连续自动执行与接管中断；真实模型调用 `bot_pipeline` 的拆分质量。
 - 依赖流程阶段分别绑定不同 VPS 节点时的跨节点产物交接；第三方 MCP 服务器（stdio/HTTP）兼容性。
 
+- 轻量 Kernel 重构（P1–P6）：真实模型驱动的 Goal 端到端（浏览器 Bot → 代码 Bot → 汇总）；PyInstaller 打包的 Windows Runner 在无 Python 机器上配对、领卡、取消与退出 drain；Codex Windows 沙箱参数与 Claude Code 复用登录；Claude Code 通过 `--add-dir` 加载下发的 skill；真实第三方 MCP 经 `env:NAME` 在节点解析；`NIUCAI_LEGACY_EXECUTION_ENABLED=false` 下的完整回归。
+
 不能把 fake adapter、mock LLM 或 SQLite 测试当作上述设备验收已通过。
 
 ## 交付范围

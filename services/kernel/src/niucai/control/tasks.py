@@ -41,11 +41,21 @@ def require(session, model, ident, lock=False):
     return row
 
 
+LEGACY_OFF = "Kernel 内执行已关闭（NIUCAI_LEGACY_EXECUTION_ENABLED=false），请改用 Goal 或白板"
+
+
+def require_legacy(settings):
+    """旧执行链路的统一入口闸门：关闭时拒绝新的 Kernel 内执行。"""
+    if not getattr(settings, "legacy_execution_enabled", True):
+        raise Conflict(LEGACY_OFF)
+
+
 class TaskManager:
     def __init__(self, db, settings):
         self.db, self.settings = db, settings
 
     def create(self, request: TaskCreate, *, unified=False):
+        require_legacy(self.settings)
         with self.db.sessions.begin() as s:
             from niucai.control.bots import active_agent
             from niucai.control.collaboration import gate

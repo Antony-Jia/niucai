@@ -1,5 +1,7 @@
 # 多 Bot 协作方案（参考 Grok Bot）
 
+> 注意：本文描述的 Kernel 内执行链路正被[轻量 Kernel 重构](kernel-lite-redesign.md)取代。新工作请使用 Goal、白板与节点 Bot；旧链路可用 `NIUCAI_LEGACY_EXECUTION_ENABLED=false` 关闭，验收通过后删除。
+
 状态：**B1–B5 代码已实现，部分实机验收待完成**。实现范围、测试结果、启用配置及 PostgreSQL/远程节点验证边界见 [2026-10-11 验收记录](multi-bot-validation-20261011.md)。
 
 目标：在不改变"Kernel 拥有状态与执行权"这一原则的前提下，把当前的单一 `main` Agent 扩展为多个持久化、有名字、有职责的 Bot。Bot 之间可以异步交接、在群聊中协作、并行执行，也可以按计划定时工作。

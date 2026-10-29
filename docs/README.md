@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-- [轻量 Kernel 与 Bot 白板重构方案](kernel-lite-redesign.md)：2026-10-29 拟议，P1 设备配对与拓扑已实现，其余未实现；Kernel 只保留状态、授权与编排 LLM，Bot（VPS / Windows 上的 Pi、Codex、Claude Code）通过白板领取卡片并回报结果，含设备配对、拓扑、skills/MCP 下发与 P0–P6 分阶段计划。落地后取代下列多 Bot 协作与 Kernel 内执行相关设计。
+- [轻量 Kernel 与 Bot 白板重构方案](kernel-lite-redesign.md)：2026-10-29，P1–P5 已实现（实机验收待完成），P6 仅加了旧链路开关；Kernel 只保留状态、授权与编排 LLM，Bot（VPS / Windows 上的 Pi、Codex、Claude Code）通过白板领取卡片并回报结果，含设备配对、拓扑、skills/MCP 下发与 P0–P6 分阶段计划。落地后取代下列多 Bot 协作与 Kernel 内执行相关设计。
 - [Kernel 任意位置部署与多 Bot 协作落地计划](kernel-anywhere-implementation-plan.md)：2026-10-13 方案；一期支持 Desktop 与 Kernel 同机，涵盖本地 Docker/VPS 接入、Bot 一次配置、主任务协作、分阶段实施与验收。
 
 第一阶段已完成真实远端浏览器任务、人工审批、桌面连接及只读浏览器预览的链路验证。

@@ -121,6 +121,13 @@ export const api = {
   memories: () => request<Memory[]>("/api/memories?limit=200"),
   createMemory: (content: string, kind: string, tags: string[]) =>
     request<Memory>("/api/memories", "POST", { content, kind, tags }),
+  searchMemories: (q: string, kind = "") =>
+    request<Memory[]>(
+      `/api/memories/search?limit=200&q=${encodeURIComponent(q)}${kind ? `&kind=${kind}` : ""}`,
+    ),
+  updateMemory: (id: string, changes: { content?: string; tags?: string[] }) =>
+    request<Memory>(`/api/memories/${id}`, "PATCH", changes),
+  deleteMemory: (id: string) => request(`/api/memories/${id}`, "DELETE"),
   artifacts: () => request<Artifact[]>("/api/artifacts?limit=200"),
   taskArtifacts: (id: string) =>
     request<Artifact[]>(`/api/tasks/${id}/artifacts`),
@@ -251,3 +258,21 @@ export async function downloadArtifact(id: string) {
   if (browserBridge) return browserBridge.downloadArtifact(id);
   return invoke<string | null>("download_artifact", { artifactId: id });
 }
+
+/** 本机 Windows Runner（Tauri sidecar）托管状态。 */
+export interface LocalRunnerStatus {
+  running: boolean;
+  wanted: boolean;
+  paired: boolean;
+  available: boolean;
+  dataDir: string;
+  lastError: string;
+  log: string;
+}
+export const localRunner = {
+  status: () => invoke<LocalRunnerStatus>("local_runner_status"),
+  start: (pairingCode: string | null, workdirAllow: string[]) =>
+    invoke<void>("local_runner_start", { pairingCode, workdirAllow }),
+  stop: (mode: "drain" | "now") => invoke<void>("local_runner_stop", { mode }),
+  forget: () => invoke<void>("local_runner_forget"),
+};

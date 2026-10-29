@@ -1,6 +1,6 @@
 # 轻量 Kernel 与 Bot 白板重构方案
 
-状态：**拟议；P1（设备配对、拓扑、Settings 新结构）已实现，P0、P2–P6 未实现**。本文是设计方案，文中的表、字段、接口、工具名都不代表现有能力。外部 CLI（Claude Code、Codex、Pi）的配置路径与命令行选项以实现时锁定版本的 `--help` 和实测为准。
+状态：**P1–P5 已实现并有自动化测试，P6 只完成“开关停用旧链路”这一步（删除代码与表待验收后进行），各阶段的实机验收均未完成；部分能力延后，见 §15 各阶段的“实现状态”**。本文是设计方案，文中的表、字段、接口、工具名都不代表现有能力。外部 CLI（Claude Code、Codex、Pi）的配置路径与命令行选项以实现时锁定版本的 `--help` 和实测为准。
 
 修订：2026-10-29，初稿。
 
@@ -516,29 +516,40 @@ Settings
 - 节点 `slots`、Bot `concurrency` 两层并发限制；卡片 `review` 字段（默认 `none`）。
 - 执行历史（§9.6）：卡片时间线、Attempt 事件流补传与去重、Desktop 卡片详情页。
 - 验收：用户手动建两张卡分给 VPS 上的 Codex Bot 和 Pi Bot，第二张依赖第一张的产物；两者都通过白板工具汇报，进度实时出现在 Desktop 和手机上；Runner 断网 1 分钟后恢复，事件完整补齐且不重复；把节点 `slots` 调为 2 后两张无依赖的卡并行执行。
+- 实现状态（2026-10-29）：迁移 `d6e21029d010`（`bots`、`cards`、`card_events`，`remote_jobs` 加 `card_id` / `bot_id` / `board_token_hash`）、`control/cards.py`、`api/board.py`、长轮询领取与两层并发、LOST 宽限期续接已完成并有测试（`tests/test_cards.py`）。Runner（`p2`）支持多作业并发（每作业一个台账 `control/active/<id>.json`）、事件发件箱断网重试、卡片工作区与依赖输入、Bot 模型覆盖，并以 `board_mcp.py`（标准库 stdio MCP 服务器）把白板工具接给 Claude Code / Codex：引擎经每作业的 Unix socket 调 Runner 代理，节点令牌与板令牌都不进入引擎进程。Desktop 新增“白板”页（建卡、指定 Bot、详情时间线与 Attempt 事件、批准/回答/验收/退回/重开/评论）和节点下的 Bot 增删改，拓扑图显示 Bot。接口见 [API](api.md#bot-与白板重构-p2)。
+- 与方案的差异 / 延后：
+  - 产物不走 `artifact_put` / `artifact_get` 工具：依赖卡片的文件随领取内联下发到 `inputs/<card_id>/`，结果文件仍随 finish 内联回传。
+  - Pi 暂不接白板工具（没有 MCP，扩展延后），Pi Bot 通过最终回答提交，进度来自引擎事件。
+  - Pi 的 Bot 模型覆盖只在节点 `models.json` 已定义该模型时生效（自定义 base_url 场景）。
+  - `skills` / `mcp_servers` 仅保存，下发在 P5（已实现）；`review=llm` 的卡片由 P3 编排 LLM 验收（已实现），编排关闭时停在 `REVIEW` 由用户验收。
+  - 手机 PWA 的白板页未做；验收场景中的断网、双槽位并行等实机验证待完成。
 
 ### P3 编排 LLM
 
 - `orchestrator_runs`、编排工具、触发器、预算。
 - 对话页改为 Goal：用户发一句话，编排 LLM 建卡、分配并汇总；指定 `review=llm` 的卡片由编排 LLM 验收。
 - 简单 Memory（§9.5）：自动写入、`memory_search`、Desktop Memory 页。
+- 实现状态（2026-10-29）：迁移 `e7a21029d011`（`orchestrator_runs`、`memories` 加 `kind` / `ref_id` 等）、`control/orchestrator.py`（事件驱动触发、同 Goal 运行合并、步数 / 工具调用 / 每小时运行数预算、租约）、`api/goals.py` 与 Desktop“目标”页已完成并有测试（`tests/test_orchestrator.py`）。Goal 是 `mode=goal` 的会话；Memory 在卡片完成与 Goal 汇总时自动写入，关键词检索。需 `NIUCAI_ORCHESTRATOR_ENABLED=true`。接口见 [API](api.md#goal编排-llm-与-memory重构-p3)。端到端验收（真实模型、浏览器 Bot、手机回答）待完成；手机 PWA 的 Goal 页未做。
 - 验收：一个需要"浏览器查资料 → 代码 Bot 写脚本 → 汇总"的目标端到端完成；Bot 提议被接受、拒绝各一次；`@user` 提问在手机上回答后继续执行；一张 `review=llm` 的卡被打回一次后通过；再次提出类似目标时，编排 LLM 能检索到上次的结论。
 
 ### P4 Windows Runner
 
 - 平台分支、Job Object、工作目录白名单。
 - 打包为单文件 exe 并作为 Tauri sidecar；Desktop"把本机加为节点"一键配对、启动、守护、退出时优雅停止。
+- 实现状态（2026-10-29）：Runner 平台分支（`win_job.py` Job Object、`NIUCAI_WORKDIR_ALLOW` 白名单、回环 TCP + 每作业密钥的白板 MCP、stdin `drain` / `stop` 控制）、卡片 `workdir`（迁移 `f8a21029d012`）、`resource_type=windows_local`；`services/node-runner/build-windows.ps1` 用 PyInstaller 打成单文件 exe 放到 `apps/desktop/src-tauri/binaries/`，`npm run desktop:build:runner` 打包为 sidecar；Desktop `src-tauri/src/local_node.rs` 负责启动、守护（2→60 秒退避重启，配对类致命错误不重启）、日志、退出时 drain，Settings“节点与 Bot”页的“本机节点”面板一键配对并提示安全边界；Windows 节点上新建的 Bot 默认“只读 + 需审批”。有自动化测试（Runner、Rust、vitest）。待实机验证：PyInstaller 构建、无 Python 机器上的完整流程、Codex Windows 沙箱参数、Claude Code 复用登录（不加 `--bare`）。
 - 验收：在一台只装了 Desktop 和 Claude Code / Codex CLI（没有 Python / uv）的 Windows 上，打开开关即完成配对；Claude Code 和 Codex 各完成一张指定本地仓库的卡，`slots=2` 时可同时运行；取消时进程树被完整结束；白名单外的目录被拒绝；强制结束 Runner 后卡片在租约过期后回到 `READY`。
 
 ### P5 Skills / MCP 下发与浏览器迁移
 
 - 配置落地（§10.2）、MCP 预热与状态上报、Bot 详情页绑定 skills / MCP。
 - 浏览器 Bot 迁移到 VPS 本机 CDP；节点 HTTPS 预览与 `preview_url` 上报。
+- 实现状态（2026-10-29）：Kernel 在每次领取时把 Bot 绑定且已启用的 skill / MCP 定义展开进 `config_snapshot`（不按 `config_version` 拉取，解绑后下一次 Attempt 即生效）；`env:NAME` 由 Runner 从节点环境变量解析，缺失则跳过该 MCP 并发出 `notice` 事件；`read` 档位不加载外部 MCP。skill 写到每作业的资产目录（Claude Code skill 目录结构），提示词列出路径，所有引擎都能读取；Claude Code 另以 `--add-dir` 提供。Bot 视图上报 `missing_assets` / `node_env`，Desktop 表单提示，Pi Bot 绑定 MCP 时提示“暂不支持”。与方案的差异 / 延后：不做 `<data>/bots/<bot-id>/` 常驻目录与 `/config` 拉取；MCP 预热与状态上报、浏览器 Bot 迁移到本机 CDP 与节点 HTTPS 预览（§10.3）未做；Codex 的 MCP 密钥经 `-c` 出现在命令行参数中。接口见 [API](api.md#bot-的-skills-与-mcp-下发重构-p5)。
 - 验收：给 Claude / Codex Bot 绑定一个 skill 和一个 MCP，下一张卡就能用上；解绑后不可用；浏览器 Bot 不经 relay 完成登录态网页任务；Desktop 直连节点打开预览。
 
 ### P6 下线旧链路
 
 - 按 §14 删除代码和表（新迁移），更新 `README.md`、`AGENTS.md`、`docs/architecture.md`、`docs/api.md`、`docs/acceptance.md`，并在被取代的旧文档顶部注明。
+- 实现状态（2026-10-29）：按 §14“先停调用、加开关”完成第一步：`NIUCAI_LEGACY_EXECUTION_ENABLED`（默认 `true`）为 `false` 时，对话 Task、多 Bot 工作流、群聊与 Routine 不再接收新的 Kernel 内执行（409），已有任务照常收尾。被取代的旧文档顶部已注明。删除代码与表、更新 `deploy/compose/verify-*.py` 留待 P1–P5 实机验收通过后进行。
 - 验收：全部测试通过；部署脚本 `deploy/compose/verify-*.py` 更新后通过。
 
 ## 16. 已决定事项（2026-10-29）

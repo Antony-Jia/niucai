@@ -1,8 +1,11 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Power, Trash2 } from "lucide-react";
-import { request } from "../lib/api";
+import { Pencil, Plus, Power, Trash2 } from "lucide-react";
+import { native, request } from "../lib/api";
+import { boardApi, type Bot } from "../lib/board";
 import { useApp, useData } from "../lib/state";
+import { BotForm } from "./BotForm";
+import { LocalNode } from "./LocalNode";
 import { Modal, time } from "./ui";
 
 export interface TopologyNode {
@@ -19,7 +22,15 @@ export interface TopologyNode {
   preview_url: string;
   paired_at: string | null;
   heartbeat_at: string | null;
-  bots: { id: string; name: string }[];
+  bots: {
+    id: string;
+    name: string;
+    engine: string;
+    role: string;
+    enabled: boolean;
+    running: number;
+    concurrency: number;
+  }[];
 }
 export interface Topology {
   kernel: { instance_id: string; remote_enabled: boolean };
@@ -35,6 +46,7 @@ const statusText = { ONLINE: "在线", OFFLINE: "离线", DISABLED: "已停用" 
 const typeText: Record<string, string> = {
   local_docker: "本地 Docker",
   remote_vps: "VPS",
+  windows_local: "本机 Windows",
   unspecified: "节点",
 };
 
@@ -57,7 +69,7 @@ export function runCommand(kernelUrl: string, code: string) {
   ].join("\n");
 }
 
-/** 放射状小拓扑：Kernel 居中，节点环绕；节点下的 Bot 从 P2 起显示。 */
+/** 放射状小拓扑：Kernel 居中，节点环绕，节点上的 Bot 以小点挂在外侧。 */
 export function TopologyMap({ topology }: { topology: Topology }) {
   const size = 320;
   const c = size / 2;
@@ -80,6 +92,28 @@ export function TopologyMap({ topology }: { topology: Topology }) {
             className={`topology-node ${node.status.toLowerCase()}`}
           >
             <line x1={c} y1={c} x2={x} y2={y} />
+            {node.bots.map((bot, j) => {
+              // Bot 沿节点外侧的小弧排开，最多画 6 个，其余在节点列表里看。
+              if (j >= 6) return null;
+              const b =
+                a + (j - (Math.min(node.bots.length, 6) - 1) / 2) * 0.45;
+              const bx = x + 34 * Math.cos(b);
+              const by = y + 34 * Math.sin(b);
+              return (
+                <g
+                  key={bot.id}
+                  className={`topology-bot ${bot.running ? "busy" : ""} ${bot.enabled ? "" : "disabled"}`}
+                >
+                  <line x1={x} y1={y} x2={bx} y2={by} />
+                  <circle cx={bx} cy={by} r={6}>
+                    <title>
+                      @{bot.name} · {bot.engine}
+                      {bot.running ? ` · 执行中 ${bot.running}` : ""}
+                    </title>
+                  </circle>
+                </g>
+              );
+            })}
             <circle cx={x} cy={y} r={22} />
             <text x={x} y={y + 38} textAnchor="middle">
               {node.name.length > 10 ? node.name.slice(0, 9) + "…" : node.name}
@@ -164,9 +198,6 @@ function AddNode({ onClose }: { onClose: () => void }) {
             <select value={type} onChange={(e) => setType(e.target.value)}>
               <option value="remote_vps">VPS（Docker）</option>
               <option value="local_docker">本机 Docker</option>
-              <option value="windows" disabled>
-                Windows（即将支持）
-              </option>
             </select>
           </label>
           <label>
@@ -220,44 +251,62 @@ export function NodesPanel() {
   const { notify, demo } = useApp();
   const cache = useQueryClient();
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<{
+    node: TopologyNode;
+    bot?: Bot;
+  } | null>(null);
   const topology = useData(["topology"], () =>
     request<Topology>("/api/topology"),
   );
+  const bots = useData(["bots"], boardApi.bots);
   async function act(action: () => Promise<unknown>) {
     try {
       await action();
-      await cache.invalidateQueries({ queryKey: ["topology"] });
+      await Promise.all([
+        cache.invalidateQueries({ queryKey: ["topology"] }),
+        cache.invalidateQueries({ queryKey: ["bots"] }),
+      ]);
     } catch (e) {
       notify(e instanceof Error ? e.message : String(e));
     }
   }
   const data = topology.data;
   const remoteOff = data && !data.kernel.remote_enabled;
+  const refresh = () =>
+    void cache.invalidateQueries({ queryKey: ["topology"] });
   return (
     <div className="nodes-layout">
-      <section className="panel">
-        <div className="section-heading">
-          <h2>拓扑</h2>
-          <button
-            className="primary"
-            disabled={!data || remoteOff || demo}
-            onClick={() => setAdding(true)}
-            aria-label="添加节点"
-          >
-            <Plus size={15} />
-            添加节点
-          </button>
-        </div>
-        {remoteOff && (
-          <p className="muted">
-            Kernel 未启用远程节点（NIUCAI_REMOTE_PI_ENABLED）。
-          </p>
-        )}
-        {data && <TopologyMap topology={data} />}
-        {data && data.nodes.length === 0 && (
-          <p className="muted">无可用 Bot：还没有节点，点击“添加节点”。</p>
-        )}
-      </section>
+      <div className="nodes-side">
+        <section className="panel">
+          <div className="section-heading">
+            <h2>拓扑</h2>
+            <button
+              className="primary"
+              disabled={!data || remoteOff || demo}
+              onClick={() => setAdding(true)}
+              aria-label="添加节点"
+            >
+              <Plus size={15} />
+              添加节点
+            </button>
+          </div>
+          {remoteOff && (
+            <p className="muted">
+              Kernel 未启用远程节点（NIUCAI_REMOTE_PI_ENABLED）。
+            </p>
+          )}
+          {data && <TopologyMap topology={data} />}
+          {data && data.nodes.length === 0 && (
+            <p className="muted">无可用bot：还没有节点，点击“添加节点”。</p>
+          )}
+          {data &&
+            data.nodes.length > 0 &&
+            data.nodes.every((n) => n.bots.length === 0) && (
+              <p className="muted">无可用bot：在节点下点击“添加 Bot”。</p>
+            )}
+        </section>
+        {native() && !demo && !remoteOff && <LocalNode onChange={refresh} />}
+      </div>
       <section className="panel">
         <h2>节点</h2>
         {data?.nodes.map((node) => (
@@ -278,6 +327,61 @@ export function NodesPanel() {
                   打开画面预览
                 </a>
               )}
+              <ul className="node-bots" aria-label={`${node.name} 上的 Bot`}>
+                {node.bots.map((summary) => {
+                  const bot = bots.data?.find((b) => b.id === summary.id);
+                  return (
+                    <li key={summary.id}>
+                      <span>
+                        @{summary.name} · {summary.engine}
+                        {summary.role && ` · ${summary.role}`}
+                        {` · ${summary.running}/${summary.concurrency}`}
+                        {!summary.enabled && " · 已停用"}
+                      </span>
+                      <button
+                        className="icon-button"
+                        aria-label={`编辑 ${summary.name}`}
+                        disabled={demo || !bot}
+                        onClick={() => setEditing({ node, bot })}
+                      >
+                        <Pencil size={13} />
+                      </button>
+                      <button
+                        className="icon-button"
+                        aria-label={`${summary.enabled ? "停用" : "启用"} ${summary.name}`}
+                        disabled={demo}
+                        onClick={() =>
+                          void act(() =>
+                            boardApi.updateBot(summary.id, {
+                              enabled: !summary.enabled,
+                            }),
+                          )
+                        }
+                      >
+                        <Power size={13} />
+                      </button>
+                      <button
+                        className="icon-button"
+                        aria-label={`删除 ${summary.name}`}
+                        disabled={demo}
+                        onClick={() => {
+                          if (confirm(`删除 Bot @${summary.name}？`))
+                            void act(() => boardApi.deleteBot(summary.id));
+                        }}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              <button
+                disabled={demo || !node.enabled}
+                onClick={() => setEditing({ node })}
+              >
+                <Plus size={14} />
+                添加 Bot
+              </button>
             </div>
             <div className="button-row">
               <label className="slots">
@@ -333,6 +437,17 @@ export function NodesPanel() {
           </article>
         ))}
       </section>
+      {editing && (
+        <BotForm
+          nodeId={editing.node.id}
+          engines={Object.entries(editing.node.engines)
+            .filter(([, e]) => e.available !== false)
+            .map(([name]) => name)}
+          bot={editing.bot}
+          platform={editing.node.platform}
+          onClose={() => setEditing(null)}
+        />
+      )}
       {adding && (
         <AddNode
           onClose={() => {

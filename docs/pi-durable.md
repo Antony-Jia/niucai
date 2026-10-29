@@ -1,5 +1,7 @@
 # Pi Durable 研究与 niucai 集成
 
+> 注意：本文描述的 Kernel 内执行链路正被[轻量 Kernel 重构](kernel-lite-redesign.md)取代。新工作请使用 Goal、白板与节点 Bot；旧链路可用 `NIUCAI_LEGACY_EXECUTION_ENABLED=false` 关闭，验收通过后删除。
+
 研究日期：2026-10-02。实际集成并锁定 `@earendil-works/pi-durable`、`pi-ai`、`chord` 的 **1.0.0**，不是另一个同名 Pi 项目。官方仍将 Durable 标为 Experimental，升级必须同时审阅恢复测试和存储格式，不能使用浮动版本直接更新生产会话。
 
 ## 适配判断

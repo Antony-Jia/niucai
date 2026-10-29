@@ -98,6 +98,17 @@ class Finished(Attempt):
         return self
 
 
+class BoardCall(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    args: dict = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def bounded(self):
+        if len(json.dumps(self.args).encode()) > 32000:
+            raise ValueError("board tool arguments exceed 32 KB")
+        return self
+
+
 class UploadStart(Attempt):
     filename: str = Field(min_length=1, max_length=200)
     size: int = Field(ge=0)
@@ -112,7 +123,7 @@ def remote_router(db, settings, auth):
     class NodeCreate(BaseModel):
         model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
         name: str = Field(min_length=1, max_length=200)
-        resource_type: Literal["local_docker", "remote_vps", "unspecified"] = "unspecified"
+        resource_type: Literal["local_docker", "remote_vps", "windows_local", "unspecified"] = "unspecified"
         connection: dict = Field(default_factory=dict)
 
         @model_validator(mode="after")
@@ -123,7 +134,7 @@ def remote_router(db, settings, auth):
     class NodeUpdate(BaseModel):
         model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
         name: str | None = Field(default=None, min_length=1, max_length=200)
-        resource_type: Literal["local_docker", "remote_vps", "unspecified"] | None = None
+        resource_type: Literal["local_docker", "remote_vps", "windows_local", "unspecified"] | None = None
         enabled: bool | None = None
         connection: dict | None = None
         slots: int | None = Field(default=None, ge=1, le=16)
@@ -240,8 +251,33 @@ def remote_router(db, settings, auth):
         )
 
     @router.post("/api/remote/runner/{node_id}/claim")
-    def claim(node_id: str = Depends(node_auth), authorization: str = Header()):
-        return manager.claim(node_id, sha256(authorization.removeprefix("Bearer ").encode()).hexdigest())
+    def claim(
+        node_id: str = Depends(node_auth),
+        authorization: str = Header(),
+        wait: int = Query(0, ge=0, le=25),
+    ):
+        import time
+
+        # 长轮询：最多挂起 wait 秒，每秒重试一次，有可领取的卡片/作业立即返回。
+        digest = sha256(authorization.removeprefix("Bearer ").encode()).hexdigest()
+        deadline = time.monotonic() + wait
+        while True:
+            claimed = manager.claim(node_id, digest)
+            if claimed or time.monotonic() >= deadline:
+                return claimed
+            time.sleep(1)
+
+    @router.post("/api/remote/runner/{node_id}/jobs/{job_id}/board/{tool}")
+    def board_tool(
+        job_id: str,
+        tool: str,
+        request: BoardCall,
+        node_id: str = Depends(node_auth),
+        board_token: str = Header(alias="X-Board-Token", min_length=1, max_length=200),
+    ):
+        from niucai.control.cards import CardManager
+
+        return CardManager(db, settings).board_call(node_id, job_id, board_token, tool, request.args)
 
     @router.post("/api/remote/runner/{node_id}/jobs/{job_id}/heartbeat")
     def heartbeat(job_id: str, request: Attempt, node_id: str = Depends(node_auth)):

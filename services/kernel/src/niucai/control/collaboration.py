@@ -58,6 +58,10 @@ def check_admission(session, settings, new_work=True):
         raise Conflict("all Bots are stopped")
     if not settings.multi_bot_enabled:
         raise Conflict("multi Bot collaboration is disabled")
+    if new_work:
+        from niucai.control.tasks import require_legacy
+
+        require_legacy(settings)
     from niucai.control.instance import instance
 
     if new_work and not instance(session).admission_enabled:
