@@ -50,6 +50,7 @@ interface State {
   switchTo: (key: string) => Promise<void>;
   removeSaved: (key: string) => Promise<void>;
   probe: () => Promise<void>;
+  retryConnection: () => Promise<void>;
   stream: string;
   synchronizing: boolean;
   notice: string;
@@ -156,6 +157,20 @@ function StateProvider({ children }: { children: ReactNode }) {
     },
     [cache, profile, refreshConnections],
   );
+  const retryConnection = useCallback(async () => {
+    setSynchronizing(true);
+    try {
+      await api.tasks();
+      setConnected(true);
+      setStream("轮询同步");
+      await cache.invalidateQueries();
+      setSynchronizing(false);
+      notify("Kernel 连接已恢复");
+    } catch (e) {
+      setStream("等待重连");
+      notify(e instanceof Error ? e.message : String(e));
+    }
+  }, [cache]);
   function explore() {
     void closeComputer()
       .then(() => {
@@ -297,6 +312,7 @@ function StateProvider({ children }: { children: ReactNode }) {
         removeSaved,
         probe,
         stream,
+        retryConnection,
         synchronizing,
         notice,
         notify,

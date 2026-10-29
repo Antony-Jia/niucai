@@ -77,11 +77,19 @@ export function Empty({
   );
 }
 export function ConnectionEmpty() {
-  const { setPage, explore } = useApp();
+  const { setPage, explore, profile } = useApp();
   return (
     <Empty
-      title="先连接你的 Personal Computer"
-      description="填入 Kernel 地址和连接凭据，即可查看任务、记忆和电脑状态。"
+      title={
+        profile?.base_url
+          ? "连接 Kernel 后继续"
+          : "先连接你的 Personal Computer"
+      }
+      description={
+        profile?.base_url
+          ? `当前地址：${profile.base_url}。在设置中检查地址、凭据或切换已保存连接。`
+          : "填入 Kernel 地址和连接凭据，即可查看任务、记忆和电脑状态。"
+      }
     >
       <div className="button-row">
         <button className="primary" onClick={() => setPage("settings")}>
@@ -102,7 +110,7 @@ export function Loading() {
 }
 export function ErrorNotice({ error }: { error: unknown }) {
   return error ? (
-    <div className="error-notice">
+    <div className="error-notice" role="alert">
       {error instanceof Error ? error.message : String(error)}
     </div>
   ) : null;

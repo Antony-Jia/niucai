@@ -84,3 +84,31 @@ Vite 中的示例模式用于界面测试，不证明真实任务执行成功。
 
 `local-logs/`、`local-client/`、`downloads/`、`secrets/`、`.env`、交付 ZIP 和 `niucai-delivery/` 均不提交、不进入 Docker 构建上下文。
 旧机器配置记录保留在本机；当前工程入口以 docs 为准。远端连接见 [部署文档](remote-deployment.md)。
+
+
+## 2026-10-29 客户端连接恢复与 Bots
+
+- 保存连接按 Kernel 实例标识去重，读取旧配置时使用最后保存的地址，避免旧端口遮盖新地址。Token 仍保存在 Windows 凭据管理器中。
+- 全局连接提示显示当前名称、地址、重新连接和设置入口；缓存数据为最后已知状态。
+- Bots 默认管理 `/api/bots` 节点 Bot，与白板和 Goal 使用同一套数据；历史 `/api/agents` 配置保留在“旧版协作”中，使用独立缓存键。
+- 新建 Bot 分为选择在线节点、配置角色两步；引擎取自节点实际能力。提供角色模板，默认折叠模型、技能、MCP 和并发配置。Windows 默认只读与开工审批保持不变。
+- Kernel 或节点不可用时不允许保存节点 Bot，当前打开的表单保留已填内容；错误在表单内展示。表单关闭或离开页面不会持久化草稿。
+
+- 会话专用 `workbench-layout` 仅作用于主内容区，不再给应用根节点切换主题类；侧栏、导航和顶栏在页面切换时共用同一组样式。
+
+## 本机 Windows 节点心跳
+
+本机 Runner 默认启用 Claude Code / Codex，不要求安装 Pi。Kernel 心跳接口接受
+`executor=pi/codex/claude/none`；protocol 3 的实际引擎与权限以 `executors` 为准，
+`none` 表示未启用引擎，不代表任何引擎可用。节点的目录白名单 `workdir_allow` 随能力保存。
+
+若配对成功后仍显示“离线 / 引擎未上报”，先查看
+`%LOCALAPPDATA%\niucai-runner\runner.log` 和 Kernel API 日志。
+旧 Kernel 只接受 `executor=pi`，会拒绝本机 Runner 心跳并返回 HTTP 422；需更新 Kernel API，
+无需重新配对或删除节点。引擎上报可用仍不代表模型已登录或真实任务已验证。
+
+Codex Windows 沙箱探测使用 `codex sandbox -- cmd /c exit 0`，没有 `windows` 子命令。
+旧探测命令会导致权限列表为空；修复后需重新构建 Runner sidecar 并重启本机节点。
+2026-10-29 本机验证：Codex `0.165.0-alpha.1.2` 沙箱探测成功，心跳提供
+`read/workspace`；Claude Code `2.1.307` 上报同样两个档位。此记录仅验证节点与引擎能力，
+未验证真实模型任务完成。

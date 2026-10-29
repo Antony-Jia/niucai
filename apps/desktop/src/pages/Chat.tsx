@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Plus } from "lucide-react";
 import { api, request } from "../lib/api";
-import type { Bot } from "./Bots";
+import type { Bot } from "./LegacyBots";
 import { useApp, useCommand, useData } from "../lib/state";
 import { ConnectionEmpty, ErrorNotice, Badge } from "../components/ui";
 import { TaskDetail } from "./Tasks";
@@ -94,7 +94,7 @@ export function Chat({
   const { connected, synchronizing } = useApp();
   const conversations = useData(["conversations"], api.conversations);
   const computers = useData(["computers"], api.computers);
-  const bots = useData(["bots"], () => request<Bot[]>("/api/agents"));
+  const bots = useData(["legacy-agents"], () => request<Bot[]>("/api/agents"));
   const collaboration = useData(["collaboration-status"], () =>
     request<{ enabled: boolean }>("/api/collaboration/status"),
   );

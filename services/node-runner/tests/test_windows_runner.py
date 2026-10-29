@@ -105,6 +105,21 @@ def test_resolve_command_rejects_cmd_metacharacters(monkeypatch):
         runner.resolve_command(["claude"])
 
 
+def test_codex_windows_sandbox_probe_uses_direct_command(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner.shutil, "which", lambda name: r"C:\npm\codex.cmd")
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return types.SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(runner.subprocess, "run", run)
+    engine = object.__new__(runner.CodexEngine)
+    engine.home = tmp_path
+    assert engine.probe_sandbox() == "engine"
+    assert calls == [[r"C:\npm\codex.cmd", "sandbox", "--", "cmd", "/c", "exit", "0"]]
+
+
 def test_workdir_allowlist(tmp_path, monkeypatch):
     project = tmp_path / "allowed" / "project"
     project.mkdir(parents=True)

@@ -156,7 +156,8 @@ def remote_router(db, settings, auth):
         sandbox: Literal["engine", "container", ""] = ""
 
     class Capabilities(BaseModel):
-        executor: Literal["pi"] = "pi"
+        # Windows Runner 可以只安装 Codex / Claude；none 表示未启用任何引擎。
+        executor: Literal["pi", "codex", "claude", "none"] = "pi"
         available: bool
         executors: dict[Literal["pi", "codex", "claude"], ExecutorStatus] | None = None
         version: str = Field(default="", max_length=100)
@@ -166,6 +167,7 @@ def remote_router(db, settings, auth):
         node_model: dict[str, str] = Field(default_factory=dict)
         platform: Literal["linux", "windows", "macos"] | None = None
         runner_version: str | None = Field(default=None, max_length=50)
+        workdir_allow: list[str] = Field(default_factory=list, max_length=20)
         preview_url: str | None = Field(default=None, max_length=500)
 
         @model_validator(mode="after")

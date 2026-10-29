@@ -78,6 +78,16 @@ fn default_name(base: &str) -> String {
         None => base.to_string(),
     }
 }
+// 同一实例重新配置地址时以最后一次保存为准，避免旧端口抢占当前连接。
+fn normalize_store(mut store: Store) -> Store {
+    let mut seen = std::collections::HashSet::new();
+    store.profiles.reverse();
+    store
+        .profiles
+        .retain(|p| seen.insert(profile_key(p).to_string()));
+    store.profiles.reverse();
+    store
+}
 // connections.json 保存多条连接（不含 Token）；旧版 connection.json 在首次读取时迁入。
 fn read_store(app: &tauri::AppHandle) -> Store {
     let Ok(directory) = app.path().app_config_dir() else {
@@ -87,7 +97,7 @@ fn read_store(app: &tauri::AppHandle) -> Store {
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Store>(&bytes).ok())
     {
-        return store;
+        return normalize_store(store);
     }
     fs::read(directory.join("connection.json"))
         .ok()
@@ -946,6 +956,14 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn latest_address_wins_for_same_kernel() {
+        let store: Store = serde_json::from_str(r#"{"active":"k","profiles":[{"base_url":"http://127.0.0.1:18080","computer_url":"","remember_token":true,"kernel_instance_id":"k"},{"base_url":"http://127.0.0.1:8080","computer_url":"","remember_token":true,"kernel_instance_id":"k"}]}"#).unwrap();
+        let normalized = normalize_store(store);
+        assert_eq!(normalized.profiles.len(), 1);
+        assert_eq!(normalized.profiles[0].base_url, "http://127.0.0.1:8080");
+        assert_eq!(normalized.active, "k");
+    }
     #[test]
     fn only_local_main_webview_has_kernel_access() {
         assert!(trusted_labels("main", "main").is_ok());

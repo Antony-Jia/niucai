@@ -248,7 +248,7 @@ function AddNode({ onClose }: { onClose: () => void }) {
 }
 
 export function NodesPanel() {
-  const { notify, demo } = useApp();
+  const { notify, demo, synchronizing } = useApp();
   const cache = useQueryClient();
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<{
@@ -260,6 +260,10 @@ export function NodesPanel() {
   );
   const bots = useData(["bots"], boardApi.bots);
   async function act(action: () => Promise<unknown>) {
+    if (synchronizing) {
+      notify("请等待 Kernel 恢复连接后再操作节点");
+      return;
+    }
     try {
       await action();
       await Promise.all([

@@ -284,6 +284,40 @@ def test_runner_heartbeat_accepts_protocol3_executors_over_http(setup):
     assert manager.nodes()[0]["engines"]["codex"]["sandbox"] == "container"
 
 
+@pytest.mark.parametrize("executor", ["codex", "claude", "none"])
+def test_windows_runner_without_pi_can_report_engines(setup, executor):
+    manager = remote(setup)
+    value = manager.create_node("Windows node", "windows_local")
+    engines = {} if executor == "none" else {executor: {"available": True, "profiles": ["read", "workspace"]}}
+    body = {
+        "executor": executor,
+        "available": bool(engines),
+        "protocol_version": 3,
+        "executors": engines,
+        "platform": "windows",
+        "workdir_allow": [r"D:\Projects"],
+    }
+    with TestClient(create_app(setup[1], setup[0])) as client:
+        response = client.post(
+            f"/api/remote/runner/{value['id']}/heartbeat",
+            headers={"Authorization": f"Bearer {value['token']}"},
+            json=body,
+        )
+        assert response.status_code == 200
+        body["executor"] = "unknown"
+        assert (
+            client.post(
+                f"/api/remote/runner/{value['id']}/heartbeat",
+                headers={"Authorization": f"Bearer {value['token']}"},
+                json=body,
+            ).status_code
+            == 422
+        )
+    reported = manager.nodes()[0]
+    assert set(reported["engines"]) == set(engines)
+    assert reported["capabilities"]["workdir_allow"] == [r"D:\Projects"]
+
+
 def test_permission_profile_is_validated_stored_and_part_of_idempotency(setup):
     manager = remote(setup)
     with pytest.raises(ValueError):

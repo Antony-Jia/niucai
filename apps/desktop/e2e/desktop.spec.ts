@@ -13,7 +13,7 @@ test("desktop demo renders unified pages and takes control", async ({
   await page.screenshot({ path: "test-results/dashboard.png", fullPage: true });
   for (const name of ["Files", "Memory", "Settings", "会话"]) {
     await page
-      .getByRole("button", { name: new RegExp(`^${name} [1-5]$`) })
+      .getByRole("button", { name: new RegExp(`^${name} [0-9]+$`) })
       .click();
     await expect(page.locator("h1")).toBeVisible();
   }

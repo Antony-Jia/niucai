@@ -587,9 +587,9 @@ class CodexEngine:
     def probe_sandbox(self):
         if not shutil.which("codex"):
             return "container"
-        # Windows 沙箱子命令以锁定的 CLI 版本实测为准；探测失败即视为不可用。
+        # Windows CLI 直接接受命令参数（没有 windows 子命令）；探测失败即视为不可用。
         probe = (
-            ["codex", "sandbox", "windows", "cmd", "/c", "exit", "0"]
+            ["codex", "sandbox", "--", "cmd", "/c", "exit", "0"]
             if WINDOWS
             else ["codex", "sandbox", "--", "/bin/true"]
         )

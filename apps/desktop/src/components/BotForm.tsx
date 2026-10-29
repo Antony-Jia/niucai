@@ -29,8 +29,14 @@ export function BotForm({
   bot,
   platform = "",
   onClose,
+  onBack,
+  nodeName,
+  unavailable = false,
 }: {
   nodeId: string;
+  nodeName?: string;
+  unavailable?: boolean;
+  onBack?: () => void;
   engines: string[];
   bot?: Bot;
   platform?: string;
@@ -38,7 +44,7 @@ export function BotForm({
 }) {
   // Windows 节点以用户身份运行，没有容器隔离：新 Bot 默认只读并需人工审批。
   const windows = platform === "windows";
-  const { notify } = useApp();
+  const { notify, synchronizing } = useApp();
   const cache = useQueryClient();
   const available = (["pi", "codex", "claude"] as Engine[]).filter(
     (e) => engines.includes(e) || bot?.engine === e,
@@ -58,9 +64,13 @@ export function BotForm({
     concurrency: bot?.concurrency ?? 1,
   });
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const blocked = unavailable || synchronizing || available.length === 0;
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
   async function save() {
+    if (busy || blocked) return;
+    setError("");
     setBusy(true);
     const config: BotConfig = {
       ...form,
@@ -81,9 +91,10 @@ export function BotForm({
         cache.invalidateQueries({ queryKey: ["bots"] }),
         cache.invalidateQueries({ queryKey: ["board"] }),
       ]);
+      notify(bot ? "Bot 已更新" : "Bot 已创建，可以到白板分配卡片");
       onClose();
     } catch (e) {
-      notify(e instanceof Error ? e.message : String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -96,6 +107,66 @@ export function BotForm({
           void save();
         }}
       >
+        <div className="bot-form-context">
+          <small className="eyebrow">
+            {bot ? "BOT SETTINGS" : "STEP 02 / 02"}
+          </small>
+          <p>
+            执行节点：<strong>{nodeName || nodeId}</strong>
+          </p>
+          {onBack && (
+            <button type="button" onClick={onBack}>
+              更换节点
+            </button>
+          )}
+        </div>
+        {blocked && (
+          <p className="connection-help" role="status">
+            连接或节点暂不可用。已填写内容保留在当前窗口，恢复后可继续保存。
+          </p>
+        )}
+        {!bot && (
+          <div className="bot-templates" role="group" aria-label="角色模板">
+            {[
+              {
+                name: "通用助手",
+                role: "通用执行助手",
+                tags: "general",
+                instructions:
+                  "先确认目标与验收标准，按步骤完成卡片；遇到阻碍及时提问，提交结果与依据。",
+              },
+              {
+                name: "资料研究",
+                role: "研究与资料整理",
+                tags: "research, docs",
+                instructions:
+                  "围绕卡片目标收集资料，标注来源与不确定性，提交结构清楚的结论。",
+              },
+              {
+                name: "开发助手",
+                role: "开发与验证",
+                tags: "coding",
+                instructions:
+                  "阅读现有实现后完成卡片要求，保持改动聚焦，验证行为并报告结果。",
+              },
+            ].map((t) => (
+              <button
+                key={t.name}
+                type="button"
+                onClick={() =>
+                  setForm((f) => ({
+                    ...f,
+                    role: t.role,
+                    instructions: t.instructions,
+                    tags: t.tags,
+                  }))
+                }
+              >
+                {t.name}
+              </button>
+            ))}
+          </div>
+        )}
         <label>
           名称（用于 @ 提及）
           <input
@@ -149,14 +220,6 @@ export function BotForm({
           />
         </label>
         <label>
-          模型（留空用节点默认）
-          <input
-            maxLength={200}
-            value={form.model}
-            onChange={(e) => set("model", e.target.value)}
-          />
-        </label>
-        <label>
           权限
           <select
             value={form.permission_profile}
@@ -171,43 +234,54 @@ export function BotForm({
             ))}
           </select>
         </label>
-        <label>
-          技能
-          <input
-            value={form.skills}
-            onChange={(e) => set("skills", e.target.value)}
-            placeholder="技能名，逗号分隔"
-          />
-        </label>
-        <label>
-          MCP 服务器
-          <input
-            value={form.mcp_servers}
-            onChange={(e) => set("mcp_servers", e.target.value)}
-            placeholder="MCP 服务器名，逗号分隔"
-          />
-          {form.engine === "pi" && splitList(form.mcp_servers).length > 0 && (
-            <small className="error-text">Pi Bot 暂不支持 MCP</small>
-          )}
-          {!!bot?.node_env?.length && (
-            <small>需在节点上设置环境变量：{bot.node_env.join(", ")}</small>
-          )}
-          {!!bot?.missing_assets?.length && (
-            <small className="error-text">
-              未找到或已停用：{bot.missing_assets.join(", ")}
-            </small>
-          )}
-        </label>
-        <label>
-          并发
-          <input
-            type="number"
-            min={1}
-            max={16}
-            value={form.concurrency}
-            onChange={(e) => set("concurrency", Number(e.target.value))}
-          />
-        </label>
+        <details className="bot-advanced">
+          <summary>高级配置 · 模型、技能与并发</summary>
+          <label>
+            模型（留空用节点默认）
+            <input
+              maxLength={200}
+              value={form.model}
+              onChange={(e) => set("model", e.target.value)}
+            />
+          </label>
+          <label>
+            技能
+            <input
+              value={form.skills}
+              onChange={(e) => set("skills", e.target.value)}
+              placeholder="技能名，逗号分隔"
+            />
+          </label>
+          <label>
+            MCP 服务器
+            <input
+              value={form.mcp_servers}
+              onChange={(e) => set("mcp_servers", e.target.value)}
+              placeholder="MCP 服务器名，逗号分隔"
+            />
+            {form.engine === "pi" && splitList(form.mcp_servers).length > 0 && (
+              <small className="error-text">Pi Bot 暂不支持 MCP</small>
+            )}
+            {!!bot?.node_env?.length && (
+              <small>需在节点上设置环境变量：{bot.node_env.join(", ")}</small>
+            )}
+            {!!bot?.missing_assets?.length && (
+              <small className="error-text">
+                未找到或已停用：{bot.missing_assets.join(", ")}
+              </small>
+            )}
+          </label>
+          <label>
+            并发
+            <input
+              type="number"
+              min={1}
+              max={16}
+              value={form.concurrency}
+              onChange={(e) => set("concurrency", Number(e.target.value))}
+            />
+          </label>
+        </details>
         <label className="checkbox">
           <input
             type="checkbox"
@@ -216,11 +290,24 @@ export function BotForm({
           />
           每张卡片执行前需要我批准
         </label>
-        <div className="button-row">
-          <button type="button" onClick={onClose}>
+        {error && (
+          <p className="error-notice" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="button-row bot-form-actions">
+          <button type="button" disabled={busy} onClick={onClose}>
             取消
           </button>
-          <button className="primary" disabled={busy || !form.name.trim()}>
+          <button
+            className="primary"
+            disabled={
+              busy ||
+              blocked ||
+              !form.name.trim() ||
+              (form.engine === "pi" && splitList(form.mcp_servers).length > 0)
+            }
+          >
             {busy ? "正在保存…" : "保存"}
           </button>
         </div>

@@ -1257,76 +1257,22 @@ footer span:last-child {
 .desktop-app .recent-session.selected {
   background: #243832;
 }
-.workbench-mode {
-  background: #f9fafb;
-  color: #26313d;
-}
-.workbench-mode .sidebar {
-  background: #f3f5f7;
-  border-color: #e0e5eb;
-  padding: 22px 12px;
-  width: 204px;
-}
-.workbench-mode .main {
-  margin-left: 204px;
-  width: calc(100% - 204px);
+
+.main.workbench-layout {
   height: 100vh;
   min-height: 650px;
 }
-.workbench-mode .brand-mark {
-  color: #455f91;
-}
-.workbench-mode .brand-mark span {
-  background: #455f91;
-}
-.workbench-mode .brand small,
-.workbench-mode .sidebar-section {
-  color: #8993a3;
-}
-.workbench-mode .nav-item {
-  color: #657080;
-  padding: 10px 12px;
-  margin-bottom: 2px;
-}
-.workbench-mode .nav-item.active,
-.workbench-mode .recent-session.selected {
-  background: #e5ebf5;
-  color: #365b92;
-}
-.workbench-mode .sidebar-bottom {
-  border-color: #e0e5eb;
-}
-.workbench-mode .topbar {
-  background: #fff;
-  border-color: #e3e7ed;
-  height: 54px;
-  min-height: 54px;
-  padding: 0 22px;
-}
-.workbench-mode .topbar strong {
-  color: #37455a;
-}
-.workbench-mode .page-content {
+
+.workbench-layout .page-content {
   padding: 0;
   max-width: none;
   min-height: 0;
   overflow: hidden;
 }
-.workbench-mode footer {
+.workbench-layout footer {
   display: none;
 }
-.workbench-mode .demo-banner {
-  margin: 0;
-  border-radius: 0;
-  border: 0;
-  border-bottom: 1px solid #eee3bf;
-  background: #fff8e5;
-  color: #8a753e;
-  padding: 7px 22px;
-}
-.workbench-mode .demo-banner button {
-  color: #8a753e;
-}
+
 .workbench {
   height: 100%;
   display: grid;
@@ -1705,13 +1651,6 @@ footer span:last-child {
   display: none;
 }
 @media (max-width: 1150px) {
-  .workbench-mode .sidebar {
-    width: 170px;
-  }
-  .workbench-mode .main {
-    margin-left: 170px;
-    width: calc(100% - 170px);
-  }
   .workbench {
     grid-template-columns: minmax(310px, 0.9fr) minmax(340px, 1.1fr);
   }
@@ -1723,21 +1662,6 @@ footer span:last-child {
   }
 }
 
-.workbench-mode .recent-session {
-  color: #4d5b6e;
-}
-.workbench-mode .nav-item:hover,
-.workbench-mode .recent-session:hover {
-  background: #e8edf3;
-  color: #365b92;
-}
-.workbench-mode .sidebar-bottom p,
-.workbench-mode .sync-status {
-  color: #788597;
-}
-.workbench-mode .sidebar-bottom .text-button {
-  color: #5676a0;
-}
 .workbench .badge {
   flex: none;
   background: #eef2f6;

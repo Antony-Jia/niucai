@@ -49,6 +49,7 @@ export function App() {
     profile,
     stream,
     synchronizing,
+    retryConnection,
     notice,
     notify,
   } = useApp();
@@ -95,9 +96,7 @@ export function App() {
     extensions: Extensions,
   }[page];
   return (
-    <div
-      className={`app-shell desktop-app ${page === "computer" ? "workbench-mode" : ""}`}
-    >
+    <div className="app-shell desktop-app">
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
@@ -112,6 +111,7 @@ export function App() {
           {navigation.map(({ id, label, icon: Icon }, i) => (
             <button
               key={id}
+              aria-label={`${label} ${i + 1}`}
               aria-current={page === id ? "page" : undefined}
               className={page === id ? "nav-item active" : "nav-item"}
               onClick={() => setPage(id)}
@@ -169,7 +169,7 @@ export function App() {
           <ChevronRight size={14} />
         </button>
       </aside>
-      <main className="main">
+      <main className={`main ${page === "computer" ? "workbench-layout" : ""}`}>
         <div className="topbar">
           <span>
             Personal workspace <ChevronRight size={13} />
@@ -183,8 +183,11 @@ export function App() {
             <button
               className="icon-button"
               aria-label="刷新"
+              title="刷新当前 Kernel 数据"
               disabled={!connected}
-              onClick={() => void cache.invalidateQueries()}
+              onClick={() =>
+                stale ? void retryConnection() : void cache.invalidateQueries()
+              }
             >
               <RefreshCw size={16} />
             </button>
@@ -200,8 +203,19 @@ export function App() {
           </div>
         )}
         {stale && (
-          <div className="demo-banner" role="status">
-            连接中断或正在同步，当前显示最后已知状态；服务器上的任务可能仍在执行。
+          <div className="connection-banner" role="status">
+            <div>
+              <strong>Kernel 连接待恢复</strong>
+              <p>
+                {profile?.name || "当前连接"} ·{" "}
+                {profile?.base_url || "地址待配置"}
+              </p>
+              <small>当前显示最后已知状态，服务器上的任务可能仍在执行。</small>
+            </div>
+            <div className="button-row">
+              <button onClick={() => void retryConnection()}>重新连接</button>
+              <button onClick={() => setPage("settings")}>检查连接设置</button>
+            </div>
           </div>
         )}
         <div className="page-content">
