@@ -16,6 +16,15 @@ const engineText: Record<Engine, string> = {
   codex: "Codex",
   claude: "Claude Code",
 };
+const effortText: Record<string, string> = {
+  off: "关闭",
+  minimal: "极低",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "极高",
+  max: "最高",
+};
 const profileText: Record<PermissionProfile, string> = {
   read: "只读",
   workspace: "工作区内读写",
@@ -27,6 +36,7 @@ export function BotForm({
   nodeId,
   engines,
   models = {},
+  efforts = {},
   bot,
   platform = "",
   onClose,
@@ -41,6 +51,8 @@ export function BotForm({
   engines: string[];
   /** 节点心跳上报的每个引擎可选模型；没有上报时退回手填。 */
   models?: Record<string, string[]>;
+  /** 节点心跳上报的每个引擎可选推理强度；没有上报时不显示该选项。 */
+  efforts?: Record<string, string[]>;
   bot?: Bot;
   platform?: string;
   onClose: () => void;
@@ -59,6 +71,7 @@ export function BotForm({
     instructions: bot?.instructions ?? "",
     tags: bot?.tags.join(", ") ?? "",
     model: bot?.model ?? "",
+    reasoning_effort: bot?.reasoning_effort ?? "",
     permission_profile:
       bot?.permission_profile ?? (windows ? "read" : "workspace"),
     skills: bot?.skills.join(", ") ?? "",
@@ -70,6 +83,7 @@ export function BotForm({
   const [error, setError] = useState("");
   const blocked = unavailable || synchronizing || available.length === 0;
   const modelChoices = models[form.engine] ?? [];
+  const effortChoices = efforts[form.engine] ?? [];
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
   async function save() {
@@ -193,6 +207,11 @@ export function BotForm({
                 ...f,
                 engine,
                 model: (models[engine] ?? []).includes(f.model) ? f.model : "",
+                reasoning_effort: (efforts[engine] ?? []).includes(
+                  f.reasoning_effort,
+                )
+                  ? f.reasoning_effort
+                  : "",
               }));
             }}
           >
@@ -275,6 +294,28 @@ export function BotForm({
               />
             )}
           </label>
+          {effortChoices.length > 0 && (
+            <label>
+              推理强度
+              <select
+                value={form.reasoning_effort}
+                onChange={(e) => set("reasoning_effort", e.target.value)}
+              >
+                <option value="">引擎默认</option>
+                {form.reasoning_effort &&
+                  !effortChoices.includes(form.reasoning_effort) && (
+                    <option value={form.reasoning_effort}>
+                      {form.reasoning_effort}（节点未上报）
+                    </option>
+                  )}
+                {effortChoices.map((v) => (
+                  <option key={v} value={v}>
+                    {effortText[v] ?? v}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label>
             技能
             <input

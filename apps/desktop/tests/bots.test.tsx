@@ -171,3 +171,40 @@ it("keeps a saved model the node no longer reports and falls back to a text box"
   );
   expect(screen.getByLabelText("模型").tagName).toBe("INPUT");
 });
+
+it("offers reasoning effort only when the node reports it and resets it per engine", async () => {
+  const { BotForm } = await import("../src/components/BotForm");
+  const view = render(
+    <QueryClientProvider client={new QueryClient()}>
+      <BotForm
+        nodeId="n1"
+        engines={["pi", "claude"]}
+        efforts={{ pi: ["off", "high"], claude: ["low", "high"] }}
+        onClose={() => {}}
+      />
+    </QueryClientProvider>,
+  );
+  const effort = () => screen.getByLabelText("推理强度") as HTMLSelectElement;
+  expect([...effort().options].map((o) => o.value)).toEqual([
+    "",
+    "off",
+    "high",
+  ]);
+  fireEvent.change(effort(), { target: { value: "off" } });
+  fireEvent.change(screen.getByLabelText("引擎"), {
+    target: { value: "claude" },
+  });
+  expect([...effort().options].map((o) => o.value)).toEqual([
+    "",
+    "low",
+    "high",
+  ]);
+  expect(effort().value).toBe("");
+  view.unmount();
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <BotForm nodeId="n1" engines={["pi"]} onClose={() => {}} />
+    </QueryClientProvider>,
+  );
+  expect(screen.queryByLabelText("推理强度")).toBeNull();
+});

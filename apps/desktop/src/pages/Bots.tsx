@@ -10,7 +10,11 @@ import {
   Modal,
 } from "../components/ui";
 import { BotForm } from "../components/BotForm";
-import { engineModels, type Topology } from "../components/NodesPanel";
+import {
+  engineEfforts,
+  engineModels,
+  type Topology,
+} from "../components/NodesPanel";
 import { boardApi, type Bot as NodeBot } from "../lib/board";
 import { request } from "../lib/api";
 import { useApp } from "../lib/state";
@@ -303,6 +307,7 @@ export function Bots({
                 .filter(([, e]) => e.available)
                 .map(([k]) => k)}
               models={engineModels(node.engines)}
+              efforts={engineEfforts(node.engines)}
               platform={node.platform}
               bot={editing}
               unavailable={!ready || node.status !== "ONLINE" || !node.enabled}

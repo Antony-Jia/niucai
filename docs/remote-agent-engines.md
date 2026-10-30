@@ -255,3 +255,16 @@ Desktop：已结束的 Codex / Claude 作业详情出现「继续此会话」，
 | Claude | `NIUCAI_CLAUDE_MODELS`；未配置自定义 `NIUCAI_CLAUDE_BASE_URL` 时附带别名 `sonnet` / `opus` / `haiku` |
 
 边界：模型清单只是“建议值”，Runner 不会向模型服务验证它们是否真的可用；卡片级模型选择未实现，目前只能按 Bot 选择。
+
+## Bot 推理强度
+
+Bot 的 `reasoning_effort`（空表示引擎默认）随 Attempt 的 `config_snapshot.bot.reasoning_effort` 下发；Runner 只在该引擎支持这个取值时才传参，否则忽略并用引擎默认。心跳 `executors.<engine>.efforts` 上报该引擎接受的取值，Desktop 的 Bot 表单据此渲染"推理强度"下拉，未上报时不显示。
+
+| 引擎 | 取值 | CLI 参数 |
+|---|---|---|
+| Pi | off / minimal / low / medium / high / xhigh / max | `--thinking <level>` |
+| Codex | low / medium / high / xhigh | `-c model_reasoning_effort="<level>"` |
+| Claude | low / medium / high / xhigh / max | `--effort <level>` |
+
+边界：取值表按各 CLI 的帮助文本整理，部分模型可能不支持某些档位，这时由引擎自己报错或降级；该字段是 Bot 级，没有卡片级覆盖。数据库新增 `bots.reasoning_effort`（迁移 `fb021029d015`）。
+

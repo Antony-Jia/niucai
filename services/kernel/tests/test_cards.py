@@ -336,6 +336,15 @@ def test_bot_skills_and_mcp_servers_reach_snapshot(setup):
     ]
 
 
+def test_bot_reasoning_effort_reaches_snapshot_and_bumps_config_version(setup):
+    db, settings, remote, cards, node = board(setup)
+    coder = bot(cards, node, reasoning_effort="high")
+    assert coder["reasoning_effort"] == "high"
+    assert cards.update_bot(coder["id"], {"reasoning_effort": "low"})["config_version"] == 2
+    card(cards)
+    assert remote.claim(node["id"])["config_snapshot"]["bot"]["reasoning_effort"] == "low"
+
+
 def test_attempt_budget_counts_rejects_and_reopen_resets(setup):
     db, settings, remote, cards, node = board(setup)
     bot(cards, node, engine="pi")

@@ -16,6 +16,14 @@ export const engineModels = (
     Object.entries(engines).map(([name, e]) => [name, e.models ?? []]),
   );
 
+/** 节点心跳上报的各引擎可选推理强度。 */
+export const engineEfforts = (
+  engines: Record<string, { efforts?: string[] }>,
+): Record<string, string[]> =>
+  Object.fromEntries(
+    Object.entries(engines).map(([name, e]) => [name, e.efforts ?? []]),
+  );
+
 export interface TopologyNode {
   id: string;
   name: string;
@@ -26,7 +34,10 @@ export interface TopologyNode {
   enabled: boolean;
   slots: number;
   busy: number;
-  engines: Record<string, { available?: boolean; models?: string[] }>;
+  engines: Record<
+    string,
+    { available?: boolean; models?: string[]; efforts?: string[] }
+  >;
   preview_url: string;
   paired_at: string | null;
   heartbeat_at: string | null;
@@ -473,6 +484,7 @@ export function NodesPanel() {
             .filter(([, e]) => e.available !== false)
             .map(([name]) => name)}
           models={engineModels(editing.node.engines)}
+          efforts={engineEfforts(editing.node.engines)}
           bot={editing.bot}
           platform={editing.node.platform}
           onClose={() => setEditing(null)}

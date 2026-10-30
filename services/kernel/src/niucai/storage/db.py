@@ -425,6 +425,7 @@ class Bot(Base):
     instructions: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[list] = mapped_column(JSON, default=list)
     model: Mapped[str] = mapped_column(String(200), default="")
+    reasoning_effort: Mapped[str] = mapped_column(String(20), default="", server_default="")
     permission_profile: Mapped[str] = mapped_column(String(20), default="workspace")
     skills: Mapped[list] = mapped_column(JSON, default=list)
     mcp_servers: Mapped[list] = mapped_column(JSON, default=list)

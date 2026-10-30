@@ -7,6 +7,8 @@ from niucai.control.cards import CardManager
 
 Engine = Literal["pi", "codex", "claude"]
 Profile = Literal["read", "workspace", "full"]
+# 各引擎支持的子集不同，由 Runner 在心跳里上报并在执行时再过滤。
+Effort = Literal["", "off", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 
 def not_null(model):
@@ -21,6 +23,7 @@ class BotFields(BaseModel):
     instructions: str = Field(default="", max_length=32000)
     tags: list[str] = Field(default_factory=list, max_length=20)
     model: str = Field(default="", max_length=200)
+    reasoning_effort: Effort = ""
     # 省略时由 Kernel 按节点平台给默认值：Windows 本机节点为 read + 需审批，其它为 workspace + 免审批。
     permission_profile: Profile | None = None
     skills: list[str] = Field(default_factory=list, max_length=32)
@@ -44,6 +47,7 @@ class BotUpdate(BaseModel):
     instructions: str | None = Field(default=None, max_length=32000)
     tags: list[str] | None = Field(default=None, max_length=20)
     model: str | None = Field(default=None, max_length=200)
+    reasoning_effort: Effort | None = None
     permission_profile: Profile | None = None
     skills: list[str] | None = Field(default=None, max_length=32)
     mcp_servers: list[str] | None = Field(default=None, max_length=32)

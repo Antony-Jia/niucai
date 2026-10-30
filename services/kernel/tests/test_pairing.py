@@ -69,7 +69,7 @@ def test_heartbeat_publishes_selectable_models_per_engine(setup):
         "available": True,
         "protocol_version": 3,
         "executors": {
-            "pi": {"available": True, "model": "a", "models": ["a", "b"]},
+            "pi": {"available": True, "model": "a", "models": ["a", "b"], "efforts": ["low", "high"]},
             "claude": {"available": True},
         },
     }
@@ -77,6 +77,8 @@ def test_heartbeat_publishes_selectable_models_per_engine(setup):
     [entry] = api.get("/api/topology", headers=auth).json()["nodes"]
     assert entry["engines"]["pi"]["models"] == ["a", "b"]
     assert entry["engines"]["claude"]["models"] == []  # 旧 Runner 不上报时是空列表
+    assert entry["engines"]["pi"]["efforts"] == ["low", "high"]
+    assert entry["engines"]["claude"]["efforts"] == []
 
     beat["executors"]["pi"]["models"] = ["x" * 201]
     assert api.post(url, json=beat, headers=node_auth).status_code == 422

@@ -153,6 +153,8 @@ def remote_router(db, settings, auth):
         model: str = Field(default="", max_length=200)
         # 节点上这个引擎可选的模型；Desktop 的 Bot 表单据此给下拉选项。
         models: list[Annotated[str, Field(max_length=200)]] = Field(default_factory=list, max_length=50)
+        # 这个引擎接受的推理强度（Pi thinking / Codex reasoning effort / Claude effort）。
+        efforts: list[str] = Field(default_factory=list, max_length=10)
         profiles: list[str] = Field(default_factory=list, max_length=8)
         reason: str = Field(default="", max_length=100)
         sandbox: Literal["engine", "container", ""] = ""

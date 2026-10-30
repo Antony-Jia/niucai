@@ -143,6 +143,7 @@ def test_codex_status_reports_reason_without_leaking_credentials(codex, monkeypa
         "version": "0.164.0",
         "model": "gpt-test",
         "models": ["gpt-test"],
+        "efforts": ["low", "medium", "high", "xhigh"],
         "profiles": ["read", "workspace"],
         "sandbox": "engine",
     }
@@ -428,6 +429,7 @@ def test_claude_status_reports_reason_without_leaking_credentials(claude, monkey
         "version": "2.1.307",
         "model": "claude-test",
         "models": ["claude-test", "sonnet", "opus", "haiku"],
+        "efforts": ["low", "medium", "high", "xhigh", "max"],
         "profiles": ["read", "workspace"],
         "sandbox": "container",
     }
@@ -691,3 +693,34 @@ def test_codex_models_come_from_env_or_its_own_cache(codex, tmp_path, monkeypatc
     assert runner.codex_cached_models() == ["gpt-a"]
     (tmp_path / "models_cache.json").write_text("{broken", encoding="utf-8")
     assert runner.codex_cached_models() == []
+
+
+def snapshot_with(effort):
+    return {"config_snapshot": {"bot": {"reasoning_effort": effort}}}
+
+
+def test_job_effort_only_passes_values_the_engine_supports():
+    assert runner.job_effort(snapshot_with("high"), "codex") == "high"
+    assert runner.job_effort(snapshot_with("max"), "codex") == ""  # Codex 没有 max
+    assert runner.job_effort(snapshot_with("off"), "claude") == ""  # Claude 没有 off
+    assert runner.job_effort(snapshot_with("off"), "pi") == "off"
+    assert runner.job_effort(snapshot_with("high; rm -rf"), "pi") == ""
+    assert runner.job_effort(None, "pi") == ""
+
+
+def test_each_engine_turns_the_bot_effort_into_its_own_flag(tmp_path, codex, claude, monkeypatch):
+    monkeypatch.setattr(runner.os, "chown", lambda *a: None, raising=False)
+    monkeypatch.setattr(runner.os, "fchown", lambda *a: None, raising=False)
+    monkeypatch.setenv("NIUCAI_PI_MODEL", "pi-model")
+    pi = runner.PiEngine(tmp_path)
+    job = snapshot_with("high")
+    args = pi.command(tmp_path / "s", job)
+    assert args[args.index("--thinking") + 1] == "high"
+    assert 'model_reasoning_effort="high"' in codex.command(tmp_path / "s", job)
+    args = claude.command(tmp_path / "s", job)
+    assert args[args.index("--effort") + 1] == "high"
+    for engine in (pi, codex, claude):
+        flags = " ".join(engine.command(tmp_path / "s", snapshot_with("")))
+        assert "--thinking" not in flags and "reasoning_effort" not in flags and "--effort" not in flags
+        assert engine.status()["efforts"] == list(runner.EFFORTS[engine.name])
+

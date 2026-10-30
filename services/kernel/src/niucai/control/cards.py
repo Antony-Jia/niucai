@@ -50,6 +50,7 @@ BOT_CONFIG = (
     "instructions",
     "tags",
     "model",
+    "reasoning_effort",
     "permission_profile",
     "skills",
     "mcp_servers",
@@ -399,7 +400,13 @@ def start_attempt(s, settings, card, bot, node):
     snapshot = {
         "permission_profile": bot.permission_profile,
         "instructions": bot.instructions,
-        "bot": {"id": bot.id, "name": bot.name, "role": bot.role, "model": bot.model},
+        "bot": {
+            "id": bot.id,
+            "name": bot.name,
+            "role": bot.role,
+            "model": bot.model,
+            "reasoning_effort": bot.reasoning_effort,
+        },
         "config_version": bot.config_version,
         "card": {"id": card.id, "title": card.title},
         # 同一张卡的所有 Attempt 共用一个工作区，续接会话与产物都在其中。

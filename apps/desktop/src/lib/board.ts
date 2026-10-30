@@ -22,6 +22,8 @@ export interface BotConfig {
   instructions: string;
   tags: string[];
   model: string;
+  /** 空表示用引擎默认；可选值由节点心跳上报。 */
+  reasoning_effort?: string;
   permission_profile: PermissionProfile;
   skills: string[];
   mcp_servers: string[];

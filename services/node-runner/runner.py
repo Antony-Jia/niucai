@@ -226,6 +226,21 @@ def job_model(job, default):
     return model
 
 
+# 各引擎 CLI 接受的推理强度（Pi --thinking、Codex model_reasoning_effort、Claude --effort）。
+EFFORTS = {
+    "pi": ("off", "minimal", "low", "medium", "high", "xhigh", "max"),
+    "codex": ("low", "medium", "high", "xhigh"),
+    "claude": ("low", "medium", "high", "xhigh", "max"),
+}
+
+
+def job_effort(job, engine):
+    """Bot 级推理强度（快照 bot.reasoning_effort）；空或该引擎不支持时不传参数，用引擎默认。"""
+    snapshot = (job or {}).get("config_snapshot") or {}
+    effort = str((snapshot.get("bot") or {}).get("reasoning_effort") or "")
+    return effort if effort in EFFORTS[engine] else ""
+
+
 MODEL_LIST_LIMIT = 50
 # Claude Code 的 --model 接受这些别名；自定义接口地址后别名未必有对应模型，所以那时不提供。
 CLAUDE_ALIASES = ("sonnet", "opus", "haiku")
@@ -562,7 +577,7 @@ class PiEngine:
         }
 
     def status(self):
-        return {"available": True, "version": "1.1.0", "model": self.model, "models": self.models}
+        return {"available": True, "version": "1.1.0", "model": self.model, "models": self.models, "efforts": list(EFFORTS["pi"])}
 
     def environment(self):
         # Runner credentials are never inherited by Pi; Pi runs under another Unix UID.
@@ -606,6 +621,7 @@ class PiEngine:
             self.provider,
             "--model",
             job_model(job, self.model),
+            *(["--thinking", effort] if (effort := job_effort(job, "pi")) else []),
             "--session",
             str(session),
             "--no-extensions",
@@ -767,6 +783,7 @@ class CodexEngine:
             "version": self.version,
             "model": self.model,
             "models": self.models,
+            "efforts": list(EFFORTS["codex"]),
             "profiles": self.profiles,
             "sandbox": self.sandbox,
         }
@@ -823,6 +840,8 @@ class CodexEngine:
         ]
         if model := job_model(job, self.model):
             args += ["-m", model]
+        if effort := job_effort(job, "codex"):
+            args += ["-c", f'model_reasoning_effort="{effort}"']
         if board:
             server = board_server_config(board)
             args += [
@@ -1015,6 +1034,7 @@ class ClaudeEngine:
             "version": self.version,
             "model": self.model,
             "models": self.models,
+            "efforts": list(EFFORTS["claude"]),
             "profiles": self.profiles,
             "sandbox": self.sandbox,
         }
@@ -1093,6 +1113,8 @@ class ClaudeEngine:
             args += ["--permission-mode", "bypassPermissions"]
         if model := job_model(job, self.model):
             args += ["--model", model]
+        if effort := job_effort(job, "claude"):
+            args += ["--effort", effort]
         if self.budget:
             args += ["--max-budget-usd", self.budget]
         return args
