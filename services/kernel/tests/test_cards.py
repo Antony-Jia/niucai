@@ -61,6 +61,28 @@ def test_bot_crud_validation_and_config_version(setup):
     assert cards.delete_bot(spare["id"]) == {"deleted": spare["id"]}
 
 
+def test_hermes_bot_has_no_mcp_and_defaults_to_workspace_profile(setup):
+    db, settings, remote, cards, node = board(setup)
+    remote.node_heartbeat(
+        node["id"],
+        {
+            "available": True,
+            "protocol_version": 3,
+            "platform": "windows",
+            "executors": {
+                **ENGINES,
+                "hermes": {"available": True, "sandbox": "remote", "profiles": ["workspace"]},
+            },
+        },
+    )
+    with pytest.raises(ValueError, match="Hermes"):
+        bot(cards, node, name="remote-bot", engine="hermes", mcp_servers=["fs"])
+    hermes = bot(cards, node, name="remote-bot", engine="hermes")
+    # Windows 节点的其它引擎默认只读，而 Hermes 的 Runner 只接受 workspace。
+    assert hermes["engine"] == "hermes" and hermes["permission_profile"] == "workspace"
+    assert remote.nodes()[0]["engines"]["hermes"]["sandbox"] == "remote"
+
+
 def remote_topology_bots(setup):
     db, settings, *_ = setup
     from niucai.control.pairing import PairingManager

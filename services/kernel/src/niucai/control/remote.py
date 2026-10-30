@@ -11,7 +11,9 @@ from niucai.storage.db import Event, RemoteJob, RemoteNode, Task, as_dict, emit,
 
 ACTIVE = {"RUNNING", "CANCELLING", "LOST"}
 TERMINAL = {"COMPLETED", "FAILED", "CANCELLED", "DENIED"}
-ENGINES = ("pi", "codex", "claude")
+ENGINES = ("pi", "codex", "claude", "hermes")
+# 不经 MCP 接白板工具的引擎：Pi 用 Runner 扩展，Hermes 在别处运行；两者都以最终回答交付，也不下发 Bot 的 MCP。
+NO_MCP_ENGINES = ("pi", "hermes")
 PROFILES = ("read", "workspace", "full")
 NODE_PROTOCOLS = {1, 2, 3}
 

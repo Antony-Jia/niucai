@@ -11,7 +11,7 @@ from hashlib import sha256
 
 from sqlalchemy import func, select
 
-from niucai.control.remote import ACTIVE, ENGINES, PROFILES, TERMINAL, engine_ready, job_event
+from niucai.control.remote import ACTIVE, ENGINES, NO_MCP_ENGINES, PROFILES, TERMINAL, engine_ready, job_event
 from niucai.control.tasks import Conflict, require
 from niucai.storage.db import (
     Bot,
@@ -422,7 +422,7 @@ def start_attempt(s, settings, card, bot, node):
     # P5：skill 正文与 MCP 定义随 Attempt 下发，Runner 按引擎落地；解绑后下一次 Attempt 即不再带上。
     if assets["skills"]:
         snapshot["skills"] = assets["skills"]
-    if assets["mcp_servers"] and bot.engine != "pi":
+    if assets["mcp_servers"] and bot.engine not in NO_MCP_ENGINES:
         snapshot["mcp_servers"] = assets["mcp_servers"]
     if (
         card.result.get("resume")
@@ -443,7 +443,9 @@ def start_attempt(s, settings, card, bot, node):
             bot,
             inputs,
             since,
-            bot.engine != "pi" or "pi-board" in (node.capabilities or {}).get("features", []),
+            # Hermes 在别处运行，用不了本节点的白板工具，和旧 Runner 上的 Pi 一样以最终回答交付。
+            bot.engine not in NO_MCP_ENGINES
+            or (bot.engine == "pi" and "pi-board" in (node.capabilities or {}).get("features", [])),
         ),
         engine=bot.engine,
         idempotency_key=f"card:{card.id}:{card.attempts + 1}:{uid()}",
@@ -543,8 +545,8 @@ class CardManager:
             raise ValueError(f"unknown engine: {values['engine']}")
         if "permission_profile" in values and values["permission_profile"] not in PROFILES:
             raise ValueError(f"unknown permission profile: {values['permission_profile']}")
-        if values.get("engine") == "pi" and values.get("mcp_servers"):
-            raise ValueError("Pi Bot 暂不支持 MCP，请改用 Claude / Codex Bot")
+        if values.get("engine") in NO_MCP_ENGINES and values.get("mcp_servers"):
+            raise ValueError("Pi / Hermes Bot 暂不支持 MCP，请改用 Claude / Codex Bot")
         if "node_id" in values:
             require(s, RemoteNode, values["node_id"])
 
@@ -555,7 +557,8 @@ class CardManager:
             node = s.get(RemoteNode, values["node_id"])
             local = is_windows_node(node)
             values = {
-                "permission_profile": "read" if local else "workspace",
+                # Hermes 的权限由远端部署决定，节点只提供 workspace 档位。
+                "permission_profile": "read" if local and values.get("engine") != "hermes" else "workspace",
                 "requires_approval": local,
                 **values,
             }

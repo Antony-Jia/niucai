@@ -66,7 +66,7 @@ class JobCreate(BaseModel):
     allowed_nodes: list[str] = Field(default_factory=list, max_length=32)
     parent_task_id: str | None = None
     artifacts: list[dict] = Field(default_factory=list, max_length=16)
-    engine: Literal["pi", "codex", "claude"] | None = None
+    engine: Literal["pi", "codex", "claude", "hermes"] | None = None
     permission_profile: Literal["read", "workspace", "full"] | None = None
     resume_job_id: str | None = Field(default=None, min_length=1, max_length=36)
 
@@ -157,13 +157,14 @@ def remote_router(db, settings, auth):
         efforts: list[str] = Field(default_factory=list, max_length=10)
         profiles: list[str] = Field(default_factory=list, max_length=8)
         reason: str = Field(default="", max_length=100)
-        sandbox: Literal["engine", "container", ""] = ""
+        # remote：引擎（Hermes）在别处运行，隔离由其部署决定。
+        sandbox: Literal["engine", "container", "remote", ""] = ""
 
     class Capabilities(BaseModel):
         # Windows Runner 可以只安装 Codex / Claude；none 表示未启用任何引擎。
-        executor: Literal["pi", "codex", "claude", "none"] = "pi"
+        executor: Literal["pi", "codex", "claude", "hermes", "none"] = "pi"
         available: bool
-        executors: dict[Literal["pi", "codex", "claude"], ExecutorStatus] | None = None
+        executors: dict[Literal["pi", "codex", "claude", "hermes"], ExecutorStatus] | None = None
         version: str = Field(default="", max_length=100)
         protocol_version: int | None = Field(default=None, ge=1)
         kernel_instance_id: str | None = Field(default=None, max_length=36)

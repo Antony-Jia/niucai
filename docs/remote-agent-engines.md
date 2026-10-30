@@ -1,4 +1,4 @@
-# 远程节点多执行引擎（Pi / Claude Code / Codex）
+# 远程节点多执行引擎（Pi / Claude Code / Codex / Hermes）
 
 状态：**拟议，未实现**。本文是设计方案，文中的字段、工具参数和命令行选项都不代表现有能力；外部 CLI 的选项与事件格式以实现时锁定版本的 `--help` 与实际输出为准。
 
@@ -162,7 +162,7 @@ Kernel 将 protocol 1/2 节点视为 `executors = {"pi": ...}`。`claim()` 中�
 
 V1 不改工具名，避免牵动 `permitted(..., "remote_pi_submit")`、固定资源规则和上下文编译器：
 
-- `remote_pi_submit` 新增可选参数 `engine`（`pi` | `codex` | `claude`，缺省 `pi`）和 `permission_profile`。
+- `remote_pi_submit` 新增可选参数 `engine`（`pi` | `codex` | `claude` | `hermes`，缺省 `pi`）和 `permission_profile`。
 - `remote_pi_nodes` 返回每个节点的 `executors`，编排者据此选择引擎。
 - 工具描述补充选择建议：编码、重构、修改测试类任务优先 `codex` / `claude`；需要 Pi 工具链或产物约定的任务用 `pi`。最终由模型决定，Kernel 只校验是否允许。
 
@@ -268,3 +268,33 @@ Bot 的 `reasoning_effort`（空表示引擎默认）随 Attempt 的 `config_sna
 
 边界：取值表按各 CLI 的帮助文本整理，部分模型可能不支持某些档位，这时由引擎自己报错或降级；该字段是 Bot 级，没有卡片级覆盖。数据库新增 `bots.reasoning_effort`（迁移 `fb021029d015`）。
 
+
+## Hermes 引擎（远端 Hermes Agent）
+
+状态：代码已实现。线格式已对照 Hermes 0.22.2 真实 API Server 的返回核对（事件名在 SSE `data` 的 `event` 字段里而非 `event:` 行，`message.delta` 用 `delta`，`run.completed` 带 `output` 与 `usage`，`GET /v1/runs/<id>` 返回 `status` / `output` / `session_id` / `usage`），单测使用同格式载荷；**尚未用真实 Hermes 跑过完整的 niucai 作业**。桥接程序仍只把 SSE 当进度流，最终回答取自 `GET /v1/runs/<id>` 的 `output`。新建运行时总是传 `session_id`（`niucai-<attempt>`，续接时用上次的），Hermes 会原样回显。
+
+`NIUCAI_HERMES_URL` 写到反代前缀为止，**不要带 `/v1`**（如 `https://host/niucai-api`），桥接程序自己追加 `/v1/runs`。Hermes 重启后要等一会儿才监听端口，期间发起的作业会连接失败并按普通失败处理，可重试。
+
+Hermes 与其它引擎的不同：它运行在别处（自己的机器或容器），Runner 不安装它，只通过它的 API Server（`/v1/runs`）发起运行。因此：
+
+- **结果只有文本**：Hermes 看不到节点工作区，文件不会回传；提示词前缀会要求它把完整结果写进最终回答。卡片也只能靠最终回答交付，Hermes Bot 不挂白板 MCP 工具、不下发技能。
+- **不接 MCP**：Bot 配了 `mcp_servers` 会被 Kernel 拒绝（与 Pi 一样，`NO_MCP_ENGINES`）。
+- **权限只有 `workspace` 档位**：`read` / `full` 在节点上无法落实，Runner 直接拒绝；Windows 节点上 Hermes Bot 的默认档位因此是 `workspace`。心跳上报 `sandbox: "remote"`，真实隔离取决于 Hermes 部署，`requires_approval` 仍然生效（内核批准的是“工作包 + 引擎”）。
+- **没有按作业的模型 / 推理强度**：`/v1/runs` 不接受这两个参数，由 Hermes 自己的 profile 决定；Bot 表单不显示这两项。
+- **Hermes 要求审批时作业失败**：无人值守无法批准，桥接程序会 `POST /v1/runs/<id>/stop` 并让作业失败。请给 niucai 使用单独的 Hermes profile，放宽该 profile 的审批策略。
+- **取消**：杀掉本地桥接进程不会停止远端运行，所以桥接程序把 run id 写入 `<会话>.hermes-run`，作业非 `COMPLETED` 结束时 Runner 调 `POST /v1/runs/<id>/stop`（Windows 与 Linux 一致）。
+- **续接**：Hermes 返回的 `session_id` 会记录；已结束作业可「继续此会话」，下次运行带上同一 `session_id`。
+
+节点环境变量：
+
+| 变量 | 说明 |
+|---|---|
+| `NIUCAI_ENGINES` | 含 `hermes` 才启用 |
+| `NIUCAI_HERMES_URL` | Hermes API Server 地址，如 `http://hermes:8642`；缺失则 `not_configured` |
+| `NIUCAI_HERMES_API_KEY` | 对应 Hermes 的 `API_SERVER_KEY`（Bearer）；缺失则 `credential_missing`，仅写节点 `.env`，不下发给 Kernel |
+| `NIUCAI_HERMES_MODEL` | 仅用于状态展示 |
+| `NIUCAI_HERMES_UID` | Linux 引擎 UID，默认 10004 |
+
+部署提示：Hermes 的 `API_SERVER_ENABLED=true` 与 `API_SERVER_KEY` 需要在 Hermes 一侧配置；API Server 默认只监听 `127.0.0.1:8642`，要让 Runner 访问，应放在私网或 VPN 内，不要暴露到公网。镜像构建参数 `ENGINES="pi hermes"` 会创建 hermes 用户并带上 `hermes_bridge.py`；Windows 打包 exe 内置 `hermes-bridge` 子命令。
+
+实现位置：`services/node-runner/runner.py`（`HermesEngine`）、`services/node-runner/hermes_bridge.py`；测试 `services/node-runner/tests/test_hermes.py`、Kernel 的 `tests/test_cards.py`、`tests/test_remote_pi.py`。

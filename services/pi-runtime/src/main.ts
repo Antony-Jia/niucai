@@ -465,7 +465,7 @@ async function main() {
           defineTool({
             name: "remote_pi_submit",
             description:
-              "Delegate a bounded task to a remote coding agent (Pi, Codex or Claude Code CLI) on an isolated node. Returns a job ID; user must approve workspace autonomy before it runs. Submit independent jobs before waiting to allow parallel execution. Remote agents have local file/shell tools but no Kernel credentials. Use `engine` only when the task suits it and the Bot allows it (default pi); use permission_profile `read` for review/analysis that must not change files, `workspace` (default) for edits inside the job workspace, `full` only when unavoidable — it always needs explicit human approval and the node must enable it. To continue earlier work with a Codex or Claude Code agent, pass resume_job_id of a finished job: it runs on the same node, in the same workspace and engine session (Pi jobs cannot be resumed).",
+              "Delegate a bounded task to a remote coding agent (Pi, Codex, Claude Code CLI or a remote Hermes agent) on an isolated node. Returns a job ID; user must approve workspace autonomy before it runs. Submit independent jobs before waiting to allow parallel execution. Remote agents have local file/shell tools but no Kernel credentials. Use `engine` only when the task suits it and the Bot allows it (default pi); use permission_profile `read` for review/analysis that must not change files, `workspace` (default) for edits inside the job workspace, `full` only when unavoidable — it always needs explicit human approval and the node must enable it. To continue earlier work with a Codex or Claude Code agent, pass resume_job_id of a finished job: it runs on the same node, in the same workspace and engine session (Pi jobs cannot be resumed).",
             parameters: Type.Object({
               prompt: Type.String({ minLength: 1, maxLength: 16000 }),
               engine: Type.Optional(
@@ -473,6 +473,7 @@ async function main() {
                   Type.Literal("pi"),
                   Type.Literal("codex"),
                   Type.Literal("claude"),
+                  Type.Literal("hermes"),
                 ]),
               ),
               resume_job_id: Type.Optional(

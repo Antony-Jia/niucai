@@ -66,6 +66,7 @@ export const engineLabels: Record<string, string> = {
   pi: "Pi",
   codex: "Codex",
   claude: "Claude Code",
+  hermes: "Hermes",
 };
 
 const lifecycle: Record<string, { text: string; tone: NoticeTone }> = {

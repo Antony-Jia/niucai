@@ -81,8 +81,8 @@ class AgentDefinition(Strict):
     default_computer_id: str | None = None
     allowed_nodes: list[str] | None = Field(default_factory=list)
     # 远程工作包可使用的节点执行引擎；缺省只允许 Pi，其它引擎须显式加入。
-    allowed_engines: list[Literal["pi", "codex", "claude"]] = Field(
-        default_factory=lambda: ["pi"], max_length=3
+    allowed_engines: list[Literal["pi", "codex", "claude", "hermes"]] = Field(
+        default_factory=lambda: ["pi"], max_length=4
     )
     memory_scope: Literal["own", "own+shared", "shared"] = "own+shared"
     enabled: bool = True

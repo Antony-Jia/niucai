@@ -35,6 +35,7 @@ CARD_WORKSPACE = re.compile(r"card-[a-zA-Z0-9-]{1,36}")
 MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}")
 BOARD_TOOL = re.compile(r"[a-z_]{1,40}")
 BOARD_SCRIPT = Path(__file__).with_name("board_mcp.py")
+BRIDGE_SCRIPT = Path(__file__).with_name("hermes_bridge.py")
 # Pi 没有接 MCP：白板工具由扩展注册，同名同参（见 board-extension.ts）。
 BOARD_EXTENSION = Path(__file__).with_name("board-extension.ts")
 BOARD_TOOLS = (
@@ -260,7 +261,9 @@ def codex_cached_models():
     try:
         cache = json.loads((Path(home) / "models_cache.json").read_text(encoding="utf-8"))
         return [
-            m["slug"] for m in cache["models"] if isinstance(m, dict) and m.get("visibility") == "list" and m.get("slug")
+            m["slug"]
+            for m in cache["models"]
+            if isinstance(m, dict) and m.get("visibility") == "list" and m.get("slug")
         ]
     except (OSError, ValueError, KeyError, TypeError):
         return []
@@ -577,7 +580,13 @@ class PiEngine:
         }
 
     def status(self):
-        return {"available": True, "version": "1.1.0", "model": self.model, "models": self.models, "efforts": list(EFFORTS["pi"])}
+        return {
+            "available": True,
+            "version": "1.1.0",
+            "model": self.model,
+            "models": self.models,
+            "efforts": list(EFFORTS["pi"]),
+        }
 
     def environment(self):
         # Runner credentials are never inherited by Pi; Pi runs under another Unix UID.
@@ -947,7 +956,9 @@ class CodexEngine:
             if item.get("id") not in opened and kind != "item.updated":
                 opened.add(item.get("id"))
                 data = {"tool": tool, "is_error": False}
-                events.append(("tool_execution_start", {**data, **tool_detail(tool, args=self.call_input(item))}))
+                events.append(
+                    ("tool_execution_start", {**data, **tool_detail(tool, args=self.call_input(item))})
+                )
             if kind == "item.completed":
                 opened.discard(item.get("id"))
                 data = {"tool": tool, "is_error": self.tool_failed(item)}
@@ -1151,7 +1162,9 @@ class ClaudeEngine:
                     tool = str(block.get("name", "tool"))[:64]
                     state.setdefault("tools", {})[block.get("id")] = tool
                     data = {"tool": tool, "is_error": False}
-                    events.append(("tool_execution_start", {**data, **tool_detail(tool, args=block.get("input"))}))
+                    events.append(
+                        ("tool_execution_start", {**data, **tool_detail(tool, args=block.get("input"))})
+                    )
                 elif block_type not in self.ignored_blocks and not (kind == "user" and block_type == "text"):
                     state["unknown_frames"] = state.get("unknown_frames", 0) + 1
             return events, None
@@ -1177,6 +1190,163 @@ class ClaudeEngine:
             if state.get("unknown_frames"):
                 final["unknown_frames"] = state["unknown_frames"]
             return [], final
+        if kind not in self.ignored_frames:
+            state["unknown_frames"] = state.get("unknown_frames", 0) + 1
+        return [], None
+
+
+class HermesEngine:
+    """Remote Hermes agent over its API server (`/v1/runs`), driven through hermes_bridge.py.
+
+    Hermes runs wherever it is deployed, with its own tools and approval policy: the runner workspace is not
+    visible to it, so results come back as text only, and `read` cannot be enforced from here.
+    """
+
+    name = "hermes"
+    label = "Hermes"
+    closes_stdin = True  # the bridge reads the prompt until EOF
+    sandbox = "remote"  # isolation is whatever the Hermes deployment provides
+    profiles = ["workspace"]
+    ignored_frames = {"started"}
+    note = (
+        "你运行在远端 Hermes 上，看不到本节点的工作区，也不会有文件随结果回传："
+        "请直接在最终回答中给出完整的结果文本。\n\n"
+    )
+
+    def __init__(self, root):
+        self.uid = engine_uid("NIUCAI_HERMES_UID", "10004")
+        self.home = root / "hermes-home"
+        self.home.mkdir(exist_ok=True)
+        chown(self.home, self.uid)
+        self.url = os.environ.get("NIUCAI_HERMES_URL", "").rstrip("/")
+        self.model = os.environ.get("NIUCAI_HERMES_MODEL", "")
+        self.version = self.probe_version()
+
+    @staticmethod
+    def credential():
+        return os.environ.get("NIUCAI_HERMES_API_KEY", "")
+
+    def configured(self):
+        return self.url.startswith(("http://", "https://")) and bool(self.credential())
+
+    def request_headers(self):
+        return {"Authorization": f"Bearer {self.credential()}"}
+
+    def probe_version(self):
+        """Best effort at startup: a Hermes that is down now must not keep the engine unavailable forever."""
+        if not self.configured():
+            return ""
+        try:
+            reply = httpx.get(self.url + "/v1/capabilities", headers=self.request_headers(), timeout=3)
+            version = reply.json().get("version", "") if reply.status_code == 200 else ""
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return ""
+        return str(version)[:100]
+
+    def status(self):
+        if not self.url.startswith(("http://", "https://")):
+            return {"available": False, "reason": "not_configured"}
+        if not self.credential():
+            return {"available": False, "reason": "credential_missing"}
+        # Like the other engines, "available" only says a run can be started, not that Hermes is reachable now.
+        return {
+            "available": True,
+            "version": self.version,
+            "model": self.model,
+            "models": [],  # /v1/runs takes no per-request model; the Hermes profile decides
+            "efforts": [],
+            "profiles": self.profiles,
+            "sandbox": self.sandbox,
+        }
+
+    def environment(self):
+        # Only Hermes' own endpoint and key; the node token and other engines' keys never reach the bridge.
+        return {
+            **base_environment(self.home),
+            "NIUCAI_HERMES_URL": self.url,
+            "NIUCAI_HERMES_API_KEY": self.credential(),
+        }
+
+    def drop_privileges(self):
+        os.setgroups([])
+        os.setgid(self.uid)
+        os.setuid(self.uid)
+
+    @staticmethod
+    def run_file(session):
+        return Path(session).with_suffix(".hermes-run")
+
+    def command(self, session, job=None, board=None, extra_dirs=(), mcp=None):
+        profile = ((job or {}).get("config_snapshot") or {}).get("permission_profile") or "workspace"
+        if profile not in self.profiles:
+            raise ValueError(f"permission profile not enabled on this node: {str(profile)[:40]}")
+        bridge = (
+            [sys.executable, "hermes-bridge"]
+            if getattr(sys, "frozen", False)
+            else [sys.executable, str(BRIDGE_SCRIPT)]
+        )
+        return [
+            *bridge,
+            str(self.run_file(session)),
+            str((job or {}).get("attempt_id", "")),
+            resume_session(job) or "",
+        ]
+
+    def stdin(self, attempt, message):
+        return (self.note + message).encode()
+
+    def cleanup(self, session, stop):
+        """Forget the attempt's run id and, unless it completed, ask Hermes to stop that run."""
+        path = self.run_file(session)
+        try:
+            run_id = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return
+        path.unlink(missing_ok=True)
+        if not stop or not self.configured() or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", run_id):
+            return
+        with contextlib.suppress(httpx.HTTPError):
+            httpx.post(f"{self.url}/v1/runs/{run_id}/stop", headers=self.request_headers(), timeout=5)
+
+    def translate(self, frame, state):
+        """Map one bridge frame to (events, final)."""
+        kind = frame.get("type", "")
+        if kind == "message":
+            state["answer"] = str(frame.get("text", ""))
+            return [("assistant", {"text": state["answer"][:4000], "stop_reason": "stop"})], None
+        if kind == "tool_start":
+            tool = str(frame.get("tool", "tool"))[:64]
+            return [
+                (
+                    "tool_execution_start",
+                    {"tool": tool, "is_error": False, **tool_detail(tool, args=frame.get("preview"))},
+                )
+            ], None
+        if kind == "tool_end":
+            tool = str(frame.get("tool", "tool"))[:64]
+            data = {"tool": tool, "is_error": bool(frame.get("error"))}
+            return [("tool_execution_end", {**data, **tool_detail(tool, output=frame.get("preview"))})], None
+        if kind == "done":
+            answer = str(frame.get("answer") or state["answer"])
+            if not answer:
+                raise RuntimeError("Hermes ended without a final answer")
+            final = {
+                "answer": answer[:16000],
+                "executor": self.name,
+                "session_id": str(frame.get("session_id") or state["job_id"]),
+            }
+            if frame.get("run_id"):
+                final["run_id"] = str(frame["run_id"])[:100]
+            usage = {k: v for k, v in (frame.get("usage") or {}).items() if isinstance(v, int)}
+            if usage:
+                final["usage"] = usage
+            if state.get("unknown_frames"):
+                final["unknown_frames"] = state["unknown_frames"]
+            return [("assistant", {"text": answer[:4000], "stop_reason": "stop"})] if not state[
+                "answer"
+            ] else [], final
+        if kind == "error":
+            raise RuntimeError(f"Hermes failed: {frame.get('message', 'unknown error')}"[:500])
         if kind not in self.ignored_frames:
             state["unknown_frames"] = state.get("unknown_frames", 0) + 1
         return [], None
@@ -1233,6 +1403,8 @@ class Runner:
             engines.append(CodexEngine(self.root))
         if "claude" in self.requested:
             engines.append(ClaudeEngine(self.root))
+        if "hermes" in self.requested:
+            engines.append(HermesEngine(self.root))
         self.engines = {engine.name: engine for engine in engines}
 
     async def post(self, suffix, data=None, **options):
@@ -1629,8 +1801,10 @@ class Runner:
             inputs = workspace / "inputs" if workdir and (workspace / "inputs").exists() else None
             snapshot = job.get("config_snapshot") or {}
             # P5：Bot 绑定的 skill 落到本作业的资产目录，结束后删除；MCP 只给支持的引擎。
-            skills = write_skills(assets, snapshot.get("skills"), uid)
-            mcp, skipped = ({}, []) if engine.name == "pi" else job_mcp_servers(job)
+            # Hermes 在别处运行，读不到本节点的资产目录，也不加载本节点解析的 MCP 配置。
+            remote = engine.name == "hermes"
+            skills = [] if remote else write_skills(assets, snapshot.get("skills"), uid)
+            mcp, skipped = ({}, []) if engine.name in {"pi", "hermes"} else job_mcp_servers(job)
             for reason in skipped:
                 progress("notice", {"text": f"MCP 未加载：{reason}"})
             extra_dirs = [d for d in (inputs, assets if skills else None) if d]
@@ -1693,6 +1867,10 @@ class Runner:
                 # Even on success stop background descendants before releasing the slot.
                 await kill_group(process.pid, job_object)
                 await process.wait()
+            if hasattr(engine, "cleanup"):
+                # 引擎在别处运行（Hermes）：杀掉本地进程不会停止远端，需要显式通知。
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(engine.cleanup, session, outcome["status"] != "COMPLETED")
             if stderr_task:
                 # 进程已结束，管道很快读空；超时则放弃剩余输出。
                 with contextlib.suppress(Exception):
@@ -1920,5 +2098,10 @@ if __name__ == "__main__":
         import board_mcp
 
         board_mcp.main(sys.argv[2])
+    elif len(sys.argv) > 3 and sys.argv[1] == "hermes-bridge":
+        # 单文件 exe 内置的 Hermes 桥（见 HermesEngine.command）。
+        import hermes_bridge
+
+        hermes_bridge.main(sys.argv[2:])
     else:
         asyncio.run(Runner().run())

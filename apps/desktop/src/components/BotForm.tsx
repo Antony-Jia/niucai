@@ -15,7 +15,10 @@ const engineText: Record<Engine, string> = {
   pi: "Pi",
   codex: "Codex",
   claude: "Claude Code",
+  hermes: "Hermes",
 };
+/** 这些引擎不接 Bot 的 MCP：Pi 暂不支持，Hermes 在别处运行。 */
+const noMcp: Engine[] = ["pi", "hermes"];
 const effortText: Record<string, string> = {
   off: "关闭",
   minimal: "极低",
@@ -61,7 +64,7 @@ export function BotForm({
   const windows = platform === "windows";
   const { notify, synchronizing } = useApp();
   const cache = useQueryClient();
-  const available = (["pi", "codex", "claude"] as Engine[]).filter(
+  const available = (["pi", "codex", "claude", "hermes"] as Engine[]).filter(
     (e) => engines.includes(e) || bot?.engine === e,
   );
   const [form, setForm] = useState({
@@ -84,6 +87,8 @@ export function BotForm({
   const blocked = unavailable || synchronizing || available.length === 0;
   const modelChoices = models[form.engine] ?? [];
   const effortChoices = efforts[form.engine] ?? [];
+  // Hermes 的权限由远端部署决定，节点只接受 workspace 档位。
+  const remoteEngine = form.engine === "hermes";
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
   async function save() {
@@ -95,7 +100,9 @@ export function BotForm({
       name: form.name.trim(),
       node_id: nodeId,
       engine: form.engine as Engine,
-      permission_profile: form.permission_profile as PermissionProfile,
+      permission_profile: (remoteEngine
+        ? "workspace"
+        : form.permission_profile) as PermissionProfile,
       tags: splitList(form.tags),
       skills: splitList(form.skills),
       mcp_servers: splitList(form.mcp_servers),
@@ -253,7 +260,8 @@ export function BotForm({
         <label>
           权限
           <select
-            value={form.permission_profile}
+            value={remoteEngine ? "workspace" : form.permission_profile}
+            disabled={remoteEngine}
             onChange={(e) =>
               set("permission_profile", e.target.value as PermissionProfile)
             }
@@ -264,6 +272,11 @@ export function BotForm({
               </option>
             ))}
           </select>
+          {remoteEngine && (
+            <small>
+              Hermes 在远端运行，实际权限由其部署决定，无法按节点限制。
+            </small>
+          )}
         </label>
         <details className="bot-advanced">
           <summary>高级配置 · 模型、技能与并发</summary>
@@ -331,9 +344,12 @@ export function BotForm({
               onChange={(e) => set("mcp_servers", e.target.value)}
               placeholder="MCP 服务器名，逗号分隔"
             />
-            {form.engine === "pi" && splitList(form.mcp_servers).length > 0 && (
-              <small className="error-text">Pi Bot 暂不支持 MCP</small>
-            )}
+            {noMcp.includes(form.engine as Engine) &&
+              splitList(form.mcp_servers).length > 0 && (
+                <small className="error-text">
+                  {engineText[form.engine as Engine]} Bot 暂不支持 MCP
+                </small>
+              )}
             {!!bot?.node_env?.length && (
               <small>需在节点上设置环境变量：{bot.node_env.join(", ")}</small>
             )}
@@ -377,7 +393,8 @@ export function BotForm({
               busy ||
               blocked ||
               !form.name.trim() ||
-              (form.engine === "pi" && splitList(form.mcp_servers).length > 0)
+              (noMcp.includes(form.engine as Engine) &&
+                splitList(form.mcp_servers).length > 0)
             }
           >
             {busy ? "正在保存…" : "保存"}

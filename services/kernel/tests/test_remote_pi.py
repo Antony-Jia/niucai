@@ -183,6 +183,19 @@ def engine_job(manager, key, engine):
     return value
 
 
+def test_hermes_jobs_wait_for_a_node_with_the_hermes_executor(setup):
+    manager = remote(setup)
+    job = engine_job(manager, "hermes", "hermes")
+    assert manager.get(job["id"])["engine"] == "hermes"
+    plain = engine_node(manager, {"pi": {"available": True}, "hermes": {"available": False}})
+    assert manager.claim(plain["id"]) is None
+    assert manager.get(job["id"])["wait_state"]["reason"] == "ENGINE_NOT_READY"
+    ready = engine_node(
+        manager, {"hermes": {"available": True, "sandbox": "remote", "profiles": ["workspace"]}}
+    )
+    assert manager.claim(ready["id"])["id"] == job["id"]
+
+
 def test_claim_dispatches_by_engine_and_legacy_nodes_only_run_pi(setup):
     manager = remote(setup)
     codex = engine_job(manager, "codex", "codex")

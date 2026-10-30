@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from niucai.control.cards import CardManager
 
-Engine = Literal["pi", "codex", "claude"]
+Engine = Literal["pi", "codex", "claude", "hermes"]
 Profile = Literal["read", "workspace", "full"]
 # 各引擎支持的子集不同，由 Runner 在心跳里上报并在执行时再过滤。
 Effort = Literal["", "off", "minimal", "low", "medium", "high", "xhigh", "max"]

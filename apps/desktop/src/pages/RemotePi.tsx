@@ -8,12 +8,13 @@ import {
   type ResourceNode,
 } from "../components/ResourceManager";
 
-type Engine = "pi" | "codex" | "claude";
+type Engine = "pi" | "codex" | "claude" | "hermes";
 type Profile = "read" | "workspace" | "full";
 const engineNames: Record<Engine, string> = {
   pi: "Pi",
   codex: "Codex",
   claude: "Claude Code",
+  hermes: "Hermes",
 };
 const profileNames: Record<Profile, string> = {
   read: "只读",
@@ -23,7 +24,7 @@ const profileNames: Record<Profile, string> = {
 
 function canResume(value: Job) {
   return (
-    ["codex", "claude"].includes(value.engine || "pi") &&
+    ["codex", "claude", "hermes"].includes(value.engine || "pi") &&
     ["COMPLETED", "FAILED", "CANCELLED"].includes(value.status) &&
     !!value.session_id &&
     !!value.node_id

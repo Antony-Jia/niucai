@@ -1,7 +1,7 @@
 import { request } from "./api";
 import type { JobEvent } from "./job-log";
 
-export type Engine = "pi" | "codex" | "claude";
+export type Engine = "pi" | "codex" | "claude" | "hermes";
 export type PermissionProfile = "read" | "workspace" | "full";
 export type CardStatus =
   | "DRAFT"
