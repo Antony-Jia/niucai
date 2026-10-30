@@ -23,6 +23,7 @@ import {
 import type { Topology } from "./NodesPanel";
 import { ErrorNotice, time } from "./ui";
 import { CardDetailView } from "../pages/Whiteboard";
+import { noteColor, OfficeScene, type View } from "./OfficeScene";
 
 const PREF_KEY = "niucai.work-map";
 interface Prefs {
@@ -50,75 +51,6 @@ type Selection =
   | { kind: "board" }
   | { kind: "event"; key: string }
   | null;
-
-const palette = [
-  "#5b7fc0",
-  "#c2755a",
-  "#6aa384",
-  "#a78bc7",
-  "#c9a24d",
-  "#6fa3b8",
-];
-function colorFor(id: string) {
-  let hash = 0;
-  for (const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
-  return palette[hash % palette.length];
-}
-
-/** 8×8 像素小人；颜色由 Bot ID 稳定决定，只是外观，不代表引擎或状态。 */
-function Sprite({ color }: { color: string }) {
-  const rows = [
-    "..hhhh..",
-    ".hhhhhh.",
-    ".ffffff.",
-    ".fefefe.",
-    "..ffff..",
-    ".bbbbbb.",
-    "bbbbbbbb",
-    ".bb..bb.",
-  ];
-  const fill = { h: "#3b3a46", f: "#f2cfa8", e: "#2b2b33", b: color } as Record<
-    string,
-    string
-  >;
-  return (
-    <svg
-      className="sprite"
-      viewBox="0 0 8 8"
-      width="48"
-      height="48"
-      shapeRendering="crispEdges"
-      aria-hidden="true"
-    >
-      {rows.flatMap((row, y) =>
-        [...row].map((c, x) =>
-          c === "." ? null : (
-            <rect
-              key={`${x}-${y}`}
-              x={x}
-              y={y}
-              width="1"
-              height="1"
-              fill={fill[c]}
-            />
-          ),
-        ),
-      )}
-    </svg>
-  );
-}
-
-const noteColor: Record<string, string> = {
-  READY: "#e8c872",
-  WAITING_APPROVAL: "#e8a872",
-  RUNNING: "#7fb2e8",
-  BLOCKED: "#e88c8c",
-  REVIEW: "#b79be0",
-  DONE: "#8fcf9f",
-  FAILED: "#c76d6d",
-  CANCELLED: "#b5b9c2",
-  DRAFT: "#dcdfe5",
-};
 
 export function WorkMap(props: Props) {
   const { profile, demo } = useApp();
@@ -159,16 +91,14 @@ function WorkMapView({
     refetchInterval: 10000,
   });
   const [includeClosed, setIncludeClosed] = useState(false);
-  const [zone, setZone] = useState(0);
   const [selection, setSelection] = useState<Selection>(null);
   const [cardId, setCardId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
-  const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
+  const [view, setView] = useState<View>({ zoom: 1, x: 0, y: 0 });
   const [bubbles, setBubbles] = useState<MapEvent[]>([]);
   const [flash, setFlash] = useState(false);
   const tracker = useRef(createEventTracker());
-  const drag = useRef<{ x: number; y: number } | null>(null);
   const reduce = prefs.reduce || systemReduced();
   const hide = prefs.hide;
   const show = (text: string) => (hide ? hiddenText : text);
@@ -227,7 +157,6 @@ function WorkMapView({
     tracker.current.reset();
     setBubbles([]);
     setSelection(null);
-    setZone(0);
   }, [focusGoal, includeClosed]);
   useEffect(() => {
     // 数据还没读回来时 events 为空；此时建立基线会把随后到达的整批历史当成新事件。
@@ -249,8 +178,6 @@ function WorkMapView({
     return () => clearTimeout(timer);
   }, [data.events, reduce, outdated, loading]);
 
-  const zoneBots = data.bots.filter((b) => b.zone === zone);
-  const zoneCount = Math.min(zone, data.zones - 1);
   const botById = new Map(data.bots.map((b) => [b.id, b]));
   const selectedBot =
     selection?.kind === "bot" ? botById.get(selection.id) : undefined;
@@ -261,23 +188,12 @@ function WorkMapView({
   const botList = data.bots.filter(
     (b) => !search || b.name.toLowerCase().includes(search.toLowerCase()),
   );
-  const totalCards = Object.values(data.groups).reduce(
-    (n, g) => n + g.length,
-    0,
-  );
   const goalItem = goalItems.find((item) => item.sourceId === focusGoal);
 
-  function pan(e: React.PointerEvent<HTMLDivElement>) {
-    if (!drag.current) return;
-    const dx = e.clientX - drag.current.x;
-    const dy = e.clientY - drag.current.y;
-    drag.current = { x: e.clientX, y: e.clientY };
-    setView((v) => ({ ...v, x: v.x + dx, y: v.y + dy }));
-  }
   const zoomBy = (delta: number) =>
     setView((v) => ({
       ...v,
-      zoom: Math.min(1.5, Math.max(0.7, +(v.zoom + delta).toFixed(2))),
+      zoom: Math.min(2.2, Math.max(0.6, +(v.zoom + delta).toFixed(2))),
     }));
 
   const cardButton = (card: Card) => (
@@ -356,130 +272,32 @@ function WorkMapView({
       ) : (
         <div className="map-body">
           <div className="map-stage">
-            {data.zones > 1 && (
-              <div className="map-zones" role="tablist" aria-label="办公区">
-                {Array.from({ length: data.zones }, (_, i) => {
-                  const inZone = data.bots.filter((b) => b.zone === i);
-                  const busy = inZone.filter(
-                    (b) => b.availability === "working",
-                  ).length;
-                  const attention = inZone.filter(
-                    (b) => b.blocked.length + b.review.length > 0,
-                  ).length;
-                  return (
-                    <button
-                      key={i}
-                      role="tab"
-                      aria-selected={zoneCount === i}
-                      className={zoneCount === i ? "active" : ""}
-                      onClick={() => setZone(i)}
-                    >
-                      办公区 {i + 1}
-                      <small>
-                        {inZone.length} 人 · 工作 {busy}
-                        {attention ? ` · 需处理 ${attention}` : ""}
-                      </small>
-                    </button>
-                  );
-                })}
+            {data.bots.length === 0 ? (
+              <div className="map-viewport">
+                <div className="map-empty">
+                  <p>办公室里还没有助手。</p>
+                  <button onClick={() => setPage("settings")}>配置助手</button>
+                </div>
               </div>
+            ) : (
+              <OfficeScene
+                bots={data.bots}
+                cards={cards ?? []}
+                groups={data.groups}
+                delivered={data.delivered.length}
+                topology={topology.data ?? null}
+                selectedBot={selection?.kind === "bot" ? selection.id : null}
+                boardSelected={selection?.kind === "board"}
+                onSelectBot={(id) => setSelection({ kind: "bot", id })}
+                onSelectBoard={() => setSelection({ kind: "board" })}
+                bubbles={bubbles}
+                flash={flash}
+                show={show}
+                reduce={reduce}
+                view={view}
+                onView={setView}
+              />
             )}
-            <div
-              className="map-viewport"
-              data-pan
-              onPointerDown={(e) => {
-                if (!(e.target as HTMLElement).closest("button")) {
-                  drag.current = { x: e.clientX, y: e.clientY };
-                  e.currentTarget.setPointerCapture?.(e.pointerId);
-                }
-              }}
-              onPointerMove={pan}
-              onPointerUp={() => (drag.current = null)}
-              onPointerCancel={() => (drag.current = null)}
-            >
-              <div
-                className="map-scene"
-                style={{
-                  transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`,
-                }}
-              >
-                {data.bots.length === 0 ? (
-                  <div className="map-empty">
-                    <p>办公室里还没有助手。</p>
-                    <button onClick={() => setPage("settings")}>
-                      配置助手
-                    </button>
-                  </div>
-                ) : (
-                  <div className="office">
-                    <div className="office-row">
-                      {Array.from({ length: SEATS_PER_ZONE / 2 }, (_, i) =>
-                        seat(
-                          zoneBots.find((b) => b.seat === i),
-                          i,
-                        ),
-                      )}
-                    </div>
-                    <div className="office-middle">
-                      <button
-                        className={`whiteboard${flash ? " flash" : ""}${selection?.kind === "board" ? " selected" : ""}`}
-                        aria-label={`共享白板：${boardGroups
-                          .filter((g) => g.key !== "draft")
-                          .map((g) => `${g.label} ${data.groups[g.key].length}`)
-                          .join("，")}`}
-                        onClick={() => setSelection({ kind: "board" })}
-                      >
-                        <strong>共享白板</strong>
-                        <span className="notes" aria-hidden="true">
-                          {Object.values(data.groups)
-                            .flat()
-                            .slice(0, 12)
-                            .map((c) => (
-                              <i
-                                key={c.id}
-                                style={{ background: noteColor[c.status] }}
-                              />
-                            ))}
-                        </span>
-                        <small>共 {totalCards} 张卡片</small>
-                        {bubbles.length > 0 && (
-                          <span className="bubbles" aria-hidden="true">
-                            {bubbles.map((b) => (
-                              <em key={b.key}>
-                                {show(excerpt(b.cardTitle, 16).text)} ·{" "}
-                                {eventLabel(b.kind)}
-                              </em>
-                            ))}
-                          </span>
-                        )}
-                      </button>
-                      <button
-                        className="shelf"
-                        aria-label={`交付架：${data.delivered.length} 项有结果的完成工作`}
-                        onClick={() => setSelection({ kind: "board" })}
-                      >
-                        <strong>交付架</strong>
-                        <small>
-                          {data.delivered.length
-                            ? `${data.delivered.length} 项结果`
-                            : "暂无结果"}
-                        </small>
-                      </button>
-                    </div>
-                    <div className="office-row">
-                      {Array.from({ length: SEATS_PER_ZONE / 2 }, (_, i) =>
-                        seat(
-                          zoneBots.find(
-                            (b) => b.seat === i + SEATS_PER_ZONE / 2,
-                          ),
-                          i + 4,
-                        ),
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
             <div className="map-toolbar">
               <span className="map-summary" role="status">
                 正在工作 {data.summary.working} · 待命 {data.summary.idle} ·
@@ -558,7 +376,6 @@ function WorkMapView({
                       <button
                         className="map-link"
                         onClick={() => {
-                          setZone(b.zone);
                           setSelection({ kind: "bot", id: b.id });
                         }}
                       >
@@ -640,46 +457,6 @@ function WorkMapView({
       )}
     </div>
   );
-
-  function seat(bot: MapBot | undefined, slot: number) {
-    if (!bot)
-      return (
-        <div className="seat empty" key={`empty-${slot}`} aria-hidden="true" />
-      );
-    const work = bot.running[0];
-    const line =
-      bot.availability === "unavailable" || bot.availability === "unknown"
-        ? bot.reason
-        : work
-          ? `正在处理：${show(work.title)}`
-          : bot.runningCount > 0
-            ? "正在执行"
-            : "待命";
-    const label = `${bot.name}，${availabilityText[bot.availability]}${
-      bot.runningCount > 1 ? `，${bot.runningCount} 项进行中` : ""
-    }${bot.blocked.length ? `，受阻 ${bot.blocked.length}` : ""}，${line}`;
-    return (
-      <button
-        key={bot.id}
-        className={`seat ${bot.availability}${selection?.kind === "bot" && selection.id === bot.id ? " selected" : ""}`}
-        aria-label={label}
-        onClick={() => setSelection({ kind: "bot", id: bot.id })}
-      >
-        <Sprite color={colorFor(bot.id)} />
-        <strong title={bot.name}>{bot.name}</strong>
-        <small className="seat-line">
-          {line}
-          {bot.runningCount > 1 ? ` ×${bot.runningCount}` : ""}
-        </small>
-        {bot.blocked.length + bot.review.length > 0 && (
-          <span className="seat-flag">
-            {bot.blocked.length ? `受阻 ${bot.blocked.length}` : ""}
-            {bot.review.length ? ` 待验收 ${bot.review.length}` : ""}
-          </span>
-        )}
-      </button>
-    );
-  }
 }
 
 function BotDetail({
@@ -731,9 +508,36 @@ function BotDetail({
         <dt>角色</dt>
         <dd>{bot.role || "未填写"}</dd>
         <dt>引擎</dt>
-        <dd>{bot.engine}</dd>
+        <dd>
+          {bot.engine}
+          {bot.model ? ` · ${bot.model}` : ""}
+          {bot.reasoningEffort ? ` · ${bot.reasoningEffort}` : ""}
+        </dd>
         <dt>执行设备</dt>
-        <dd>{bot.nodeName || "未知"}</dd>
+        <dd>
+          {bot.nodeName || "未知"}
+          {bot.nodeKind === "local"
+            ? "（本机）"
+            : bot.nodeKind === "remote"
+              ? "（远端）"
+              : ""}
+        </dd>
+        <dt>并发</dt>
+        <dd>
+          {bot.runningCount} / {bot.concurrency}
+        </dd>
+        {bot.tags.length > 0 && (
+          <>
+            <dt>标签</dt>
+            <dd>{bot.tags.join("、")}</dd>
+          </>
+        )}
+        {bot.skills.length + bot.mcpServers.length > 0 && (
+          <>
+            <dt>技能 / MCP</dt>
+            <dd>{[...bot.skills, ...bot.mcpServers].join("、")}</dd>
+          </>
+        )}
       </dl>
       {(offline || outdated) && bot.running.length > 0 && (
         <p className="muted">以下为最后已知状态，可能已经变化。</p>
@@ -747,6 +551,7 @@ function BotDetail({
       )}
       {list("受阻", bot.blocked)}
       {list("待验收", bot.review)}
+      {list("最近完成", bot.finished)}
       {bot.running.length + bot.blocked.length + bot.review.length === 0 && (
         <p className="muted">当前没有正在处理的工作。</p>
       )}

@@ -187,6 +187,22 @@ export async function demoRequest(
       kernel: { instance_id: "demo", remote_enabled: true },
       nodes: [
         {
+          id: "demo-local",
+          name: "本机 Windows",
+          resource_type: "windows_local",
+          platform: "windows",
+          runner_version: "p1",
+          status: "ONLINE",
+          enabled: true,
+          slots: 2,
+          busy: 0,
+          engines: { pi: { available: true }, claude: { available: true } },
+          preview_url: "",
+          paired_at: new Date().toISOString(),
+          heartbeat_at: new Date().toISOString(),
+          bots: [],
+        },
+        {
           id: "demo-vps",
           name: "示例 VPS",
           resource_type: "remote_vps",
@@ -216,6 +232,36 @@ export async function demoRequest(
     };
   if (route === "/api/bots")
     return [
+      ...[
+        ["demo-coder", "coder", "pi", "写代码", "demo-local", "本机 Windows"],
+        [
+          "demo-reviewer",
+          "reviewer",
+          "claude",
+          "验收",
+          "demo-local",
+          "本机 Windows",
+        ],
+        ["demo-hermes", "hermes-ops", "hermes", "运维", "demo-vps", "示例 VPS"],
+      ].map(([id, name, engine, role, node_id, node_name]) => ({
+        id,
+        name,
+        node_id,
+        node_name,
+        engine,
+        role,
+        instructions: "",
+        tags: [],
+        model: "",
+        permission_profile: "workspace",
+        skills: [],
+        mcp_servers: [],
+        requires_approval: false,
+        concurrency: 1,
+        enabled: true,
+        running: 0,
+        config_version: 1,
+      })),
       {
         id: "demo-bot",
         name: "researcher",

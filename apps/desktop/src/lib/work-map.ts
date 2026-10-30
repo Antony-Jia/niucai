@@ -34,7 +34,31 @@ export interface MapBot {
   runningCount: number;
   zone: number;
   seat: number;
+  /** 所在设备 ID；未绑定设备为空串。 */
+  nodeId: string;
+  /** 办公室里的房间归类：本机 / 远端（VPS、Hermes 等）/ 未绑定设备。 */
+  nodeKind: NodeKind;
+  model: string;
+  reasoningEffort: string;
+  concurrency: number;
+  skills: string[];
+  mcpServers: string[];
+  tags: string[];
+  /** 最近几张由该 Bot 执行并已结束的卡片，用来在详情里显示“做完了什么”。 */
+  finished: Card[];
 }
+
+export type NodeKind = "local" | "remote" | "unbound";
+const localTypes = ["windows_local", "local_docker"];
+export const nodeKindOf = (
+  resourceType: string | undefined,
+  hasNode: boolean,
+): NodeKind =>
+  !hasNode
+    ? "unbound"
+    : resourceType && localTypes.includes(resourceType)
+      ? "local"
+      : "remote";
 
 export type BoardGroupKey =
   "draft" | "ready" | "running" | "attention" | "closed";
@@ -193,6 +217,19 @@ export function projectWorkMap(input: ProjectInput): WorkMapData {
       // 座位只由排序后的 Bot ID 决定，状态变化不会让角色换位。
       zone: Math.floor(index / SEATS_PER_ZONE),
       seat: index % SEATS_PER_ZONE,
+      nodeId: bot.node_id || "",
+      // 设备信息缺失时不猜“本机”还是“远端”。
+      nodeKind: nodeKindOf(node?.resource_type, !!node),
+      model: bot.model ?? "",
+      reasoningEffort: bot.reasoning_effort ?? "",
+      concurrency: bot.concurrency ?? 1,
+      skills: bot.skills ?? [],
+      mcpServers: bot.mcp_servers ?? [],
+      tags: bot.tags ?? [],
+      finished: input.cards
+        .filter((c) => isClosed(c.status) && c.last_job?.bot_id === bot.id)
+        .sort((a, b) => stamp(b.updated_at) - stamp(a.updated_at))
+        .slice(0, 3),
     };
   });
 

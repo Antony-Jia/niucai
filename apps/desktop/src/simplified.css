@@ -351,143 +351,404 @@
   color: var(--muted);
 }
 .map-viewport {
+  position: relative;
   overflow: hidden;
-  border-radius: 8px;
+  border-radius: 10px;
   border: 1px solid rgba(128, 128, 128, 0.3);
-  background: repeating-conic-gradient(
-      rgba(128, 128, 128, 0.07) 0% 25%,
-      transparent 0% 50%
-    )
-    0 0 / 32px 32px;
-  min-height: 420px;
+  background: #2a2723;
+  min-height: 380px;
   cursor: grab;
   touch-action: none;
 }
-.map-scene {
-  padding: 18px;
-  transform-origin: center top;
+.map-viewport:active {
+  cursor: grabbing;
 }
-.office {
+/* 整个办公室：逻辑坐标 1280 宽，外层按窗口宽度缩放。 */
+.house {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  border-radius: 14px;
+  border: 6px solid #5a4d40;
+  box-sizing: border-box;
+  background:
+    linear-gradient(180deg, #4a4036 0 150px, transparent 150px),
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.025) 0 2px,
+      transparent 2px 48px
+    ),
+    #b99c78;
+  color: #2b2620;
+}
+.house button {
+  color: inherit;
+  font: inherit;
+}
+.house-title {
+  position: absolute;
+  left: 44px;
+  top: 28px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 4px;
+  color: #efe3d0;
 }
-.office-row {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+.house-title strong {
+  font-size: 22px;
+  letter-spacing: 1px;
 }
-.office-middle {
-  display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 1fr);
-  gap: 12px;
+.house-title small {
+  font-size: 13px;
+  opacity: 0.8;
 }
-.seat {
-  position: relative;
+.rug {
+  position: absolute;
+  left: 50%;
+  top: 214px;
+  width: 560px;
+  height: 180px;
+  margin-left: -280px;
+  border-radius: 50%;
+  background: rgba(146, 76, 64, 0.35);
+  border: 3px dashed rgba(255, 240, 220, 0.35);
+}
+.sofa,
+.coffee {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+  border-radius: 10px;
+  z-index: 1;
+}
+.sofa {
+  left: 50px;
+  top: 218px;
+  width: 86px;
+  height: 140px;
+  background: #7b5e8c;
+  box-shadow: inset -10px 0 0 rgba(0, 0, 0, 0.18);
+}
+.coffee {
+  right: 50px;
+  top: 214px;
+  width: 96px;
+  height: 64px;
+  background: #5d6b73;
+  box-shadow: inset 0 -10px 0 rgba(0, 0, 0, 0.2);
+}
+.plant {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #4f8a58;
+  box-shadow:
+    0 0 0 6px #8a5d3b,
+    0 4px 0 6px rgba(0, 0, 0, 0.2);
+  z-index: 1;
+}
+.plant-a {
+  left: 62px;
+  top: 384px;
+}
+.plant-b {
+  right: 70px;
+  top: 384px;
+}
+
+/* 房间：每台设备一间，本机与远端分开；门口朝向走廊。 */
+.room {
+  position: absolute;
+  box-sizing: border-box;
+  border: 4px solid #5a4d40;
+  border-radius: 8px;
+  background: #d8c5a4;
+  z-index: 1;
+}
+.room.local {
+  background: #cfd9c3;
+}
+.room.remote {
+  background: #c3d0dc;
+}
+.room.unbound {
+  background: #d9d2c2;
+  border-style: dashed;
+}
+.room header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  height: 26px;
+  box-sizing: border-box;
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.12);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.room header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.room header small {
+  font-size: 11px;
+  opacity: 0.75;
+}
+.room header small.ok {
+  color: #1f6b3d;
+  opacity: 1;
+}
+.room header small.bad {
+  color: #a13a3a;
+  opacity: 1;
+}
+.room-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+}
+.door {
+  position: absolute;
+  top: -8px;
+  width: 56px;
+  height: 12px;
+  background: #b99c78;
+}
+.desk {
+  position: absolute;
+  height: 70px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 10px 6px;
-  min-height: 118px;
-  border-radius: 8px;
-  border: 2px solid rgba(128, 128, 128, 0.35);
-  background: rgba(128, 128, 128, 0.08);
+  padding: 0;
+  border: none;
+  background: transparent;
   text-align: center;
 }
-.seat.empty {
-  border-style: dashed;
-  opacity: 0.4;
-  min-height: 118px;
+.desk-top {
+  position: relative;
+  width: 96px;
+  height: 36px;
+  border-radius: 4px;
+  background: #8a6a45;
+  box-shadow:
+    inset 0 3px 0 rgba(255, 255, 255, 0.18),
+    0 3px 0 rgba(0, 0, 0, 0.25);
 }
-.seat strong {
+.laptop {
+  position: absolute;
+  left: 50%;
+  top: 6px;
+  width: 30px;
+  height: 18px;
+  margin-left: -15px;
+  border-radius: 2px;
+  background: #1f2430;
+  box-shadow: 0 0 10px 2px rgba(120, 190, 255, 0.55);
+  animation: map-glow 1.4s ease-in-out infinite;
+}
+.desk strong {
   max-width: 100%;
+  margin-top: 2px;
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.seat-line {
+.desk small {
   max-width: 100%;
-  font-size: 11px;
-  color: var(--muted);
+  font-size: 10px;
+  opacity: 0.75;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.seat.working {
-  border-color: rgba(70, 160, 110, 0.8);
-}
-.seat.unavailable {
+.desk.unavailable,
+.desk.unknown {
   opacity: 0.6;
-  border-style: dashed;
 }
-.seat.unknown {
-  border-style: dotted;
-}
-.seat.unavailable .sprite,
-.seat.unknown .sprite {
-  filter: grayscale(1);
-}
-.seat.selected,
-.whiteboard.selected {
-  outline: 3px solid rgba(80, 140, 220, 0.8);
+.desk.selected .desk-top {
+  outline: 3px solid rgba(80, 140, 220, 0.9);
   outline-offset: 2px;
 }
 .seat-flag {
   position: absolute;
-  top: 4px;
-  right: 4px;
+  top: -22px;
+  right: -2px;
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 8px;
-  background: rgba(217, 130, 43, 0.85);
+  background: rgba(217, 130, 43, 0.92);
   color: #fff;
+  white-space: nowrap;
+}
+
+/* 小人：位置由代码按帧更新，过渡时长与帧间隔一致。 */
+.actor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  transition: transform 100ms linear;
+  cursor: pointer;
+}
+.actor .flip {
+  display: block;
+  width: 40px;
+  height: 40px;
+}
+.actor.walking .flip {
+  animation: map-step 0.32s steps(2) infinite;
+}
+.actor.working.sitting .flip {
+  animation: map-type 0.5s steps(2) infinite;
+}
+.actor.unavailable,
+.actor.unknown {
+  filter: grayscale(1);
+  opacity: 0.7;
+}
+.actor.selected::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: -4px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid rgba(80, 140, 220, 0.95);
+  background: rgba(80, 140, 220, 0.25);
 }
 .sprite {
   image-rendering: pixelated;
 }
-.seat.working .sprite {
-  animation: map-bob 1.2s steps(2) infinite;
+.tag {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translateX(-50%);
+  max-width: 96px;
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 15px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
 }
+.say {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  transform: translateX(-50%);
+  margin-bottom: 2px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 15px;
+  white-space: nowrap;
+  border-radius: 8px;
+  background: #fff;
+  color: #222;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* 白板与交付架贴在北墙上。 */
 .whiteboard,
 .shelf {
-  position: relative;
-  min-height: 130px;
+  position: absolute;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 8px 10px;
+  box-sizing: border-box;
   border-radius: 8px;
-  border: 3px solid rgba(128, 128, 128, 0.55);
-  background: rgba(255, 255, 255, 0.07);
+  border: 5px solid #7c7f86;
+  background: #f4f1ea;
+  z-index: 2;
+  cursor: pointer;
+}
+.shelf {
+  background: #a5835a;
+  border-color: #6d5436;
+  color: #fff;
+}
+.whiteboard strong,
+.shelf strong {
+  font-size: 13px;
+}
+.shelf small {
+  font-size: 11px;
+}
+.board-cols {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+.board-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.06);
+  text-align: left;
+}
+.board-col small {
+  font-size: 10px;
+  white-space: nowrap;
 }
 .whiteboard .notes {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  justify-content: center;
-  max-width: 80%;
+  gap: 3px;
 }
 .whiteboard .notes i {
-  width: 18px;
-  height: 18px;
+  width: 12px;
+  height: 12px;
   border-radius: 2px;
-  box-shadow: 1px 2px 0 rgba(0, 0, 0, 0.25);
+  box-shadow: 1px 1px 0 rgba(0, 0, 0, 0.25);
+}
+.whiteboard.selected,
+.shelf.selected {
+  outline: 3px solid rgba(80, 140, 220, 0.9);
+  outline-offset: 2px;
 }
 .whiteboard.flash {
   animation: map-flash 1s ease-out 2;
 }
 .bubbles {
   position: absolute;
-  top: -12px;
+  top: 100%;
   left: 8px;
   right: 8px;
+  margin-top: 6px;
   display: flex;
   flex-direction: column;
   gap: 4px;
   align-items: flex-start;
   pointer-events: none;
+  z-index: 5;
 }
 .bubbles em {
   font-style: normal;
@@ -505,6 +766,7 @@
 .map-empty {
   text-align: center;
   padding: 60px 0;
+  color: #efe3d0;
 }
 .map-toolbar {
   display: flex;
@@ -589,9 +851,19 @@
   margin: 0;
 }
 
-@keyframes map-bob {
+@keyframes map-step {
   50% {
     transform: translateY(-3px);
+  }
+}
+@keyframes map-type {
+  50% {
+    transform: translateY(-1px);
+  }
+}
+@keyframes map-glow {
+  50% {
+    opacity: 0.7;
   }
 }
 @keyframes map-flash {
@@ -616,9 +888,6 @@
 @media (max-width: 900px) {
   .map-body {
     grid-template-columns: minmax(0, 1fr);
-  }
-  .office-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .map-side {
     max-height: none;
