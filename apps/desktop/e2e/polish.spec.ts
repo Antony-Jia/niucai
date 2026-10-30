@@ -42,9 +42,11 @@ configureBrowser({
   });
   await page.goto("/");
   await page
-    .getByRole("navigation")
-    .getByRole("button", { name: /^Bots / })
+    .locator(".sidebar")
+    .getByRole("button", { name: /^设置/ })
+    .first()
     .click();
+  await page.getByRole("tab", { name: "助手" }).click();
   await expect(page.getByText("创建你的第一位 Bot")).toBeVisible();
   await page
     .getByRole("button", { name: "新建 Bot", exact: true })
@@ -82,7 +84,6 @@ for (const width of [1440, 1000, 760]) {
             ".sidebar",
             ".brand-mark",
             ".brand small",
-            ".sidebar-section",
             ".topbar",
             ".topbar strong",
             ".sync-status",
@@ -126,7 +127,8 @@ for (const width of [1440, 1000, 760]) {
     }
     const baseline = await shell();
     for (let i = 0; i < 3; i++) {
-      await nav.getByRole("button", { name: /^会话 / }).click();
+      await nav.getByRole("button", { name: /^任务/ }).click();
+      await page.locator(".home-task").first().click();
       await expect(
         page.getByRole("region", { name: "任务与对话" }),
       ).toBeVisible();
@@ -136,7 +138,7 @@ for (const width of [1440, 1000, 760]) {
           .locator(".workbench")
           .evaluate((el) => getComputedStyle(el).animationName),
       ).toBe("none");
-      await nav.getByRole("button", { name: /^Dashboard / }).click();
+      await nav.getByRole("button", { name: /^文件/ }).click();
       expect(await shell()).toEqual(baseline);
     }
   });

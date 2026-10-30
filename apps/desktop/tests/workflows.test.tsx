@@ -22,20 +22,32 @@ async function explore() {
   fireEvent.click(await screen.findByRole("button", { name: "体验示例" }));
   await screen.findByText("示例模式 · 不连接真实模型或设备");
 }
-function nav(name: string) {
-  fireEvent.click(
-    screen.getByRole("button", { name: new RegExp(`^${name} `) }),
+/** 从任务首页打开第一条任务，进入统一会话。 */
+async function nav(_name: string) {
+  await waitFor(() =>
+    expect(document.querySelector(".home-task")).not.toBeNull(),
   );
+  fireEvent.click(document.querySelector(".home-task") as HTMLElement);
+}
+/** 进入任务后新建一条空会话，用于从零发送消息。 */
+async function fresh() {
+  await nav("会话");
+  fireEvent.click(await screen.findByRole("button", { name: /新建会话/ }));
 }
 describe("Desktop workflows", () => {
   it("requires native desktop to connect, and exposes a clearly marked demo", async () => {
     await expect(request("/api/tasks")).rejects.toThrow("Windows 桌面客户端");
     await explore();
-    expect(await screen.findByText("正在执行")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("region", { name: "我的任务" }),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(document.querySelector(".home-task")).not.toBeNull(),
+    );
   });
   it("starts execution from a message and pauses/resumes the same round", async () => {
     await explore();
-    nav("会话");
+    await fresh();
     fireEvent.change(screen.getByLabelText("聊天内容"), {
       target: { value: "核验 Windows 流程" },
     });
@@ -51,7 +63,7 @@ describe("Desktop workflows", () => {
   });
   it("changes control ownership before showing desktop controls", async () => {
     await explore();
-    nav("会话");
+    await nav("会话");
     await screen.findByRole("button", { name: "接管电脑" });
     expect(
       screen.queryByRole("button", { name: "打开远程桌面" }),
@@ -73,7 +85,7 @@ describe("Desktop workflows", () => {
 
 it("adds steering to the same conversation without another execution", async () => {
   await explore();
-  nav("会话");
+  await fresh();
   fireEvent.change(screen.getByLabelText("聊天内容"), {
     target: { value: "帮我整理 Windows 接入清单" },
   });
@@ -96,7 +108,7 @@ it("adds steering to the same conversation without another execution", async () 
 
 it("keeps a new draft typed while the previous message is being acknowledged", async () => {
   await explore();
-  nav("会话");
+  await fresh();
   let release!: () => void;
   const delayed = new Promise<void>((resolve) => {
     release = resolve;
@@ -133,6 +145,9 @@ it("keeps a new draft typed while the previous message is being acknowledged", a
 
 it("removes a denied approval from the waiting queue", async () => {
   await explore();
+  fireEvent.click(
+    (await screen.findAllByRole("button", { name: /查看并处理/ }))[0],
+  );
   fireEvent.click(await screen.findByRole("button", { name: "拒绝" }));
   await waitFor(() =>
     expect(
@@ -144,7 +159,6 @@ it("removes a denied approval from the waiting queue", async () => {
 
 it("approves the selected task directly in Tasks", async () => {
   await explore();
-  nav("会话");
   fireEvent.click(await screen.findByRole("button", { name: /保存研究结论/ }));
   fireEvent.click(await screen.findByRole("button", { name: "批准执行" }));
   await waitFor(() =>
@@ -157,7 +171,6 @@ it("approves the selected task directly in Tasks", async () => {
 
 it("does not show another task's approval in the selected detail", async () => {
   await explore();
-  nav("会话");
   fireEvent.click(
     await screen.findByRole("button", {
       name: /调研 Agent Harness/,

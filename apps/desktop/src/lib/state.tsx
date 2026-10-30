@@ -74,7 +74,7 @@ export function Provider({ children }: { children: ReactNode }) {
   );
 }
 function StateProvider({ children }: { children: ReactNode }) {
-  const [page, setPage] = useState<Page>("dashboard");
+  const [page, setPage] = useState<Page>("home");
   const [connected, setConnected] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [connections, setConnections] = useState<Profile[]>([]);
@@ -180,7 +180,7 @@ function StateProvider({ children }: { children: ReactNode }) {
         setConnected(true);
         setStream("示例");
         setSynchronizing(false);
-        setPage("dashboard");
+        setPage("home");
       })
       .catch((e) => notify(String(e)));
   }
@@ -329,6 +329,15 @@ export function useApp() {
   const value = useContext(Context);
   if (!value) throw new Error("Provider missing");
   return value;
+}
+/** 连接存在但数据可能已过期：同步中、查询失败或流中断。 */
+export function useStale(failed = false) {
+  const { demo, connected, synchronizing, stream } = useApp();
+  return (
+    !demo &&
+    connected &&
+    (synchronizing || failed || /连接中|重连|中断|失效/.test(stream))
+  );
 }
 export function useData<T>(key: unknown[], fn: () => Promise<T>) {
   const { connected } = useApp();

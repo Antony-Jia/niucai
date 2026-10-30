@@ -213,9 +213,12 @@ function AttemptEvents({ jobId }: { jobId: string }) {
 export function CardDetailView({
   id,
   onClose,
+  readOnly = false,
 }: {
   id: string;
   onClose: () => void;
+  /** 只读查看：隐藏批准、验收、取消等操作和评论框（工作地图使用）。 */
+  readOnly?: boolean;
 }) {
   const { notify, demo } = useApp();
   const cache = useQueryClient();
@@ -272,38 +275,40 @@ export function CardDetailView({
               ) : null}
             </section>
           )}
-          <div className="card-actions">
-            {cardOperations(card.status).some(needsBody) && (
-              <textarea
-                rows={2}
-                aria-label="回答或退回意见"
-                placeholder={
-                  card.status === "BLOCKED" ? "回答 Bot 的问题" : "退回原因"
-                }
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-              />
-            )}
-            <div className="button-row">
-              {cardOperations(card.status).map((op: CardOperation) => (
-                <button
-                  key={op}
-                  className={
-                    op === "cancel" || op === "reject" ? "" : "primary"
+          {!readOnly && (
+            <div className="card-actions">
+              {cardOperations(card.status).some(needsBody) && (
+                <textarea
+                  rows={2}
+                  aria-label="回答或退回意见"
+                  placeholder={
+                    card.status === "BLOCKED" ? "回答 Bot 的问题" : "退回原因"
                   }
-                  disabled={busy || demo || (needsBody(op) && !body.trim())}
-                  onClick={() => {
-                    if (op === "cancel" && !confirm("取消这张卡片？")) return;
-                    void run(() =>
-                      boardApi.action(card.id, op, card.version, body),
-                    ).then((ok) => ok && setBody(""));
-                  }}
-                >
-                  {operationText[op]}
-                </button>
-              ))}
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                />
+              )}
+              <div className="button-row">
+                {cardOperations(card.status).map((op: CardOperation) => (
+                  <button
+                    key={op}
+                    className={
+                      op === "cancel" || op === "reject" ? "" : "primary"
+                    }
+                    disabled={busy || demo || (needsBody(op) && !body.trim())}
+                    onClick={() => {
+                      if (op === "cancel" && !confirm("取消这张卡片？")) return;
+                      void run(() =>
+                        boardApi.action(card.id, op, card.version, body),
+                      ).then((ok) => ok && setBody(""));
+                    }}
+                  >
+                    {operationText[op]}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
           <section>
             <h3>动态</h3>
             <ol className="card-timeline">
@@ -317,23 +322,25 @@ export function CardDetailView({
                 </li>
               ))}
             </ol>
-            <form
-              className="card-comment"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void run(() => boardApi.comment(card.id, comment)).then(
-                  (ok) => ok && setComment(""),
-                );
-              }}
-            >
-              <input
-                aria-label="评论"
-                placeholder="评论，可用 @Bot名 提及"
-                value={comment}
-                onChange={(e) => setComment(e.target.value)}
-              />
-              <button disabled={busy || demo || !comment.trim()}>发送</button>
-            </form>
+            {!readOnly && (
+              <form
+                className="card-comment"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void run(() => boardApi.comment(card.id, comment)).then(
+                    (ok) => ok && setComment(""),
+                  );
+                }}
+              >
+                <input
+                  aria-label="评论"
+                  placeholder="评论，可用 @Bot名 提及"
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                />
+                <button disabled={busy || demo || !comment.trim()}>发送</button>
+              </form>
+            )}
           </section>
           {card.runs.length > 0 && (
             <section>

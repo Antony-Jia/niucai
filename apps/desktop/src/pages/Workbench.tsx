@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  ArrowLeft,
   Monitor,
   MousePointer2,
   CornerUpLeft,
@@ -73,10 +74,16 @@ export function Workbench({
       <section className="workbench-session" aria-label="任务与对话">
         <header className="session-heading">
           <div>
-            <span className="workspace-kicker">SESSION</span>
+            <span className="workspace-kicker">TASK</span>
             <h1>{session?.title || "开始一个新会话"}</h1>
           </div>
-          <button onClick={() => onTask("")}>新建会话</button>
+          <div className="button-row">
+            <button onClick={() => setPage("home")}>
+              <ArrowLeft size={14} />
+              返回任务
+            </button>
+            <button onClick={() => onTask("")}>新建会话</button>
+          </div>
         </header>
         <Chat
           conversationId={conversationId || null}

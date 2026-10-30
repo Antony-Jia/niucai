@@ -5,14 +5,39 @@ import { useApp } from "../lib/state";
 import { Header } from "../components/ui";
 import { KernelManager } from "../components/KernelManager";
 import { ConnectionList } from "../components/Connections";
-import { NodesPanel } from "../components/NodesPanel";
+import { Bots } from "./Bots";
+import { Extensions } from "./Extensions";
+import { MemoryPage } from "./FilesMemory";
+import type { Page } from "../lib/types";
 
 const tabs = [
-  ["kernel", "Kernel"],
-  ["nodes", "节点与 Bot"],
+  ["kernel", "连接"],
+  ["bots", "助手"],
+  ["tools", "技能与工具"],
+  ["memory", "偏好与记忆"],
+  ["advanced", "高级"],
 ] as const;
-export function Settings() {
+
+/** 旧页面迁移入口：能力完整保留，只是不再占用主导航。 */
+const legacyPages: { page: Page; title: string; hint: string }[] = [
+  {
+    page: "goals",
+    title: "Goal 列表",
+    hint: "按 Goal 查看编排记录与白板卡片。",
+  },
+  { page: "board", title: "白板", hint: "查看和手工创建白板卡片。" },
+  { page: "kanban", title: "看板", hint: "旧版任务看板。" },
+  {
+    page: "remote",
+    title: "远程 Pi",
+    hint: "提交远程 Pi 任务、查看队列与结果。",
+  },
+];
+export function Settings({
+  onTask,
+}: { onTask?: (id: string | null) => void } = {}) {
   const {
+    setPage,
     profile,
     connected,
     demo,
@@ -80,7 +105,27 @@ export function Settings() {
           </button>
         ))}
       </div>
-      {tab === "nodes" && <NodesPanel />}
+      {tab === "bots" && <Bots onTask={onTask} />}
+      {tab === "tools" && <Extensions />}
+      {tab === "memory" && <MemoryPage />}
+      {tab === "advanced" && (
+        <section className="panel" aria-label="高级入口">
+          <div className="section-heading">
+            <h2>高级与迁移入口</h2>
+          </div>
+          <p className="muted">
+            这些页面仍可使用，但日常任务不需要进入。执行环境与节点配对在“设备”页。
+          </p>
+          <div className="advanced-links">
+            {legacyPages.map((item) => (
+              <button key={item.page} onClick={() => setPage(item.page)}>
+                <strong>{item.title}</strong>
+                <small>{item.hint}</small>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
       <div className="settings-grid" hidden={tab !== "kernel"}>
         <KernelManager />
         <ConnectionList onAdd={addConnection} />

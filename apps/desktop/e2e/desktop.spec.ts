@@ -1,4 +1,19 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+
+/** 在任务首页打开指定任务；不传名称时打开第一条。 */
+async function openTask(page: Page, name?: RegExp) {
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: /^任务/ })
+    .click();
+  const rows = page.locator(".home-task");
+  await (name ? rows.filter({ hasText: name }) : rows).first().click();
+}
+/** 打开一条空白的新会话。 */
+async function openFreshConversation(page: Page) {
+  await openTask(page);
+  await page.getByRole("button", { name: "新建会话" }).click();
+}
 test("desktop demo renders unified pages and takes control", async ({
   page,
 }) => {
@@ -9,14 +24,16 @@ test("desktop demo renders unified pages and takes control", async ({
   await expect(
     page.locator(".page-content").getByText("调研 Agent Harness 的最新进展"),
   ).toBeVisible();
-  await expect(page.locator(".timeline-item")).toHaveCount(2);
-  await page.screenshot({ path: "test-results/dashboard.png", fullPage: true });
-  for (const name of ["Files", "Memory", "Settings", "会话"]) {
+  await page.screenshot({ path: "test-results/home.png", fullPage: true });
+  for (const name of ["文件", "设备", "设置", "任务"]) {
     await page
-      .getByRole("button", { name: new RegExp(`^${name} [0-9]+$`) })
+      .locator(".sidebar")
+      .getByRole("button", { name: new RegExp(`^${name}`) })
+      .first()
       .click();
     await expect(page.locator("h1")).toBeVisible();
   }
+  await openTask(page);
   await page.getByRole("button", { name: "接管电脑", exact: true }).click();
   await expect(page.getByText("控制权在你手中")).toBeVisible();
   await expect(
@@ -34,7 +51,7 @@ test("three-column workspace selects tasks, creates goals and expands the deskto
 }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "体验示例", exact: true }).click();
-  await page.getByRole("button", { name: /^会话 2$/ }).click();
+  await openFreshConversation(page);
   const session = page.getByRole("region", { name: "任务与对话" });
   const desktop = page.getByRole("region", { name: "云端电脑面板" });
   await expect(session.getByRole("heading", { level: 1 })).toHaveText(
@@ -47,10 +64,7 @@ test("three-column workspace selects tasks, creates goals and expands the deskto
   expect(left!.x + left!.width).toBeLessThanOrEqual(middle!.x);
   expect(middle!.x + middle!.width).toBeLessThanOrEqual(right!.x + 1);
   await page.screenshot({ path: "test-results/workbench.png", fullPage: true });
-  await page
-    .locator(".recent-sessions")
-    .getByRole("button", { name: /梳理项目架构/ })
-    .click();
+  await openTask(page, /梳理项目架构/);
   await expect(session.getByRole("heading", { level: 1 })).toHaveText(
     "梳理项目架构",
   );
@@ -73,9 +87,11 @@ test("three-column workspace selects tasks, creates goals and expands the deskto
   await expect(session.getByRole("heading", { level: 1 })).toHaveText(
     "在云端电脑整理项目资料",
   );
+  await page.getByRole("button", { name: "返回任务" }).click();
   await expect(
-    page.locator(".recent-sessions").getByText("在云端电脑整理项目资料"),
+    page.locator(".home-task").filter({ hasText: "在云端电脑整理项目资料" }),
   ).toBeVisible();
+  await openTask(page, /在云端电脑整理项目资料/);
   await desktop.getByRole("button", { name: "Files", exact: true }).click();
   await expect(
     desktop.getByRole("heading", {
@@ -97,13 +113,15 @@ test("workspace fits the minimum Windows window and expands across its full widt
   await page.setViewportSize({ width: 900, height: 650 });
   await page.goto("/");
   await page.getByRole("button", { name: "体验示例", exact: true }).click();
-  await page.getByRole("button", { name: /^会话 2$/ }).click();
+  await openTask(page);
   const desktop = page.getByRole("region", { name: "云端电脑面板" });
   const initial = await desktop.boundingBox();
   expect(initial!.x + initial!.width).toBeLessThanOrEqual(901);
   await page.getByRole("button", { name: "展开桌面" }).click();
   const expanded = await desktop.boundingBox();
-  expect(expanded!.width).toBeGreaterThan(700);
+  // 展开后占满主区域（900px 窗口减去 200px 侧栏），并明显宽于展开前。
+  expect(expanded!.width).toBeGreaterThanOrEqual(700);
+  expect(expanded!.width).toBeGreaterThan(initial!.width + 200);
   await expect(
     desktop.getByRole("button", { name: "接管电脑", exact: true }),
   ).toBeVisible();
@@ -115,11 +133,7 @@ test("minimum workspace shows Kernel progress and separates approval from resume
   await page.setViewportSize({ width: 900, height: 650 });
   await page.goto("/");
   await page.getByRole("button", { name: "体验示例", exact: true }).click();
-  await page.getByRole("button", { name: /^会话 2$/ }).click();
-  await page
-    .locator(".recent-sessions")
-    .getByRole("button", { name: /保存研究结论/ })
-    .click();
+  await openTask(page, /保存研究结论/);
   // Feed a captured server contract through the real query/render path. The
   // deterministic demo keeps this layout check independent of provider calls.
   await page.evaluate(async () => {

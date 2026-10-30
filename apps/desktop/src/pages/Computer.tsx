@@ -25,7 +25,10 @@ import {
   Modal,
 } from "../components/ui";
 import { Approvals } from "./Dashboard";
-export function ComputerPage() {
+/** embedded：嵌在已有页面标题的页面里（如设备页）时不再渲染自己的 h1。 */
+export function ComputerPage({
+  embedded = false,
+}: { embedded?: boolean } = {}) {
   const { connected, demo, profile, notify, synchronizing } = useApp();
   const q = useData(["computers"], api.computers);
   const controlStale = q.isError || (!demo && synchronizing);
@@ -44,16 +47,25 @@ export function ComputerPage() {
   });
   return (
     <>
-      <Header
-        eyebrow="HUMAN + AGENT"
-        title="同一台电脑，随时接管。"
-        description="先取得控制权，再操作桌面；交还后，Agent 从检查点继续。"
-      >
-        <button disabled={!connected} onClick={() => setRegister(true)}>
-          <Plus size={16} />
-          注册电脑
-        </button>
-      </Header>
+      {embedded ? (
+        <div className="button-row">
+          <button disabled={!connected} onClick={() => setRegister(true)}>
+            <Plus size={16} />
+            注册电脑
+          </button>
+        </div>
+      ) : (
+        <Header
+          eyebrow="HUMAN + AGENT"
+          title="同一台电脑，随时接管。"
+          description="先取得控制权，再操作桌面；交还后，Agent 从检查点继续。"
+        >
+          <button disabled={!connected} onClick={() => setRegister(true)}>
+            <Plus size={16} />
+            注册电脑
+          </button>
+        </Header>
+      )}
       {!connected ? (
         <ConnectionEmpty />
       ) : (

@@ -385,3 +385,28 @@ def test_windows_node_bots_default_to_read_and_approval(setup):
         "/api/bots", json={"name": "http", "node_id": local["id"], "engine": "claude"}, headers=auth
     ).json()
     assert created["permission_profile"] == "read" and created["requires_approval"] is True
+
+
+def test_card_view_keeps_executor_and_recent_comments(setup):
+    db, settings, remote, cards, node = board(setup)
+    coder = bot(cards, node)
+    bot(cards, node, name="reviewer", engine="codex")
+    task = card(cards, "pooled")  # 公共池卡片：assignee 为空，由 coder 认领
+    claimed = remote.claim(node["id"])
+    assert claimed["card_id"] == task["id"] and claimed["bot_id"] == coder["id"]
+    token = claimed["board_token"]
+    cards.board_call(node["id"], claimed["id"], token, "card_comment", {"body": "@reviewer 请看接口"})
+    cards.board_call(node["id"], claimed["id"], token, "card_block", {"question": "用哪个数据库？"})
+    remote.finish(node["id"], claimed["id"], claimed["attempt_id"], "COMPLETED", {"answer": "waiting"})
+
+    [view] = cards.board()["cards"]
+    assert view["status"] == "BLOCKED" and view["assignee_bot_id"] is None
+    # BLOCKED 时 current_job 已清空，但最近一次 Attempt 仍指向执行它的 Bot。
+    assert view["current_job"] is None
+    assert view["last_job"]["bot_id"] == coder["id"] and view["last_job"]["id"] == claimed["id"]
+    # latest 只取进度/状态/提问；评论与 @提及通过 recent_events 提供，并带稳定的事件 ID。
+    kinds = [e["kind"] for e in view["recent_events"]]
+    assert "comment" in kinds and "question" in kinds
+    comment = next(e for e in view["recent_events"] if e["kind"] == "comment")
+    assert comment["mentions"] == ["reviewer"] and isinstance(comment["id"], int)
+    assert len({e["id"] for e in view["recent_events"]}) == len(view["recent_events"])

@@ -82,6 +82,8 @@ def diagnostics(session, settings):
             "yolo": settings.yolo_enabled,
             "mcp": settings.mcp_enabled,
             "shell": settings.allow_shell,
+            "orchestrator": settings.orchestrator_enabled,
+            "legacy_execution": settings.legacy_execution_enabled,
         },
         "host_limitation": (
             "Closing Desktop keeps services running; host sleep, shutdown or Docker stop interrupts them."

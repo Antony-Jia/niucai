@@ -605,6 +605,18 @@ class CardManager:
         value["current_job"] = (
             {"id": job.id, "status": job.status, "bot_id": job.bot_id, "engine": job.engine} if job else None
         )
+        # BLOCKED / REVIEW 时 current_job_id 已清空，仍要能知道是哪个 Bot 做的：取最近一次 Attempt。
+        last = job or s.scalar(
+            select(RemoteJob)
+            .where(RemoteJob.card_id == card.id)
+            .order_by(RemoteJob.created_at.desc())
+            .limit(1)
+        )
+        value["last_job"] = (
+            {"id": last.id, "status": last.status, "bot_id": last.bot_id, "engine": last.engine}
+            if last
+            else None
+        )
         # 卡片上显示最近一条动态：白板进度优先，否则取当前 Attempt 的最新引擎事件。
         latest = s.scalar(
             select(CardEvent)
@@ -615,6 +627,26 @@ class CardManager:
         value["latest"] = (
             {"kind": latest.kind, "body": latest.body[:300], "at": latest.created_at} if latest else None
         )
+        # 协作地图要显示评论与 @提及：latest 保持原语义，这里另给最近几条带事件 ID 的动态。
+        value["recent_events"] = [
+            {
+                "id": e.id,
+                "kind": e.kind,
+                "actor": e.actor,
+                "body": e.body[:300],
+                "mentions": list(e.mentions or []),
+                "at": e.created_at,
+            }
+            for e in s.scalars(
+                select(CardEvent)
+                .where(
+                    CardEvent.card_id == card.id,
+                    CardEvent.kind.in_(["progress", "status", "question", "comment", "answer"]),
+                )
+                .order_by(CardEvent.seq.desc())
+                .limit(5)
+            )
+        ]
         if job and job.status in ACTIVE:
             activity = s.scalar(
                 select(Event)

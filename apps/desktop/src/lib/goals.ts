@@ -8,6 +8,8 @@ export interface GoalSummary {
   status: GoalStatus;
   /** 本 Goal 下各状态的卡片数。 */
   cards: Record<string, number>;
+  /** @kernel 用 ask_user 提出、用户尚未回复的问题。 */
+  question?: { message_id: string; content: string; created_at: string } | null;
   updated_at: string;
   created_at: string;
 }
@@ -40,6 +42,7 @@ export interface GoalDetail {
   title: string;
   status: GoalStatus;
   orchestrator_enabled: boolean;
+  question?: GoalSummary["question"];
   messages: GoalMessage[];
   runs: OrchestratorRun[];
   board: Board;
@@ -61,8 +64,13 @@ export const triggerText: Record<string, string> = {
 export const goalsApi = {
   list: () => request<GoalSummary[]>("/api/goals"),
   get: (id: string) => request<GoalDetail>(`/api/goals/${id}`),
-  create: (message: string, title = "") =>
-    request<{ id: string }>("/api/goals", "POST", { message, title }),
+  /** clientId 是幂等键：响应丢失后用同一个 clientId 重试，Kernel 返回已创建的 Goal。 */
+  create: (message: string, title = "", clientId?: string) =>
+    request<{ id: string }>("/api/goals", "POST", {
+      message,
+      title,
+      ...(clientId ? { client_id: clientId } : {}),
+    }),
   send: (id: string, content: string) =>
     request(`/api/goals/${id}/messages`, "POST", {
       content,

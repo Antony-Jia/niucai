@@ -59,7 +59,23 @@ export interface Card {
     bot_id: string;
     engine: string;
   } | null;
+  /** 最近一次 Attempt：BLOCKED / REVIEW 时 current_job 已清空，仍可据此知道执行者。 */
+  last_job?: {
+    id: string;
+    status: string;
+    bot_id: string | null;
+    engine: string;
+  } | null;
   latest: { kind: string; body: string; at: string } | null;
+  /** 最近几条卡片动态（含评论与 @提及），带稳定的事件 ID。 */
+  recent_events?: {
+    id: number;
+    kind: string;
+    actor: string;
+    body: string;
+    mentions: string[];
+    at: string;
+  }[];
   summary: string;
   created_at: string;
   updated_at: string;

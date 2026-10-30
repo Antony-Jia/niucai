@@ -114,6 +114,16 @@ class Message(Base):
     )
 
 
+class GoalRequest(Base):
+    """Goal 创建幂等键：主键即 client_id，并发的重复创建在数据库层只有一个能落库。"""
+
+    __tablename__ = "goal_requests"
+    client_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), unique=True)
+    content_digest: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 class Task(Base):
     __tablename__ = "tasks"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)

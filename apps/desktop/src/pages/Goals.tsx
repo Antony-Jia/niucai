@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, RefreshCw, Send } from "lucide-react";
+import { ArrowLeft, Map as MapIcon, Plus, RefreshCw, Send } from "lucide-react";
 import {
   ConnectionEmpty,
   Empty,
@@ -217,7 +217,44 @@ function NewGoal({
   );
 }
 
-export function Goals() {
+/** 任务首页点开 Goal 时的详情：返回任务、查看协作地图，其余沿用 Goal 视图。 */
+export function GoalDetailPage({
+  id,
+  onBack,
+  onMap,
+}: {
+  id: string;
+  onBack: () => void;
+  onMap: () => void;
+}) {
+  return (
+    <>
+      <div className="detail-bar">
+        <button onClick={onBack}>
+          <ArrowLeft size={14} />
+          返回任务
+        </button>
+        <button onClick={onMap}>
+          <MapIcon size={14} />
+          查看协作地图
+        </button>
+      </div>
+      <GoalView key={id} id={id} />
+    </>
+  );
+}
+
+export function Goals({
+  goalId,
+  onGoal,
+  onMap,
+  onBack,
+}: {
+  goalId?: string | null;
+  onGoal?: (id: string | null) => void;
+  onMap?: (id: string) => void;
+  onBack?: () => void;
+} = {}) {
   const { connected, demo } = useApp();
   const cache = useQueryClient();
   const goals = useQuery({
@@ -229,6 +266,17 @@ export function Goals() {
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   if (!connected && !demo) return <ConnectionEmpty />;
+  if (goalId && onBack && onMap)
+    return (
+      <GoalDetailPage
+        id={goalId}
+        onBack={() => {
+          onGoal?.(null);
+          onBack();
+        }}
+        onMap={() => onMap(goalId)}
+      />
+    );
   const current = selected ?? goals.data?.[0]?.id ?? null;
   return (
     <>

@@ -117,7 +117,7 @@ export interface Conversation {
 }
 export interface ConversationSettings {
   /** agent：可调用工具执行；chat：只对话，不调用工具 */
-  mode: "agent" | "chat";
+  mode: "agent" | "chat" | "goal";
   /** YOLO：会话内电脑操作 / 远程任务免人工审批（shell 始终需要审批） */
   autonomy: { actions: boolean; remote: boolean };
 }
@@ -185,10 +185,13 @@ export type Page =
   | "bots"
   | "extensions"
   | "remote"
+  | "home"
   | "dashboard"
   | "chat"
   | "tasks"
+  | "task"
   | "computer"
+  | "devices"
   | "files"
   | "memory"
   | "settings";

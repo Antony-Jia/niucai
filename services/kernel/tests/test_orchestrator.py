@@ -3,11 +3,12 @@ import json
 from datetime import timedelta
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from test_cards import board, bot
 
 from niucai.api.app import create_app
 from niucai.control.orchestrator import Orchestrator
-from niucai.storage.db import Card, Memory, Message, OrchestratorRun, now
+from niucai.storage.db import Card, GoalRequest, Memory, Message, OrchestratorRun, now
 
 
 class ScriptedGateway:
@@ -240,6 +241,61 @@ def test_goal_api_guards(setup):
     )
     assert again.json() == {"message_id": first.json()["message_id"], "duplicate": True}
     assert api.get("/api/goals/missing", headers=headers).status_code == 404
+
+
+def test_goal_create_is_idempotent_by_client_id(setup):
+    db, settings, *_ = setup
+    api, headers = client(setup)
+    body = {"message": "整理周报", "client_id": "create-1"}
+    first = api.post("/api/goals", json=body, headers=headers)
+    again = api.post("/api/goals", json=body, headers=headers)
+    assert first.status_code == 201 and again.status_code == 201
+    assert again.json()["id"] == first.json()["id"] and again.json()["duplicate"] is True
+    assert len(api.get("/api/goals", headers=headers).json()) == 1
+    with db.sessions() as s:
+        assert len(s.scalars(select(OrchestratorRun)).all()) <= 1
+    changed = api.post("/api/goals", json={**body, "message": "别的"}, headers=headers)
+    assert changed.status_code == 409
+
+
+def test_goal_create_race_returns_the_winner(setup, monkeypatch):
+    """并发创建：两个请求都通过了“先查”，数据库唯一键只放行一个，另一个回放已有 Goal。"""
+    from niucai.api import goals as goals_module
+
+    db, settings, *_ = setup
+    api, headers = client(setup)
+    body = {"message": "整理周报", "client_id": "race-1"}
+    first = api.post("/api/goals", json=body, headers=headers)
+    real, calls = goals_module.replay, []
+
+    def blind_first_time(s, client_id, digest):
+        calls.append(client_id)
+        return None if len(calls) == 1 else real(s, client_id, digest)
+
+    monkeypatch.setattr(goals_module, "replay", blind_first_time)
+    raced = api.post("/api/goals", json=body, headers=headers)
+    assert raced.status_code == 201 and raced.json()["id"] == first.json()["id"]
+    assert raced.json()["duplicate"] is True
+    assert len(calls) == 2
+    assert len(api.get("/api/goals", headers=headers).json()) == 1
+    with db.sessions() as s:
+        assert len(s.scalars(select(GoalRequest)).all()) == 1
+
+
+def test_goal_lists_unanswered_questions(setup):
+    db, settings, *_ = setup
+    api, headers = client(setup)
+    goal_id = goal(api, headers)
+    assert api.get("/api/goals", headers=headers).json()[0]["question"] is None
+    orchestrator = Orchestrator(db, settings, ScriptedGateway())
+    _, question_id = orchestrator.say(goal_id, "QUESTION", "要发布到哪个环境？")
+    listed = api.get("/api/goals", headers=headers).json()[0]["question"]
+    assert listed["message_id"] == question_id and listed["content"] == "要发布到哪个环境？"
+    assert api.get(f"/api/goals/{goal_id}", headers=headers).json()["question"]["message_id"] == question_id
+    api.post(f"/api/goals/{goal_id}/messages", json={"content": "测试环境"}, headers=headers)
+    assert api.get("/api/goals", headers=headers).json()[0]["question"] is None
+    _, newer = orchestrator.say(goal_id, "QUESTION", "还要通知谁？")
+    assert api.get("/api/goals", headers=headers).json()[0]["question"]["message_id"] == newer
 
 
 def test_inbox_is_scoped_to_the_cards_goal(setup):

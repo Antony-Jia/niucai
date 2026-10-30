@@ -1,20 +1,34 @@
 """Goal（重构 P3）：用户目标对话 + 本 Goal 白板 + 编排运行记录。"""
 
+import hashlib
+
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from niucai.control.cards import CardManager
 from niucai.control.conversations import append_message, lock_conversation
 from niucai.control.orchestrator import enqueue, goal_status, is_goal, search_memories
 from niucai.control.tasks import Conflict, Missing, require
-from niucai.storage.db import Card, Conversation, Memory, Message, OrchestratorRun, as_dict, emit
+from niucai.storage.db import (
+    Card,
+    Conversation,
+    GoalRequest,
+    Memory,
+    Message,
+    OrchestratorRun,
+    as_dict,
+    emit,
+)
 
 
 class GoalCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     title: str = Field(default="", max_length=200)
     message: str = Field(min_length=1, max_length=16000)
+    # 幂等键：创建成功但响应丢失时，同一 client_id 重试返回已有 Goal，不再重复编排。
+    client_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class GoalMessage(BaseModel):
@@ -39,6 +53,60 @@ def run_view(run, full=False):
         value.pop("steps")
         value["output"] = run.output[:500]
     return value
+
+
+def replay(s, client_id, digest):
+    """同一 client_id 的重复创建：内容一致返回已有 Goal，内容不同则冲突。"""
+    if not client_id:
+        return None
+    existing = s.get(GoalRequest, client_id)
+    if not existing:
+        return None
+    if existing.content_digest != digest:
+        raise Conflict("client_id reused with different content")
+    conversation = s.get(Conversation, existing.conversation_id)
+    return {
+        "id": conversation.id,
+        "title": conversation.title,
+        "status": goal_status(conversation),
+        "duplicate": True,
+    }
+
+
+def open_questions(s, goal_ids):
+    """每个 Goal 尚未被回答的 @kernel 提问：最后一条 QUESTION 之后没有任何用户消息。"""
+    if not goal_ids:
+        return {}
+    last_question = {}
+    for conversation_id, sequence in s.execute(
+        select(Message.conversation_id, func.max(Message.sequence))
+        .where(Message.conversation_id.in_(goal_ids), Message.source == "KERNEL", Message.kind == "QUESTION")
+        .group_by(Message.conversation_id)
+    ):
+        last_question[conversation_id] = sequence
+    last_user = dict(
+        s.execute(
+            select(Message.conversation_id, func.max(Message.sequence))
+            .where(Message.conversation_id.in_(list(last_question)), Message.source == "USER")
+            .group_by(Message.conversation_id)
+        ).all()
+    )
+    open_ids = {
+        conversation_id: sequence
+        for conversation_id, sequence in last_question.items()
+        if (last_user.get(conversation_id) or 0) < sequence
+    }
+    result = {}
+    for conversation_id, sequence in open_ids.items():
+        message = s.scalar(
+            select(Message).where(Message.conversation_id == conversation_id, Message.sequence == sequence)
+        )
+        result[conversation_id] = {
+            "message_id": message.id,
+            "content": message.content[:500],
+            "created_at": message.created_at,
+        }
+    return result
 
 
 def goals_router(db, settings, auth):
@@ -71,12 +139,14 @@ def goals_router(db, settings, auth):
                     .group_by(Card.conversation_id, Card.status)
                 ):
                     counts.setdefault(conversation_id, {})[status] = count
+            questions = open_questions(s, [c.id for c in rows if goal_status(c) != "DONE"])
             return [
                 {
                     "id": c.id,
                     "title": c.title,
                     "status": goal_status(c),
                     "cards": counts.get(c.id, {}),
+                    "question": questions.get(c.id),
                     "updated_at": c.updated_at,
                     "created_at": c.created_at,
                 }
@@ -86,19 +156,49 @@ def goals_router(db, settings, auth):
     @router.post("/api/goals", dependencies=auth, status_code=201)
     def create(request: GoalCreate):
         enabled()
-        with db.sessions.begin() as s:
-            conversation = Conversation(
-                title=(request.title or request.message.splitlines()[0])[:200],
-                settings={"mode": "goal", "goal_status": "ACTIVE"},
-            )
-            s.add(conversation)
-            s.flush()
-            message = append_message(
-                s, conversation, role="user", source="USER", kind="INSTRUCTION", content=request.message
-            )
-            enqueue(s, conversation.id, {"kind": "message", "message_id": message.id})
-            emit(s, "goal.created", conversation_id=conversation.id)
-            return {"id": conversation.id, "title": conversation.title, "status": "ACTIVE"}
+        digest = hashlib.sha256(request.message.encode()).hexdigest()
+        try:
+            with db.sessions.begin() as s:
+                replayed = replay(s, request.client_id, digest)
+                if replayed:
+                    return replayed
+                conversation = Conversation(
+                    title=(request.title or request.message.splitlines()[0])[:200],
+                    settings={"mode": "goal", "goal_status": "ACTIVE"},
+                )
+                s.add(conversation)
+                s.flush()
+                if request.client_id:
+                    # 幂等键以主键落库：并发的重复创建在这里只有一个能成功。
+                    s.add(
+                        GoalRequest(
+                            client_id=request.client_id,
+                            conversation_id=conversation.id,
+                            content_digest=digest,
+                        )
+                    )
+                    s.flush()
+                message = append_message(
+                    s,
+                    conversation,
+                    role="user",
+                    source="USER",
+                    kind="INSTRUCTION",
+                    content=request.message,
+                    client_id=request.client_id,
+                )
+                enqueue(s, conversation.id, {"kind": "message", "message_id": message.id})
+                emit(s, "goal.created", conversation_id=conversation.id)
+                return {"id": conversation.id, "title": conversation.title, "status": "ACTIVE"}
+        except IntegrityError:
+            # 另一个请求抢先创建了同一个 client_id：回放已有 Goal。
+            if not request.client_id:
+                raise
+            with db.sessions() as s:
+                replayed = replay(s, request.client_id, digest)
+            if replayed:
+                return replayed
+            raise
 
     @router.get("/api/goals/{goal_id}", dependencies=auth)
     def detail(goal_id: str):
@@ -125,6 +225,9 @@ def goals_router(db, settings, auth):
                 "title": conversation.title,
                 "status": goal_status(conversation),
                 "orchestrator_enabled": settings.orchestrator_enabled,
+                "question": (
+                    open_questions(s, [goal_id]).get(goal_id) if goal_status(conversation) != "DONE" else None
+                ),
                 "messages": [{k: m.__dict__[k] for k in MESSAGE_FIELDS} for m in messages],
                 "runs": [run_view(r) for r in runs],
             }

@@ -1,23 +1,19 @@
 import { useEffect, useState } from "react";
 import {
-  LayoutDashboard,
+  ListChecks,
   Monitor,
   Folder,
-  Brain,
   Settings as SettingsIcon,
   ChevronRight,
   X,
   RefreshCw,
-  Puzzle,
-  Kanban as KanbanIcon,
-  StickyNote,
-  Target,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useApp, useData } from "./lib/state";
-import { Dashboard } from "./pages/Dashboard";
+import { useApp, useStale } from "./lib/state";
+import { useTaskItems } from "./lib/use-task-items";
+import { Home } from "./pages/Home";
 import { Workbench } from "./pages/Workbench";
-import { api } from "./lib/api";
+import { StandaloneTask } from "./pages/StandaloneTask";
 import { Files, MemoryPage } from "./pages/FilesMemory";
 import { Settings } from "./pages/Settings";
 import { RemotePi } from "./pages/RemotePi";
@@ -26,75 +22,153 @@ import { Whiteboard } from "./pages/Whiteboard";
 import { Goals } from "./pages/Goals";
 import { Bots } from "./pages/Bots";
 import { Extensions } from "./pages/Extensions";
+import { DevicesPage } from "./pages/DevicesPage";
 import type { Page } from "./lib/types";
-const navigation: { id: Page; label: string; icon: typeof Monitor }[] = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "computer", label: "会话", icon: Monitor },
-  { id: "goals", label: "Goal", icon: Target },
-  { id: "board", label: "白板", icon: StickyNote },
-  { id: "kanban", label: "看板", icon: KanbanIcon },
-  { id: "files", label: "Files", icon: Folder },
-  { id: "memory", label: "Memory", icon: Brain },
-  { id: "remote", label: "远程 Pi", icon: Monitor },
-  { id: "bots", label: "Bots", icon: Brain },
-  { id: "extensions", label: "扩展", icon: Puzzle },
-  { id: "settings", label: "Settings", icon: SettingsIcon },
+
+type Section = "tasks" | "files" | "devices" | "settings";
+
+/** 主导航只有三项加设置；旧页面保留，但归入对应分区而不再占一级入口。 */
+const navigation: {
+  id: Section;
+  page: Page;
+  label: string;
+  icon: typeof Monitor;
+}[] = [
+  { id: "tasks", page: "home", label: "任务", icon: ListChecks },
+  { id: "files", page: "files", label: "文件", icon: Folder },
+  { id: "devices", page: "devices", label: "设备", icon: Monitor },
 ];
+
+const sectionOf: Record<Page, Section> = {
+  home: "tasks",
+  dashboard: "tasks",
+  computer: "tasks",
+  chat: "tasks",
+  tasks: "tasks",
+  task: "tasks",
+  goals: "tasks",
+  files: "files",
+  devices: "devices",
+  remote: "devices",
+  settings: "settings",
+  bots: "settings",
+  extensions: "settings",
+  memory: "settings",
+  board: "settings",
+  kanban: "settings",
+};
+
+const sectionLabel: Record<Section, string> = {
+  tasks: "任务",
+  files: "文件",
+  devices: "设备",
+  settings: "设置",
+};
+
+const subLabel: Partial<Record<Page, string>> = {
+  computer: "会话",
+  chat: "会话",
+  tasks: "会话",
+  task: "任务详情",
+  goals: "任务详情",
+  remote: "远程 Pi",
+  bots: "助手",
+  extensions: "技能与工具",
+  memory: "偏好与记忆",
+  board: "白板",
+  kanban: "看板",
+};
+
 export function App() {
   const {
-    page: storedPage,
+    page,
     setPage,
     connected,
     demo,
     profile,
     stream,
-    synchronizing,
     retryConnection,
     notice,
     notify,
   } = useApp();
-  const page =
-    storedPage === "chat" || storedPage === "tasks" ? "computer" : storedPage;
   const cache = useQueryClient();
-  const tasks = useData(["tasks"], api.tasks);
-  const conversations = useData(["conversations"], api.conversations);
-  const stale =
-    !demo &&
-    connected &&
-    (synchronizing || tasks.isError || /连接中|重连|中断|失效/.test(stream));
+  const { counts, stale: taskStale } = useTaskItems();
+  const stale = useStale(taskStale);
   const [workspaceTask, setWorkspaceTask] = useState<string | null>(null);
+  const [standaloneId, setStandaloneId] = useState<string | null>(null);
+  const [goalId, setGoalId] = useState<string | null>(null);
+  const [focusGoal, setFocusGoal] = useState<string | null>(null);
+  const section = sectionOf[page];
   useEffect(() => {
     function shortcut(e: KeyboardEvent) {
       if (
         e.ctrlKey &&
         !e.altKey &&
         !e.metaKey &&
-        /^[1-6]$/.test(e.key) &&
+        /^[1-3]$/.test(e.key) &&
         !(e.target instanceof HTMLInputElement) &&
         !(e.target instanceof HTMLTextAreaElement)
       ) {
         e.preventDefault();
-        setPage(navigation[Number(e.key) - 1].id);
+        setPage(navigation[Number(e.key) - 1].page);
       }
     }
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
   }, [setPage]);
-  const Current = {
-    dashboard: Dashboard,
-    chat: Workbench,
-    tasks: Workbench,
-    computer: Workbench,
-    kanban: Kanban,
-    board: Whiteboard,
-    goals: Goals,
-    files: Files,
-    memory: MemoryPage,
-    settings: Settings,
-    remote: RemotePi,
-    bots: Bots,
-    extensions: Extensions,
-  }[page];
+
+  function content() {
+    switch (page) {
+      case "home":
+      case "dashboard":
+        return (
+          <Home
+            onTask={setWorkspaceTask}
+            onStandalone={setStandaloneId}
+            onGoal={setGoalId}
+            focusGoal={focusGoal}
+            onFocusGoal={setFocusGoal}
+          />
+        );
+      case "chat":
+      case "tasks":
+      case "computer":
+        return <Workbench taskId={workspaceTask} onTask={setWorkspaceTask} />;
+      case "task":
+        return <StandaloneTask taskId={standaloneId} />;
+      case "goals":
+        return (
+          <Goals
+            goalId={goalId}
+            onGoal={setGoalId}
+            onMap={(id) => {
+              setFocusGoal(id);
+              setPage("home");
+            }}
+            onBack={() => setPage("home")}
+          />
+        );
+      case "files":
+        return <Files />;
+      case "devices":
+        return <DevicesPage />;
+      case "remote":
+        return <RemotePi />;
+      case "settings":
+        return <Settings onTask={setWorkspaceTask} />;
+      case "bots":
+        return <Bots />;
+      case "extensions":
+        return <Extensions />;
+      case "memory":
+        return <MemoryPage />;
+      case "board":
+        return <Whiteboard />;
+      case "kanban":
+        return <Kanban />;
+    }
+  }
+
   return (
     <div className="app-shell desktop-app">
       <aside className="sidebar">
@@ -106,45 +180,52 @@ export function App() {
             niucai<small>PERSONAL AGENT COMPUTER</small>
           </div>
         </div>
-        <div className="sidebar-section">WORKSPACE</div>
         <nav aria-label="主导航">
-          {navigation.map(({ id, label, icon: Icon }, i) => (
+          {navigation.map(({ id, page: target, label, icon: Icon }, i) => (
             <button
               key={id}
-              aria-label={`${label} ${i + 1}`}
-              aria-current={page === id ? "page" : undefined}
-              className={page === id ? "nav-item active" : "nav-item"}
-              onClick={() => setPage(id)}
+              aria-current={section === id ? "page" : undefined}
+              // 名称固定为入口名：窄屏隐藏文字或出现徽标时也不变，徽标数量作补充说明。
+              aria-label={label}
+              aria-describedby={
+                id === "tasks" && counts.tasks > 0
+                  ? "nav-tasks-badge"
+                  : undefined
+              }
+              className={section === id ? "nav-item active" : "nav-item"}
+              title={`${label}（Ctrl+${i + 1}）`}
+              onClick={() => setPage(target)}
             >
               <Icon size={18} />
               <span>{label}</span>
-              <small>{i + 1}</small>
+              {id === "tasks" && counts.tasks > 0 && (
+                <>
+                  <em className="nav-badge" aria-hidden="true">
+                    {counts.tasks}
+                  </em>
+                  <span id="nav-tasks-badge" className="sr-only">
+                    {counts.tasks} 项任务需要你处理
+                  </span>
+                </>
+              )}
             </button>
           ))}
         </nav>
-        <div className="recent-sessions">
-          <div className="sidebar-section">RECENT CONVERSATIONS</div>
-          {conversations.data?.slice(0, 8).map((t) => (
-            <button
-              key={t.id}
-              className={
-                workspaceTask === t.id && page === "computer"
-                  ? "recent-session selected"
-                  : "recent-session"
-              }
-              onClick={() => {
-                setWorkspaceTask(t.id);
-                setPage("computer");
-              }}
-            >
-              <span>{t.title}</span>
-              <small>
-                {tasks.data?.find((task) => task.conversation_id === t.id)
-                  ?.status || "会话"}
-              </small>
-            </button>
-          ))}
-        </div>
+        <div className="sidebar-spacer" />
+        <button
+          aria-current={section === "settings" ? "page" : undefined}
+          className={
+            section === "settings"
+              ? "nav-item active settings-nav"
+              : "nav-item settings-nav"
+          }
+          aria-label="设置"
+          title="设置"
+          onClick={() => setPage("settings")}
+        >
+          <SettingsIcon size={18} />
+          <span>设置</span>
+        </button>
         <button
           className="sidebar-bottom"
           onClick={() => setPage("settings")}
@@ -173,7 +254,14 @@ export function App() {
         <div className="topbar">
           <span>
             Personal workspace <ChevronRight size={13} />
-            <strong>{navigation.find((n) => n.id === page)?.label}</strong>
+            {subLabel[page] ? (
+              <>
+                {sectionLabel[section]} <ChevronRight size={13} />
+                <strong>{subLabel[page]}</strong>
+              </>
+            ) : (
+              <strong>{sectionLabel[section]}</strong>
+            )}
           </span>
           <div>
             <span className="sync-status">
@@ -218,9 +306,7 @@ export function App() {
             </div>
           </div>
         )}
-        <div className="page-content">
-          <Current taskId={workspaceTask} onTask={setWorkspaceTask} />
-        </div>
+        <div className="page-content">{content()}</div>
         <footer>
           <span>YOUR KERNEL. YOUR COMPUTER.</span>
           <span>所有任务与状态由 Kernel 持久保存</span>

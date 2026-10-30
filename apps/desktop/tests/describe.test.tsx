@@ -97,7 +97,10 @@ describe("conversation settings", () => {
     );
     fireEvent.click(await screen.findByRole("button", { name: "体验示例" }));
     await screen.findByText("示例模式 · 不连接真实模型或设备");
-    fireEvent.click(screen.getByRole("button", { name: /^会话 / }));
+    await waitFor(() =>
+      expect(document.querySelector(".home-task")).not.toBeNull(),
+    );
+    fireEvent.click(document.querySelector(".home-task") as HTMLElement);
     fireEvent.click(await screen.findByRole("button", { name: /新建会话/ }));
     const yolo = await screen.findByLabelText("YOLO 电脑操作免审批");
     await waitFor(() => expect(yolo).toBeEnabled());
