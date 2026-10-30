@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, expect, it, vi } from "vitest";
 import { LocalNode } from "../src/components/LocalNode";
+import { useLocalRunnerAutostart } from "../src/lib/local-runner";
 import { localRunner, request } from "../src/lib/api";
 
 vi.mock("../src/lib/state", () => ({
@@ -11,6 +12,7 @@ vi.mock("../src/lib/state", () => ({
 vi.mock("../src/lib/api", () => ({
   request: vi.fn(),
   setDemo: vi.fn(),
+  native: () => true,
   localRunner: {
     status: vi.fn(),
     start: vi.fn(),
@@ -97,14 +99,37 @@ it("drains a running node and shows errors and logs", async () => {
   expect(localStorage.getItem("niucai.localRunner.autostart")).toBeNull();
 });
 
-it("autostarts a paired node that was running last time", async () => {
+function Autostart({ enabled }: { enabled: boolean }) {
+  useLocalRunnerAutostart(enabled, () => {});
+  return null;
+}
+
+it("autostarts a paired node that was running last time, without the devices page", async () => {
   localStorage.setItem("niucai.localRunner.autostart", "1");
-  localStorage.setItem("niucai.localRunner.workdirAllow", "D:\\work");
+  localStorage.setItem("niucai.localRunner.workdirAllow", "D:\work");
   vi.mocked(localRunner.status).mockResolvedValue({ ...base, paired: true });
-  mount();
+  render(<Autostart enabled />);
   await waitFor(() =>
-    expect(localRunner.start).toHaveBeenCalledWith(null, ["D:\\work"]),
+    expect(localRunner.start).toHaveBeenCalledWith(null, ["D:\work"]),
   );
+});
+
+it("does not autostart before connecting, after a manual stop, or when already running", async () => {
+  vi.mocked(localRunner.status).mockResolvedValue({ ...base, paired: true });
+  const { rerender } = render(<Autostart enabled={false} />);
+  localStorage.setItem("niucai.localRunner.autostart", "1");
+  rerender(<Autostart enabled={false} />);
+  localStorage.removeItem("niucai.localRunner.autostart");
+  rerender(<Autostart enabled />);
+  vi.mocked(localRunner.status).mockResolvedValue({
+    ...base,
+    paired: true,
+    running: true,
+  });
+  localStorage.setItem("niucai.localRunner.autostart", "1");
+  render(<Autostart enabled />);
+  await waitFor(() => expect(localRunner.status).toHaveBeenCalled());
+  expect(localRunner.start).not.toHaveBeenCalled();
 });
 
 it("warns when the runner executable is missing", async () => {

@@ -1,38 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Laptop } from "lucide-react";
 import { localRunner, request } from "../lib/api";
+import { ALLOW_KEY, AUTO_KEY, store, stored } from "../lib/local-runner";
 import { useApp } from "../lib/state";
-
-const ALLOW_KEY = "niucai.localRunner.workdirAllow";
-const AUTO_KEY = "niucai.localRunner.autostart";
 
 export const LOCAL_WARNING =
   "本机节点以当前 Windows 用户身份运行 Claude Code / Codex：Bot 能读写自己的工作区和你在白名单中授权的目录，Shell 不是安全沙箱。" +
   "建议本机 Bot 使用“只读”档位并开启人工审批。";
-
-function stored(key: string) {
-  try {
-    return localStorage.getItem(key) ?? "";
-  } catch {
-    return "";
-  }
-}
-function store(key: string, value: string) {
-  try {
-    if (value) localStorage.setItem(key, value);
-    else localStorage.removeItem(key);
-  } catch {
-    // 存储不可用时只是不记住设置。
-  }
-}
 
 /** 把本机作为节点：Desktop 托管 Windows Runner sidecar，退出 Desktop 时完成当前作业后停止。 */
 export function LocalNode({ onChange }: { onChange: () => void }) {
   const { notify } = useApp();
   const [allow, setAllow] = useState(() => stored(ALLOW_KEY));
   const [busy, setBusy] = useState(false);
-  const autostarted = useRef(false);
   const status = useQuery({
     queryKey: ["local-runner"],
     queryFn: localRunner.status,
@@ -70,13 +51,6 @@ export function LocalNode({ onChange }: { onChange: () => void }) {
     });
     await start(pairing.code);
   }
-  // 上次退出前在运行的本机节点，下次打开 Desktop 时自动拉起。
-  useEffect(() => {
-    if (!s || autostarted.current) return;
-    autostarted.current = true;
-    if (s.paired && !active && stored(AUTO_KEY)) void run(() => start(null));
-  }, [s]);
-
   return (
     <section className="panel local-node">
       <div className="section-heading">

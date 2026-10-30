@@ -11,6 +11,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useApp, useStale } from "./lib/state";
 import { useTaskItems } from "./lib/use-task-items";
+import { useLocalRunnerAutostart } from "./lib/local-runner";
 import { Home } from "./pages/Home";
 import { Workbench } from "./pages/Workbench";
 import { StandaloneTask } from "./pages/StandaloneTask";
@@ -92,6 +93,7 @@ export function App() {
     notify,
   } = useApp();
   const cache = useQueryClient();
+  useLocalRunnerAutostart(connected && !demo, notify);
   const { counts, stale: taskStale } = useTaskItems();
   const stale = useStale(taskStale);
   const [workspaceTask, setWorkspaceTask] = useState<string | null>(null);

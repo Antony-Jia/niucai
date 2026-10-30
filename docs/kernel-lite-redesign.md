@@ -539,6 +539,8 @@ Settings
 - 平台分支、Job Object、工作目录白名单。
 - 打包为单文件 exe 并作为 Tauri sidecar；Desktop"把本机加为节点"一键配对、启动、守护、退出时优雅停止。
 - 实现状态（2026-10-29）：Runner 平台分支（`win_job.py` Job Object、`NIUCAI_WORKDIR_ALLOW` 白名单、回环 TCP + 每作业密钥的白板 MCP、stdin `drain` / `stop` 控制）、卡片 `workdir`（迁移 `f8a21029d012`）、`resource_type=windows_local`；`services/node-runner/build-windows.ps1` 用 PyInstaller 打成单文件 exe 放到 `apps/desktop/src-tauri/binaries/`，`npm run desktop:build:runner` 打包为 sidecar；Desktop `src-tauri/src/local_node.rs` 负责启动、守护（2→60 秒退避重启，配对类致命错误不重启）、日志、退出时 drain，Settings“节点与 Bot”页的“本机节点”面板一键配对并提示安全边界；Windows 节点上新建的 Bot 默认“只读 + 需审批”（由 Kernel 在创建时按节点平台设置，不只是前端默认值）；回传文件路径统一为 POSIX 格式。有自动化测试（Runner、Rust、vitest）。待实机验证：PyInstaller 构建、无 Python 机器上的完整流程、Codex Windows 沙箱参数、Claude Code 复用登录（不加 `--bare`）。
+
+- 自动拉起（2026-10-30）：上次退出前在运行的本机节点，在 Desktop 连上 Kernel 后由应用根部自动启动（`lib/local-runner.ts`），不再依赖用户打开“设备/设置”页；此前只有该页挂载时才会拉起，导致绑定在本机节点上的 `local-codex` / `local-claude` 一直显示“不可用”。手动“停止”会清除自动启动标记。
 - 验收：在一台只装了 Desktop 和 Claude Code / Codex CLI（没有 Python / uv）的 Windows 上，打开开关即完成配对；Claude Code 和 Codex 各完成一张指定本地仓库的卡，`slots=2` 时可同时运行；取消时进程树被完整结束；白名单外的目录被拒绝；强制结束 Runner 后卡片在租约过期后回到 `READY`。
 
 ### P5 Skills / MCP 下发与浏览器迁移
