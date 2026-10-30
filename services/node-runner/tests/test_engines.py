@@ -142,6 +142,7 @@ def test_codex_status_reports_reason_without_leaking_credentials(codex, monkeypa
         "available": True,
         "version": "0.164.0",
         "model": "gpt-test",
+        "models": ["gpt-test"],
         "profiles": ["read", "workspace"],
         "sandbox": "engine",
     }
@@ -426,6 +427,7 @@ def test_claude_status_reports_reason_without_leaking_credentials(claude, monkey
         "available": True,
         "version": "2.1.307",
         "model": "claude-test",
+        "models": ["claude-test", "sonnet", "opus", "haiku"],
         "profiles": ["read", "workspace"],
         "sandbox": "container",
     }
@@ -628,3 +630,64 @@ def test_stderr_is_drained_throttled_redacted_and_kept_as_tail(monkeypatch):
     monkeypatch.setattr(runner, "STDERR_EVENT_MAX", 2)
     asyncio.run(runner.drain_stderr(Stream([b"a\n"] * 6), reports.append, []))
     assert len(reports) == 2  # capped per attempt
+
+
+def test_model_list_puts_default_first_and_drops_bad_or_duplicate_names(monkeypatch):
+    monkeypatch.setenv("NIUCAI_X_MODELS", " b , a,a,bad name,,../x ,c")
+    assert runner.model_list("NIUCAI_X_MODELS", "a") == ["a", "b", "c"]
+    # 没配置时用兜底清单；默认模型仍排第一。
+    monkeypatch.delenv("NIUCAI_X_MODELS")
+    assert runner.model_list("NIUCAI_X_MODELS", "d", ["e", "d"]) == ["d", "e"]
+    assert runner.model_list("NIUCAI_X_MODELS") == []
+    monkeypatch.setenv("NIUCAI_X_MODELS", ",".join(f"m{i}" for i in range(80)))
+    assert len(runner.model_list("NIUCAI_X_MODELS")) == runner.MODEL_LIST_LIMIT
+
+
+def test_pi_registers_every_listed_model_and_reports_them(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner.os, "chown", lambda *a: None, raising=False)
+    monkeypatch.setattr(runner.os, "fchown", lambda *a: None, raising=False)
+    monkeypatch.setenv("NIUCAI_PI_MODEL", "fast")
+    monkeypatch.setenv("NIUCAI_PI_MODELS", "smart,fast")
+    monkeypatch.setenv("NIUCAI_PI_BASE_URL", "https://llm.example/v1")
+    pi = runner.PiEngine(tmp_path)
+    registered = json.loads((pi.home / "models.json").read_text(encoding="utf-8"))
+    ids = [m["id"] for m in registered["providers"][pi.provider]["models"]]
+    assert ids == ["fast", "smart"]  # 默认模型在前，Bot 选的其它模型也能被 Pi 找到
+    assert pi.status()["models"] == ["fast", "smart"]
+    args = pi.command(tmp_path / "s", {"config_snapshot": {"bot": {"model": "smart"}}})
+    assert args[args.index("--model") + 1] == "smart"
+
+
+def test_claude_offers_aliases_unless_a_custom_endpoint_is_used(claude, monkeypatch):
+    assert claude.status()["models"] == ["claude-test", "sonnet", "opus", "haiku"]
+    monkeypatch.setenv("NIUCAI_CLAUDE_BASE_URL", "https://gateway.example")
+    monkeypatch.setenv("NIUCAI_CLAUDE_MODELS", "glm-4")
+    custom = runner.ClaudeEngine(claude.home.parent)
+    assert custom.status()["models"] == ["claude-test", "glm-4"]
+    monkeypatch.delenv("NIUCAI_CLAUDE_MODELS")
+    assert runner.ClaudeEngine(claude.home.parent).status()["models"] == ["claude-test"]
+
+
+def test_codex_models_come_from_env_or_its_own_cache(codex, tmp_path, monkeypatch):
+    assert codex.status()["models"] == ["gpt-test"]
+    monkeypatch.setenv("NIUCAI_CODEX_MODELS", "o-1,gpt-test")
+    assert codex.status()["models"] == ["gpt-test", "o-1"]
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    assert runner.codex_cached_models() == []  # 没有缓存文件
+    (tmp_path / "models_cache.json").write_text(
+        json.dumps(
+            {
+                "models": [
+                    {"slug": "gpt-a", "visibility": "list"},
+                    {"slug": "hidden", "visibility": "hide"},
+                    {"visibility": "list"},
+                    "junk",
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert runner.codex_cached_models() == ["gpt-a"]
+    (tmp_path / "models_cache.json").write_text("{broken", encoding="utf-8")
+    assert runner.codex_cached_models() == []

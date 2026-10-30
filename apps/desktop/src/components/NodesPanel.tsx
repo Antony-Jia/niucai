@@ -8,6 +8,14 @@ import { BotForm } from "./BotForm";
 import { LocalNode } from "./LocalNode";
 import { Modal, time } from "./ui";
 
+/** 节点心跳上报的各引擎可选模型。 */
+export const engineModels = (
+  engines: Record<string, { models?: string[] }>,
+): Record<string, string[]> =>
+  Object.fromEntries(
+    Object.entries(engines).map(([name, e]) => [name, e.models ?? []]),
+  );
+
 export interface TopologyNode {
   id: string;
   name: string;
@@ -18,7 +26,7 @@ export interface TopologyNode {
   enabled: boolean;
   slots: number;
   busy: number;
-  engines: Record<string, { available?: boolean }>;
+  engines: Record<string, { available?: boolean; models?: string[] }>;
   preview_url: string;
   paired_at: string | null;
   heartbeat_at: string | null;
@@ -464,6 +472,7 @@ export function NodesPanel() {
           engines={Object.entries(editing.node.engines)
             .filter(([, e]) => e.available !== false)
             .map(([name]) => name)}
+          models={engineModels(editing.node.engines)}
           bot={editing.bot}
           platform={editing.node.platform}
           onClose={() => setEditing(null)}

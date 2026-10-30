@@ -59,6 +59,29 @@ def test_pairing_redeem_heartbeat_and_topology(setup):
     assert invalid.status_code == 422
 
 
+def test_heartbeat_publishes_selectable_models_per_engine(setup):
+    api, auth, _ = client(setup)
+    code = api.post("/api/pairing", json={"name": "models"}, headers=auth).json()["code"]
+    pair = api.post("/api/pairing/redeem", json={"code": code}).json()
+    url = f"/api/remote/runner/{pair['node_id']}/heartbeat"
+    node_auth = {"Authorization": f"Bearer {pair['token']}"}
+    beat = {
+        "available": True,
+        "protocol_version": 3,
+        "executors": {
+            "pi": {"available": True, "model": "a", "models": ["a", "b"]},
+            "claude": {"available": True},
+        },
+    }
+    assert api.post(url, json=beat, headers=node_auth).status_code == 200
+    [entry] = api.get("/api/topology", headers=auth).json()["nodes"]
+    assert entry["engines"]["pi"]["models"] == ["a", "b"]
+    assert entry["engines"]["claude"]["models"] == []  # 旧 Runner 不上报时是空列表
+
+    beat["executors"]["pi"]["models"] = ["x" * 201]
+    assert api.post(url, json=beat, headers=node_auth).status_code == 422
+
+
 def test_expired_and_unknown_codes_are_rejected(setup):
     api, auth, db = client(setup)
     code = api.post("/api/pairing", json={"name": "old"}, headers=auth).json()["code"]

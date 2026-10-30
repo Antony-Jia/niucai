@@ -226,6 +226,31 @@ def job_model(job, default):
     return model
 
 
+MODEL_LIST_LIMIT = 50
+# Claude Code 的 --model 接受这些别名；自定义接口地址后别名未必有对应模型，所以那时不提供。
+CLAUDE_ALIASES = ("sonnet", "opus", "haiku")
+
+
+def model_list(variable, default="", fallback=()):
+    """节点可选模型：环境变量逗号分隔，没配时用 fallback；默认模型始终排第一，非法或重复的名字丢弃。"""
+    listed = [name.strip() for name in os.environ.get(variable, "").split(",")]
+    names = [default, *([n for n in listed if n] or fallback)]
+    unique = dict.fromkeys(n for n in names if n and MODEL_NAME.fullmatch(n))
+    return list(unique)[:MODEL_LIST_LIMIT]
+
+
+def codex_cached_models():
+    """Codex CLI 自己缓存的、该账号可选的模型（~/.codex/models_cache.json）；读不到就返回空。"""
+    home = os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
+    try:
+        cache = json.loads((Path(home) / "models_cache.json").read_text(encoding="utf-8"))
+        return [
+            m["slug"] for m in cache["models"] if isinstance(m, dict) and m.get("visibility") == "list" and m.get("slug")
+        ]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
 def board_server_config(board):
     """niucai-board MCP 服务器：以引擎身份运行，只经本作业的代理端点访问 Runner。
 
@@ -495,6 +520,7 @@ class PiEngine:
         self.model = os.environ.get("NIUCAI_PI_MODEL", "")
         if not self.model:
             raise ValueError("NIUCAI_PI_MODEL must be configured")
+        self.models = model_list("NIUCAI_PI_MODELS", self.model)
         if os.environ.get("NIUCAI_PI_BASE_URL"):
             atomic_json(
                 self.home / "models.json",
@@ -506,7 +532,7 @@ class PiEngine:
                             "apiKey": "${PI_PROVIDER_KEY}",
                             "models": [
                                 {
-                                    "id": self.model,
+                                    "id": model,
                                     "contextWindow": 64000,
                                     "maxTokens": 4096,
                                     "reasoning": False,
@@ -518,6 +544,7 @@ class PiEngine:
                                         "cacheWrite": 0,
                                     },
                                 }
+                                for model in self.models
                             ],
                         }
                     }
@@ -535,7 +562,7 @@ class PiEngine:
         }
 
     def status(self):
-        return {"available": True, "version": "1.1.0", "model": self.model}
+        return {"available": True, "version": "1.1.0", "model": self.model, "models": self.models}
 
     def environment(self):
         # Runner credentials are never inherited by Pi; Pi runs under another Unix UID.
@@ -723,6 +750,13 @@ class CodexEngine:
     def credential():
         return os.environ.get("NIUCAI_CODEX_API_KEY", "")
 
+    @property
+    def models(self):
+        # Windows 复用用户登录的账号时，模型清单取 Codex 自己的缓存（每次心跳重读，首次运行后才会生成）；
+        # 自定义接口或 API Key 下没有这份清单。
+        own_account = WINDOWS and not self.base_url and not self.credential()
+        return model_list("NIUCAI_CODEX_MODELS", self.model, codex_cached_models() if own_account else ())
+
     def status(self):
         if not shutil.which("codex"):
             return {"available": False, "reason": "not_installed"}
@@ -732,6 +766,7 @@ class CodexEngine:
             "available": True,
             "version": self.version,
             "model": self.model,
+            "models": self.models,
             "profiles": self.profiles,
             "sandbox": self.sandbox,
         }
@@ -948,6 +983,7 @@ class ClaudeEngine:
         chown(self.home, self.uid)
         self.model = os.environ.get("NIUCAI_CLAUDE_MODEL", "")
         self.base_url = os.environ.get("NIUCAI_CLAUDE_BASE_URL", "")
+        self.models = model_list("NIUCAI_CLAUDE_MODELS", self.model, () if self.base_url else CLAUDE_ALIASES)
         self.budget = os.environ.get("NIUCAI_CLAUDE_MAX_BUDGET_USD", "")
         allowed = {a.strip() for a in os.environ.get("NIUCAI_CLAUDE_PROFILES", "read,workspace").split(",")}
         self.profiles = [p for p in ("read", "workspace", "full") if p in allowed]
@@ -978,6 +1014,7 @@ class ClaudeEngine:
             "available": True,
             "version": self.version,
             "model": self.model,
+            "models": self.models,
             "profiles": self.profiles,
             "sandbox": self.sandbox,
         }

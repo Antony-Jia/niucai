@@ -26,6 +26,7 @@ const profileText: Record<PermissionProfile, string> = {
 export function BotForm({
   nodeId,
   engines,
+  models = {},
   bot,
   platform = "",
   onClose,
@@ -38,6 +39,8 @@ export function BotForm({
   unavailable?: boolean;
   onBack?: () => void;
   engines: string[];
+  /** 节点心跳上报的每个引擎可选模型；没有上报时退回手填。 */
+  models?: Record<string, string[]>;
   bot?: Bot;
   platform?: string;
   onClose: () => void;
@@ -66,6 +69,7 @@ export function BotForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const blocked = unavailable || synchronizing || available.length === 0;
+  const modelChoices = models[form.engine] ?? [];
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
   async function save() {
@@ -182,7 +186,15 @@ export function BotForm({
           引擎
           <select
             value={form.engine}
-            onChange={(e) => set("engine", e.target.value as Engine)}
+            onChange={(e) => {
+              const engine = e.target.value as Engine;
+              // 模型名因引擎而异：换引擎后不在新引擎清单里的选择退回节点默认。
+              setForm((f) => ({
+                ...f,
+                engine,
+                model: (models[engine] ?? []).includes(f.model) ? f.model : "",
+              }));
+            }}
           >
             {available.map((e) => (
               <option key={e} value={e}>
@@ -237,12 +249,31 @@ export function BotForm({
         <details className="bot-advanced">
           <summary>高级配置 · 模型、技能与并发</summary>
           <label>
-            模型（留空用节点默认）
-            <input
-              maxLength={200}
-              value={form.model}
-              onChange={(e) => set("model", e.target.value)}
-            />
+            模型
+            {modelChoices.length > 0 ? (
+              <select
+                value={form.model}
+                onChange={(e) => set("model", e.target.value)}
+              >
+                <option value="">节点默认</option>
+                {/* 编辑时保留已保存但节点当前没上报的模型，避免静默改掉。 */}
+                {form.model && !modelChoices.includes(form.model) && (
+                  <option value={form.model}>{form.model}（节点未上报）</option>
+                )}
+                {modelChoices.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                maxLength={200}
+                value={form.model}
+                placeholder="留空用节点默认"
+                onChange={(e) => set("model", e.target.value)}
+              />
+            )}
           </label>
           <label>
             技能

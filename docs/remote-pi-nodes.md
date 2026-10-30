@@ -90,6 +90,7 @@ docker compose -p niucai-resource-test --env-file build-cache/resource-nodes/.en
 | `NIUCAI_KERNEL_URL` | 节点可访问的 HTTPS Kernel 地址 |
 | `NIUCAI_NODE_ID` / `NIUCAI_NODE_TOKEN` | 独立节点身份 |
 | `NIUCAI_PI_PROVIDER` / `NIUCAI_PI_MODEL` | 节点自身的 Pi 模型配置 |
+| `NIUCAI_PI_MODELS` | 可选，逗号分隔的 Pi 可选模型清单；默认模型总在第一位，并全部写入 Pi 的 `models.json`，心跳上报后 Desktop 的 Bot 表单据此提供模型下拉 |
 | `NIUCAI_PI_BASE_URL` | 可选的 OpenAI-compatible `/v1` 地址 |
 | `NIUCAI_PI_PROVIDER_KEY` | 自定义 endpoint 的模型凭据 |
 | `OPENROUTER_API_KEY` 等 | Pi 内置 provider 的凭据 |

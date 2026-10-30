@@ -1,7 +1,7 @@
 import json
 import secrets
 from hashlib import sha256
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -151,6 +151,8 @@ def remote_router(db, settings, auth):
         available: bool
         version: str = Field(default="", max_length=100)
         model: str = Field(default="", max_length=200)
+        # 节点上这个引擎可选的模型；Desktop 的 Bot 表单据此给下拉选项。
+        models: list[Annotated[str, Field(max_length=200)]] = Field(default_factory=list, max_length=50)
         profiles: list[str] = Field(default_factory=list, max_length=8)
         reason: str = Field(default="", max_length=100)
         sandbox: Literal["engine", "container", ""] = ""
