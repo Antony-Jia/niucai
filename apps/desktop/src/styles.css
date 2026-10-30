@@ -289,9 +289,7 @@ i.connected,
 }
 .page-content {
   padding: 32px 34px 38px;
-  max-width: 1560px;
   width: 100%;
-  margin: 0 auto;
   flex: 1;
 }
 .page-heading {
