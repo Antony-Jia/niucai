@@ -7,7 +7,8 @@ from sqlalchemy import select
 from niucai.control.autonomy import normalize
 from niucai.control.conversations import ConversationManager, lock_conversation
 from niucai.control.progress import task_snapshot
-from niucai.control.tasks import require, require_legacy
+from niucai.control.removal import remove_conversation
+from niucai.control.tasks import Missing, require, require_legacy
 from niucai.storage.db import Artifact, Conversation, Event, Message, Task, as_dict, emit
 
 
@@ -58,6 +59,7 @@ def chat_router(db, settings, auth, injected_gateway=None):
                 as_dict(c)
                 for c in session.scalars(
                     select(Conversation)
+                    .where(Conversation.deleted_at.is_(None))
                     .order_by(Conversation.updated_at.desc(), Conversation.id)
                     .limit(limit)
                 )
@@ -80,7 +82,15 @@ def chat_router(db, settings, auth, injected_gateway=None):
     def conversation(conversation_id: str):
         with db.sessions() as session:
             row = require(session, Conversation, conversation_id)
+            if row.deleted_at:
+                raise Missing("Conversation not found")
             return {**as_dict(row), "settings": normalize(row.settings)}
+
+    @router.delete("/api/conversations/{conversation_id}")
+    def delete(conversation_id: str):
+        with db.sessions.begin() as session:
+            remove_conversation(session, conversation_id)
+            return {"deleted": conversation_id}
 
     @router.patch("/api/conversations/{conversation_id}")
     def update(conversation_id: str, request: ConversationPatch):

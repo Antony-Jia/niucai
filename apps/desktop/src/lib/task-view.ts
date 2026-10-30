@@ -65,6 +65,10 @@ export const filterText: Record<TaskFilter, string> = {
 const finished: DisplayStatus[] = ["completed", "failed", "cancelled"];
 export const isFinished = (status: DisplayStatus) => finished.includes(status);
 
+/** 只有已结束（或还没开始执行的空会话）的任务能删除；进行中的须先取消。 */
+export const isRemovable = (item: Pick<TaskItem, "status">) =>
+  isFinished(item.status) || item.status === "idle";
+
 const statusMap: Record<Task["status"], DisplayStatus> = {
   PENDING: "queued",
   RUNNING: "running",

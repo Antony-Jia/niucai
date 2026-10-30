@@ -42,6 +42,8 @@ SYSTEM_PROMPT = """你是 niucai Kernel 的编排者（@kernel）。
 规则：
 - 你只能使用提供的白板工具；你不能自己浏览网页、执行命令或写文件，所有实际工作由 Bot 完成。
 - 先用 bots_list 了解可用 Bot；按 Bot 的角色与标签指派。没有合适 Bot 时用 ask_user 告诉用户。
+- 上下文里的 preferred_bots 是用户用 @ 明确指定的助手：卡片必须优先指派给他们
+  （创建卡片没写 bot 时默认交给第一个）；他们不可用时用 ask_user 说明，不要擅自换人。
 - 卡片要写清 goal（做什么）和 acceptance（怎样算完成）；有先后关系时用 depends_on 填前置卡片 id。
 - 卡片进入 REVIEW 时对照验收标准用 card_review 给出 accept 或 reject（reject 必须写明原因）。
 - Bot 阻塞并 @kernel 提问时，能回答就用 card_comment 回答，否则用 ask_user 转问用户。
@@ -414,7 +416,12 @@ class Orchestrator:
             )[::-1]
         board = self.cards.board(goal_id)
         package = {
-            "goal": {"id": goal_id, "title": conversation.title, "status": goal_status(conversation)},
+            "goal": {
+                "id": goal_id,
+                "title": conversation.title,
+                "status": goal_status(conversation),
+                "preferred_bots": preferred_bots(conversation),
+            },
             "messages": [
                 {
                     "from": "user" if m.role == "user" else "kernel",
@@ -527,7 +534,9 @@ class Orchestrator:
             count = s.scalar(select(func.count(Card.id)).where(Card.conversation_id == goal_id))
             if count >= CARD_LIMIT:
                 raise Conflict(f"每个 Goal 最多 {CARD_LIMIT} 张卡片")
-            bot_id = self.bot_id(s, args.get("bot"))
+            # 没写 bot 时落到用户 @ 指定的第一个助手；写了就以编排者的选择为准（需是已启用的 Bot）。
+            wanted = args.get("bot") or next(iter(preferred_bots(require(s, Conversation, goal_id))), None)
+            bot_id = self.bot_id(s, wanted)
             depends = [str(d) for d in args.get("depends_on") or []][:32]
             for ident in depends:
                 self.goal_card(s, goal_id, ident)
@@ -708,6 +717,11 @@ TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 
 def goal_status(conversation):
     return (conversation.settings or {}).get("goal_status", "ACTIVE")
+
+
+def preferred_bots(conversation):
+    """用户创建 Goal 时用 @ 指定的助手名称。"""
+    return [str(n) for n in (conversation.settings or {}).get("preferred_bots", [])]
 
 
 def parse_args(call):

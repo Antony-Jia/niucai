@@ -37,4 +37,10 @@ docker compose --env-file node.env -f deploy/compose/compose.browser-pi.yml up -
 
 本次本机部署复用了已有 `niucai-remote-computer-1` 与 `niucai-remote-desktop-relay-1`，浏览器 Runner 为 `niucai-browser-pi-runner-1`，Bot 名称 `vnc-pi`。本机配置和重建命令记录于被忽略的 `local-logs/kernel-lite-startup.md`、`build-cache/kernel-lite-local/start-browser.py`。没有更新 VPS。
 
+## 在桌面客户端查看远程画面
+
+Devices 页的节点卡片在节点登记了 `NIUCAI_PREVIEW_URL` 时显示“查看远程画面”。Windows 客户端调用 Tauri 命令 `open_node_preview(node_id)`：地址由命令自己从 Kernel 拓扑里取，前端不能传入任意 URL，并按连接地址同样的规则校验（HTTPS，仅本机回环允许 HTTP，不带凭据/查询/片段）。画面在独立窗口中打开，该窗口没有 Kernel 权限、令牌和注入脚本；KasmVNC 口令由用户在画面页里输入，不经过 Kernel 或 Pi。节点离线时按钮禁用。Web/PWA 端仍是普通链接。
+
+本机重启 Docker 后，三个容器都会退出：依次 `docker start niucai-remote-computer-1 niucai-remote-desktop-relay-1 niucai-browser-pi-runner-1`（Computer 健康后再启动 Runner）。
+
 验收应同时核对卡片成功、真实浏览器工具事件、Chrome 页面结果及 VNC/Chrome 健康，不能把 Runner 心跳当作浏览器可用的证明。

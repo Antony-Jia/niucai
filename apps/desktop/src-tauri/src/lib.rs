@@ -666,6 +666,51 @@ fn close_remote(app: &tauri::AppHandle) -> Result<(), String> {
         Ok(())
     }
 }
+/// 节点（VPS/Docker 里的 Chrome + KasmVNC）登记的画面预览地址。
+/// 只信 Kernel 拓扑里记录的地址，前端不能传入任意 URL。
+fn node_preview_url(topology: &Value, node_id: &str) -> Result<url::Url, String> {
+    let preview = topology["nodes"]
+        .as_array()
+        .and_then(|nodes| nodes.iter().find(|node| node["id"] == node_id))
+        .and_then(|node| node["preview_url"].as_str())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("该节点没有登记画面预览地址")?;
+    validate_url(preview)
+}
+fn preview_label(node_id: &str) -> String {
+    let safe: String = node_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .take(48)
+        .collect();
+    format!("node-preview-{safe}")
+}
+/// 在独立窗口里打开节点的远程浏览器画面（KasmVNC）。
+/// 窗口没有 Kernel 权限、令牌或注入脚本；VNC 密码由用户在画面页里输入，不经过 Kernel 或 Pi。
+#[tauri::command]
+async fn open_node_preview(
+    window: tauri::Webview,
+    app: tauri::AppHandle,
+    state: State<'_, KernelState>,
+    node_id: String,
+) -> Result<(), String> {
+    trusted(&window)?;
+    let c = connection(&state)?;
+    let topology = transport::request(&c, "/api/topology", "GET", Value::Null).await?;
+    let remote = node_preview_url(&topology, &node_id)?;
+    let label = preview_label(&node_id);
+    if let Some(existing) = app.get_webview_window(&label) {
+        existing.set_focus().map_err(|_| "无法聚焦画面窗口")?;
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(&app, label, WebviewUrl::External(remote))
+        .title("niucai · 节点画面")
+        .inner_size(1280.0, 800.0)
+        .min_inner_size(640.0, 480.0)
+        .build()
+        .map_err(|_| "无法创建画面窗口")?;
+    Ok(())
+}
 #[tauri::command]
 fn toggle_computer_fullscreen(window: tauri::Webview, app: tauri::AppHandle) -> Result<(), String> {
     trusted(&window)?;
@@ -933,6 +978,7 @@ pub fn run() {
             open_computer,
             embed_computer,
             close_computer,
+            open_node_preview,
             toggle_computer_fullscreen,
             start_events,
             stop_events,
@@ -970,6 +1016,21 @@ mod tests {
         assert!(trusted_labels("computer-embedded", "main").is_err());
         assert!(trusted_labels("computer", "computer").is_err());
         assert!(trusted_labels("main", "computer").is_err());
+    }
+    #[test]
+    fn node_preview_only_uses_the_registered_safe_address() {
+        let topology = serde_json::json!({"nodes": [
+            {"id": "n1", "preview_url": "https://vnc.example.com:6901/"},
+            {"id": "n2", "preview_url": "http://127.0.0.1:6901/"},
+            {"id": "n3", "preview_url": "http://vnc.example.com/"},
+            {"id": "n4", "preview_url": ""},
+        ]});
+        assert!(node_preview_url(&topology, "n1").is_ok());
+        assert!(node_preview_url(&topology, "n2").is_ok());
+        assert!(node_preview_url(&topology, "n3").is_err());
+        assert!(node_preview_url(&topology, "n4").is_err());
+        assert!(node_preview_url(&topology, "missing").is_err());
+        assert_eq!(preview_label("a/b c-1"), "node-preview-abc-1");
     }
     #[test]
     fn connection_names_and_keys() {

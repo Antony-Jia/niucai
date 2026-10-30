@@ -337,3 +337,83 @@ def test_card_update_requires_version(setup):
     assert "version" in results[0]["error"] and "error" in results[1]
     with db.sessions() as s:
         assert s.get(Card, task["id"]).title == "新标题"
+
+
+def test_finished_goal_can_be_deleted_and_disappears(setup):
+    db, settings, remote, cards, node = board(setup)
+    coder = bot(cards, node, role="前端开发", tags=["web"])
+    api, headers = client(setup)
+    goal_id = goal(api, headers)
+    # 编排运行还在排队：不能删除。
+    busy = api.delete(f"/api/goals/{goal_id}", headers=headers)
+    assert busy.status_code == 409
+    gateway = ScriptedGateway(
+        [("card_create", {"title": "修登录", "goal": "修复", "bot": "coder"})], "本轮结束"
+    )
+    assert run(Orchestrator(db, settings, gateway)) is True
+    # 卡片还没结束：仍不能删除。
+    assert api.delete(f"/api/goals/{goal_id}", headers=headers).status_code == 409
+    [card] = api.get(f"/api/goals/{goal_id}", headers=headers).json()["board"]["cards"]
+    cancelled = api.post(
+        f"/api/cards/{card['id']}/cancel",
+        json={"expected_version": card["version"], "body": ""},
+        headers=headers,
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    with db.sessions.begin() as s:
+        for pending in s.scalars(select(OrchestratorRun).where(OrchestratorRun.status == "PENDING")):
+            pending.status = "COMPLETED"
+    assert api.delete(f"/api/goals/{goal_id}", headers=headers).json() == {"deleted": goal_id}
+    assert api.get("/api/goals", headers=headers).json() == []
+    assert api.get(f"/api/goals/{goal_id}", headers=headers).status_code == 404
+    assert api.get("/api/conversations", headers=headers).json() == []
+    assert api.get("/api/board", headers=headers).json()["cards"] == []
+    # 已删除的 Goal 不再接受消息，重复删除是 404。
+    sent = api.post(f"/api/goals/{goal_id}/messages", json={"content": "x"}, headers=headers)
+    assert sent.status_code == 404
+    assert api.delete(f"/api/goals/{goal_id}", headers=headers).status_code == 404
+    # 审计与卡片记录仍在库里。
+    with db.sessions() as s:
+        assert (
+            s.scalars(select(Card).where(Card.conversation_id == goal_id)).one().assignee_bot_id
+            == coder["id"]
+        )
+
+
+def test_standalone_task_delete_requires_a_finished_task(setup):
+    from niucai.storage.db import Task
+
+    db, settings, *_ = setup
+    api, headers = client(setup)
+    with db.sessions.begin() as s:
+        running = Task(title="跑着", goal="g", status="RUNNING")
+        done = Task(title="完了", goal="g", status="COMPLETED")
+        s.add_all([running, done])
+        s.flush()
+        running_id, done_id = running.id, done.id
+    assert api.delete(f"/api/tasks/{running_id}", headers=headers).status_code == 409
+    assert api.delete(f"/api/tasks/{done_id}", headers=headers).json() == {"deleted": done_id}
+    assert [t["id"] for t in api.get("/api/tasks", headers=headers).json()] == [running_id]
+    assert api.get(f"/api/tasks/{done_id}", headers=headers).status_code == 404
+    assert api.delete(f"/api/tasks/{done_id}", headers=headers).status_code == 409
+
+
+def test_goal_prefers_bots_chosen_with_at(setup):
+    db, settings, remote, cards, node = board(setup)
+    bot(cards, node, name="writer", role="写作", tags=["doc"])
+    reviewer = bot(cards, node, name="reviewer", role="审阅", tags=["doc"])
+    api, headers = client(setup)
+    unknown = api.post("/api/goals", json={"message": "写周报", "bots": ["ghost"]}, headers=headers)
+    assert unknown.status_code == 422
+    created = api.post(
+        "/api/goals", json={"message": "写周报", "bots": ["@reviewer", "reviewer"]}, headers=headers
+    )
+    assert created.status_code == 201, created.text
+    goal_id = created.json()["id"]
+    gateway = ScriptedGateway([("card_create", {"title": "周报", "goal": "写周报"})], "本轮结束")
+    assert run(Orchestrator(db, settings, gateway)) is True
+    package = json.loads(gateway.requests[0]["messages"][1]["content"])
+    assert package["goal"]["preferred_bots"] == ["reviewer"]
+    with db.sessions() as s:
+        [card] = s.scalars(select(Card).where(Card.conversation_id == goal_id)).all()
+        assert card.assignee_bot_id == reviewer["id"]

@@ -148,6 +148,117 @@
   gap: 4px;
   flex: none;
 }
+.home-task-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.home-task-row .home-task {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 0;
+}
+.home-task-remove {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+}
+.home-task-remove:hover:not(:disabled) {
+  border-color: rgba(200, 80, 80, 0.6);
+  color: #c85050;
+}
+.mention-field {
+  position: relative;
+}
+.mention-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+.mention-menu {
+  position: absolute;
+  left: 8px;
+  bottom: calc(100% - 4px);
+  z-index: 5;
+  min-width: 220px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border-radius: 8px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  background: var(--panel, #1f2328);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+}
+.mention-menu li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.mention-menu li.active,
+.mention-menu li:hover {
+  background: rgba(70, 160, 110, 0.22);
+}
+.mention-menu small {
+  color: var(--muted);
+}
+.bot-roster {
+  margin-bottom: 14px;
+}
+.roster-map {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.roster-map[aria-pressed="true"] {
+  background: rgba(70, 160, 110, 0.22);
+  border-color: rgba(70, 160, 110, 0.6);
+}
+.roster-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.roster-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 14px;
+}
+.roster-chip i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #8a8f98;
+}
+.roster-chip.working i {
+  background: #46a06e;
+  box-shadow: 0 0 0 3px rgba(70, 160, 110, 0.25);
+}
+.roster-chip.idle i {
+  background: #4682c8;
+}
+.roster-chip.unavailable i {
+  background: #c85050;
+}
+.roster-chip small {
+  color: var(--muted);
+}
+.roster-chip.picked {
+  border-color: rgba(70, 160, 110, 0.7);
+  background: rgba(70, 160, 110, 0.18);
+}
 .task-status {
   font-size: 11px;
   padding: 2px 8px;

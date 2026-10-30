@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pencil, Plus, Power, Trash2 } from "lucide-react";
-import { native, request } from "../lib/api";
+import { Monitor, Pencil, Plus, Power, Trash2 } from "lucide-react";
+import { native, openNodePreview, request } from "../lib/api";
 import { boardApi, type Bot } from "../lib/board";
 import { useApp, useData } from "../lib/state";
 import { BotForm } from "./BotForm";
@@ -326,11 +326,28 @@ export function NodesPanel() {
                 {` · 引擎 ${Object.keys(node.engines).join("/") || "未上报"}`}
                 {node.heartbeat_at && ` · 心跳 ${time(node.heartbeat_at)}`}
               </p>
-              {node.preview_url && (
-                <a href={node.preview_url} target="_blank" rel="noreferrer">
-                  打开画面预览
-                </a>
-              )}
+              {node.preview_url &&
+                (native() ? (
+                  <button
+                    disabled={demo || node.status === "OFFLINE"}
+                    title={
+                      node.status === "OFFLINE"
+                        ? "节点离线，暂时无法查看画面"
+                        : "在独立窗口里查看这台节点上的浏览器（VNC 密码在画面页里输入）"
+                    }
+                    onClick={() =>
+                      void openNodePreview(node.id).catch((e) =>
+                        notify(e instanceof Error ? e.message : String(e)),
+                      )
+                    }
+                  >
+                    <Monitor size={13} /> 查看远程画面
+                  </button>
+                ) : (
+                  <a href={node.preview_url} target="_blank" rel="noreferrer">
+                    查看远程画面
+                  </a>
+                ))}
               <ul className="node-bots" aria-label={`${node.name} 上的 Bot`}>
                 {node.bots.map((summary) => {
                   const bot = bots.data?.find((b) => b.id === summary.id);

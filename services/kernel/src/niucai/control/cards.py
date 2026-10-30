@@ -17,6 +17,7 @@ from niucai.storage.db import (
     Bot,
     Card,
     CardEvent,
+    Conversation,
     Event,
     McpServer,
     RemoteJob,
@@ -668,6 +669,10 @@ class CardManager:
             query = select(Card).order_by(Card.priority.desc(), Card.created_at).limit(500)
             if conversation_id:
                 query = query.where(Card.conversation_id == conversation_id)
+            else:
+                # 全局白板不显示已删除任务留下的卡片。
+                removed = select(Conversation.id).where(Conversation.deleted_at.is_not(None))
+                query = query.where(Card.conversation_id.is_(None) | Card.conversation_id.not_in(removed))
             return {
                 "cards": [self.card_view(s, c, bots) for c in s.scalars(query)],
                 "bots": [

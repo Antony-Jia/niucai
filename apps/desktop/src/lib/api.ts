@@ -200,6 +200,11 @@ export async function openComputer(id: string) {
   if (demo) return;
   return invoke("open_computer", { computerId: id });
 }
+/** 在独立窗口打开节点的远程浏览器画面（VNC）；地址由 Kernel 登记，前端不传 URL。 */
+export async function openNodePreview(nodeId: string) {
+  if (demo) throw new Error("示例模式没有真实的节点画面。");
+  return invoke("open_node_preview", { nodeId });
+}
 let computerQueue: Promise<unknown> = Promise.resolve();
 function computerCommand(command: string, args?: Record<string, unknown>) {
   const result = computerQueue

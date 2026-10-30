@@ -10,8 +10,10 @@ from sqlalchemy.exc import IntegrityError
 from niucai.control.cards import CardManager
 from niucai.control.conversations import append_message, lock_conversation
 from niucai.control.orchestrator import enqueue, goal_status, is_goal, search_memories
+from niucai.control.removal import remove_conversation
 from niucai.control.tasks import Conflict, Missing, require
 from niucai.storage.db import (
+    Bot,
     Card,
     Conversation,
     GoalRequest,
@@ -29,6 +31,8 @@ class GoalCreate(BaseModel):
     message: str = Field(min_length=1, max_length=16000)
     # 幂等键：创建成功但响应丢失时，同一 client_id 重试返回已有 Goal，不再重复编排。
     client_id: str | None = Field(default=None, min_length=1, max_length=100)
+    # 用户用 @ 指定的助手名称：编排者优先把卡片交给他们。
+    bots: list[str] = Field(default_factory=list, max_length=8)
 
 
 class GoalMessage(BaseModel):
@@ -65,6 +69,8 @@ def replay(s, client_id, digest):
     if existing.content_digest != digest:
         raise Conflict("client_id reused with different content")
     conversation = s.get(Conversation, existing.conversation_id)
+    if conversation.deleted_at:
+        raise Conflict("该任务已被删除")
     return {
         "id": conversation.id,
         "title": conversation.title,
@@ -115,9 +121,21 @@ def goals_router(db, settings, auth):
 
     def goal(s, goal_id, lock=False):
         conversation = lock_conversation(s, goal_id) if lock else require(s, Conversation, goal_id)
-        if not is_goal(conversation):
+        if not is_goal(conversation) or conversation.deleted_at:
             raise Missing("goal not found")
         return conversation
+
+    def preferred_bots(s, names):
+        """@ 指定的助手必须存在且已启用；按名称去重并保持用户给出的顺序。"""
+        found = []
+        for name in dict.fromkeys(n.strip().lstrip("@") for n in names if n.strip()):
+            bot = s.scalar(select(Bot).where(Bot.name == name))
+            if not bot:
+                raise ValueError(f"没有名为 {name} 的助手")
+            if not bot.enabled:
+                raise ValueError(f"助手 {name} 已停用")
+            found.append(bot.name)
+        return found
 
     def enabled():
         if not settings.orchestrator_enabled:
@@ -128,7 +146,12 @@ def goals_router(db, settings, auth):
         with db.sessions() as s:
             rows = [
                 c
-                for c in s.scalars(select(Conversation).order_by(Conversation.updated_at.desc()).limit(500))
+                for c in s.scalars(
+                    select(Conversation)
+                    .where(Conversation.deleted_at.is_(None))
+                    .order_by(Conversation.updated_at.desc())
+                    .limit(500)
+                )
                 if is_goal(c)
             ][:limit]
             counts = {}
@@ -162,9 +185,14 @@ def goals_router(db, settings, auth):
                 replayed = replay(s, request.client_id, digest)
                 if replayed:
                     return replayed
+                chosen = preferred_bots(s, request.bots)
                 conversation = Conversation(
                     title=(request.title or request.message.splitlines()[0])[:200],
-                    settings={"mode": "goal", "goal_status": "ACTIVE"},
+                    settings={
+                        "mode": "goal",
+                        "goal_status": "ACTIVE",
+                        **({"preferred_bots": chosen} if chosen else {}),
+                    },
                 )
                 s.add(conversation)
                 s.flush()
@@ -233,6 +261,13 @@ def goals_router(db, settings, auth):
             }
         value["board"] = cards.board(goal_id)
         return value
+
+    @router.delete("/api/goals/{goal_id}", dependencies=auth)
+    def delete(goal_id: str):
+        with db.sessions.begin() as s:
+            goal(s, goal_id)
+            remove_conversation(s, goal_id)
+            return {"deleted": goal_id}
 
     @router.post("/api/goals/{goal_id}/messages", dependencies=auth, status_code=201)
     def send(goal_id: str, request: GoalMessage):

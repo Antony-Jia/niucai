@@ -23,6 +23,7 @@ from niucai.storage.db import (
     Approval,
     Artifact,
     Computer,
+    Conversation,
     Database,
     Event,
     Memory,
@@ -196,15 +197,34 @@ def create_app(settings=None, db=None, chat_gateway=None):
     @app.get("/api/tasks", dependencies=auth)
     def list_tasks(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
         with db.sessions() as s:
+            removed = select(Conversation.id).where(Conversation.deleted_at.is_not(None))
             return [
                 task_snapshot(s, t)
-                for t in s.scalars(select(Task).order_by(Task.created_at.desc()).limit(limit).offset(offset))
+                for t in s.scalars(
+                    select(Task)
+                    .where(Task.deleted_at.is_(None))
+                    .where(Task.conversation_id.is_(None) | Task.conversation_id.not_in(removed))
+                    .order_by(Task.created_at.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
             ]
 
     @app.get("/api/tasks/{task_id}", dependencies=auth)
     def get_task(task_id: str):
         with db.sessions() as s:
-            return task_snapshot(s, require(s, Task, task_id))
+            task = require(s, Task, task_id)
+            if task.deleted_at:
+                raise Missing("Task not found")
+            return task_snapshot(s, task)
+
+    @app.delete("/api/tasks/{task_id}", dependencies=auth)
+    def delete_task(task_id: str):
+        from niucai.control.removal import remove_task
+
+        with db.sessions.begin() as s:
+            remove_task(s, task_id)
+            return {"deleted": task_id}
 
     @app.post("/api/tasks/{task_id}/{operation}", dependencies=auth)
     def task_control(task_id: str, operation: Literal["pause", "resume", "retry", "cancel"]):

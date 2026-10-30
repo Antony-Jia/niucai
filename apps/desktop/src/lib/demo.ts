@@ -309,6 +309,12 @@ export async function demoRequest(
     const [, , , id, operation] = route.split("/");
     const t = tasks.find((t) => t.id === id);
     if (!t) throw new Error("任务不存在");
+    if (method === "DELETE") {
+      if (!["COMPLETED", "FAILED", "CANCELLED"].includes(t.status))
+        throw new Error("任务仍在进行，请先取消后再删除（409）");
+      tasks = tasks.filter((x) => x.id !== id);
+      return { deleted: id };
+    }
     if (method === "PUT" && operation === "computer" && data)
       t.computer_id = data.computer_id;
     if (method === "POST")
@@ -511,6 +517,17 @@ export async function demoRequest(
   if (/^\/api\/conversations\/[^/]+$/.test(route)) {
     const c = conversations.find((c) => c.id === route.split("/")[3]);
     if (!c) throw new Error("会话不存在");
+    if (method === "DELETE") {
+      const open = tasks.some(
+        (t) =>
+          t.conversation_id === c.id &&
+          !["COMPLETED", "FAILED", "CANCELLED"].includes(t.status),
+      );
+      if (open) throw new Error("任务仍在进行，请先取消后再删除（409）");
+      conversations = conversations.filter((x) => x.id !== c.id);
+      tasks = tasks.filter((t) => t.conversation_id !== c.id);
+      return { deleted: c.id };
+    }
     const current = c.settings ?? {
       mode: "agent",
       autonomy: { actions: false, remote: false },

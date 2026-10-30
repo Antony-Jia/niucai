@@ -65,12 +65,20 @@ export const goalsApi = {
   list: () => request<GoalSummary[]>("/api/goals"),
   get: (id: string) => request<GoalDetail>(`/api/goals/${id}`),
   /** clientId 是幂等键：响应丢失后用同一个 clientId 重试，Kernel 返回已创建的 Goal。 */
-  create: (message: string, title = "", clientId?: string) =>
+  create: (
+    message: string,
+    title = "",
+    clientId?: string,
+    /** 用户用 @ 指定的助手名称；编排者优先交给他们。 */
+    bots: string[] = [],
+  ) =>
     request<{ id: string }>("/api/goals", "POST", {
       message,
       title,
       ...(clientId ? { client_id: clientId } : {}),
+      ...(bots.length ? { bots } : {}),
     }),
+  remove: (id: string) => request(`/api/goals/${id}`, "DELETE"),
   send: (id: string, content: string) =>
     request(`/api/goals/${id}/messages`, "POST", {
       content,

@@ -68,7 +68,7 @@ it("draws the topology and lists nodes with slots", async () => {
   expect(await screen.findByLabelText("拓扑：Kernel 与 1 个节点")).toBeTruthy();
   expect(screen.getByText("1/2")).toBeTruthy();
   expect(screen.getByText("在线")).toBeTruthy();
-  expect(screen.getByText("打开画面预览")).toBeTruthy();
+  expect(screen.getByText("查看远程画面")).toBeTruthy();
 });
 
 it("shows no-bot hint and pairs a new node", async () => {

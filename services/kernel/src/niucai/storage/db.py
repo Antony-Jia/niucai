@@ -84,6 +84,8 @@ class Conversation(Base):
     next_sequence: Mapped[int] = mapped_column(Integer, default=0)
     # mode: agent|chat；autonomy: {"actions": bool, "remote": bool}（YOLO，委派会话继承）。
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 软删除：用户从列表移除已结束的任务；审计、动作和卡片记录仍保留。
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
@@ -140,6 +142,8 @@ class Task(Base):
     run_token: Mapped[str | None] = mapped_column(String(36))
     lease_until: Mapped[datetime | None] = mapped_column(DateTime)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # 软删除：同 Conversation.deleted_at。
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 

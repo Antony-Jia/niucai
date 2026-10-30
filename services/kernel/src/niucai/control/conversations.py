@@ -2,7 +2,7 @@
 
 from sqlalchemy import select, update
 
-from niucai.control.tasks import Conflict, require
+from niucai.control.tasks import Conflict, Missing, require
 from niucai.storage.db import Action, Approval, Audit, Computer, Conversation, Message, Task, emit, now
 
 
@@ -11,7 +11,11 @@ def lock_conversation(session, ident):
     result = session.execute(update(Conversation).where(Conversation.id == ident).values(updated_at=now()))
     if not result.rowcount:
         require(session, Conversation, ident)
-    return require(session, Conversation, ident, lock=True)
+    row = require(session, Conversation, ident, lock=True)
+    if row.deleted_at:
+        # 已删除的会话不再接受任何写入。
+        raise Missing("Conversation not found")
+    return row
 
 
 def append_message(session, conversation, **fields):

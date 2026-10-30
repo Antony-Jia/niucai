@@ -68,6 +68,7 @@ pub async fn request(
         "POST" => http.post(url),
         "PUT" => http.put(url),
         "PATCH" => http.patch(url),
+        "DELETE" => http.delete(url),
         _ => return Err("不支持的请求方法".into()),
     };
     if matches!(method, "POST" | "PUT" | "PATCH") && !body.is_null() {
