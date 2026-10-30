@@ -25,18 +25,64 @@ import {
   Modal,
 } from "../components/ui";
 import { Approvals } from "./Dashboard";
-/** embedded：嵌在已有页面标题的页面里（如设备页）时不再渲染自己的 h1。 */
+/** 注册电脑的对话框；设备页与工作台共用。 */
+export function RegisterComputerModal({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (id: string) => void;
+}) {
+  const [name, setName] = useState("Cloud Computer");
+  const create = useCommand(() => api.registerComputer(name), "电脑已注册");
+  return (
+    <Modal title="注册 Linux Computer" onClose={onClose}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          create.mutate(undefined, {
+            onSuccess: (c) => {
+              onClose();
+              onCreated(c.id);
+            },
+          });
+        }}
+      >
+        <label>
+          电脑名称
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
+            maxLength={200}
+          />
+        </label>
+        <p className="muted">
+          设备执行器和 Chromium CDP 地址在服务器端配置。此处只登记设备。
+        </p>
+        <button className="primary full-width" disabled={create.isPending}>
+          注册
+        </button>
+      </form>
+    </Modal>
+  );
+}
+
+/**
+ * embedded：嵌在已有页面标题的页面里（如设备页）时不再渲染自己的 h1。
+ * computerId：由外层列表指定电脑，此时隐藏页内的电脑下拉框与注册按钮。
+ */
 export function ComputerPage({
   embedded = false,
-}: { embedded?: boolean } = {}) {
+  computerId,
+}: { embedded?: boolean; computerId?: string } = {}) {
   const { connected, demo, profile, notify, synchronizing } = useApp();
   const q = useData(["computers"], api.computers);
   const controlStale = q.isError || (!demo && synchronizing);
   const [selected, setSelected] = useState("");
   const [register, setRegister] = useState(false);
-  const [name, setName] = useState("Cloud Computer");
-  const computer = q.data?.find((c) => c.id === selected) || q.data?.[0];
-  const create = useCommand(() => api.registerComputer(name), "电脑已注册");
+  const chosen = computerId ?? selected;
+  const computer = q.data?.find((c) => c.id === chosen) || q.data?.[0];
   const control = useCommand(async (operation: string) => {
     if (!computer) throw new Error("请选择电脑");
     return changeComputerControl(computer.id, operation, notify);
@@ -47,7 +93,7 @@ export function ComputerPage({
   });
   return (
     <>
-      {embedded ? (
+      {computerId ? null : embedded ? (
         <div className="button-row">
           <button disabled={!connected} onClick={() => setRegister(true)}>
             <Plus size={16} />
@@ -79,17 +125,21 @@ export function ComputerPage({
           ) : computer ? (
             <>
               <div className="toolbar">
-                <select
-                  aria-label="选择电脑"
-                  value={computer.id}
-                  onChange={(e) => setSelected(e.target.value)}
-                >
-                  {q.data?.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
+                {computerId ? (
+                  <strong>{computer.name}</strong>
+                ) : (
+                  <select
+                    aria-label="选择电脑"
+                    value={computer.id}
+                    onChange={(e) => setSelected(e.target.value)}
+                  >
+                    {q.data?.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <div className="badge-row">
                   <Badge status={computer.status} />
                   <Badge status={computer.control} />
@@ -229,35 +279,10 @@ export function ComputerPage({
         </>
       )}
       {register && (
-        <Modal title="注册 Linux Computer" onClose={() => setRegister(false)}>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              create.mutate(undefined, {
-                onSuccess: (c) => {
-                  setRegister(false);
-                  setSelected(c.id);
-                },
-              });
-            }}
-          >
-            <label>
-              电脑名称
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-                maxLength={200}
-              />
-            </label>
-            <p className="muted">
-              设备执行器和 Chromium CDP 地址在服务器端配置。此处只登记设备。
-            </p>
-            <button className="primary full-width" disabled={create.isPending}>
-              注册
-            </button>
-          </form>
-        </Modal>
+        <RegisterComputerModal
+          onClose={() => setRegister(false)}
+          onCreated={setSelected}
+        />
       )}
     </>
   );

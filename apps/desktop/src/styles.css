@@ -2087,6 +2087,48 @@ footer span:last-child {
   flex: 1;
 }
 
+.screen-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.screen-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+.screen-list button.active {
+  border-color: #9be4b8;
+}
+.screen-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.screen-tag {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid #4c5c63;
+  color: #8fa3ab;
+}
+.screen-tag.computer {
+  border-color: #9be4b8;
+  color: #9be4b8;
+}
+.screen-link {
+  display: inline-block;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid #9be4b8;
+  color: #9be4b8;
+}
+
 /* 白板 */
 .board-card {
   text-align: left;

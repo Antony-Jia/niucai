@@ -23,6 +23,7 @@ export function Badge({ status }: { status: string }) {
             HUMAN: "你正在控制",
             ONLINE: "在线",
             OFFLINE: "离线",
+            DISABLED: "已停用",
             ACTIVE: "进行中",
             QUEUED: "排队中",
             WAITING_APPROVAL: "等待审批",
