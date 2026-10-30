@@ -2158,6 +2158,117 @@ footer span:last-child {
   padding: 6px 0 6px 12px;
   font-size: 12px;
 }
+.job-log {
+  padding: 6px 0 6px 12px;
+  font-size: 12px;
+}
+.job-log-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0 0 8px;
+  color: #8398a0;
+}
+.job-log-summary span:first-child {
+  color: inherit;
+  font-weight: 600;
+}
+.job-log-bad {
+  color: #ef8a80;
+}
+.job-log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.job-log-entry {
+  display: grid;
+  grid-template-columns: 58px 16px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  line-height: 1.5;
+}
+.job-log-entry time {
+  color: #8398a0;
+  font-variant-numeric: tabular-nums;
+}
+.job-log-icon {
+  display: inline-flex;
+  padding-top: 3px;
+  color: #8398a0;
+}
+.job-log-body {
+  margin: 0;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.job-log-body code {
+  margin-left: 6px;
+  color: #8398a0;
+}
+.job-log-body summary {
+  cursor: pointer;
+}
+.job-log-entry.assistant {
+  grid-template-columns: 58px 16px minmax(0, 1fr);
+}
+.job-log-entry.notice {
+  grid-template-columns: 58px 16px minmax(0, 1fr);
+}
+.job-log-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #62c4a0;
+  white-space: nowrap;
+}
+.job-log-entry.tool.error .job-log-state,
+.job-log-entry.notice.error {
+  color: #ef8a80;
+}
+.job-log-entry.tool.running .job-log-state,
+.job-log-entry.tool.stopped .job-log-state,
+.job-log-entry.notice.warn {
+  color: #f0c674;
+}
+.job-log-note {
+  margin: 8px 0 0;
+}
+.job-log-detail {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+  min-width: 0;
+}
+.job-log-detail summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}
+.job-log-input {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.job-log-detail pre,
+.job-log-entry.stderr pre {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.12);
+}
+.job-log-entry.stderr .job-log-icon,
+.job-log-entry.stderr summary {
+  color: #b45309;
+}
 .link-button {
   background: none;
   border: none;

@@ -1,4 +1,5 @@
 import { request } from "./api";
+import type { JobEvent } from "./job-log";
 
 export type Engine = "pi" | "codex" | "claude";
 export type PermissionProfile = "read" | "workspace" | "full";
@@ -203,13 +204,19 @@ export const boardApi = {
       body,
       idempotency_key: crypto.randomUUID(),
     }),
-  jobEvents: (id: string) =>
-    request<
-      {
-        id: number;
-        type: string;
-        created_at: string;
-        data: { kind?: string; payload?: Record<string, unknown> };
-      }[]
-    >(`/api/remote/jobs/${id}/events`),
+  jobEvents: (id: string, after = 0) =>
+    request<JobEvent[]>(
+      `/api/remote/jobs/${id}/events${after ? `?after=${after}` : ""}`,
+    ),
 };
+
+/** Kernel 每页最多返回 200 条：按游标取到最后一页。 */
+export async function allJobEvents(id: string, after = 0) {
+  const events: JobEvent[] = [];
+  for (let page = 0; page < 50; page += 1) {
+    const batch = await boardApi.jobEvents(id, events.at(-1)?.id ?? after);
+    events.push(...batch);
+    if (batch.length < 200) break;
+  }
+  return events;
+}

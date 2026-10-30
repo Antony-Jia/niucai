@@ -77,7 +77,24 @@ function routes(path: string) {
         id: 9,
         type: "remote.job.progress",
         created_at: "2026-10-29T00:00:00",
-        data: { kind: "tool", payload: { name: "Read" } },
+        data: {
+          kind: "tool_execution_start",
+          payload: { tool: "Read", input: "src/app.py", engine: "claude" },
+        },
+      },
+      {
+        id: 10,
+        type: "remote.job.progress",
+        created_at: "2026-10-29T00:00:02",
+        data: {
+          kind: "tool_execution_end",
+          payload: {
+            tool: "Read",
+            is_error: false,
+            output: "print(1)",
+            engine: "claude",
+          },
+        },
       },
     ];
   return {};
@@ -116,7 +133,11 @@ it("groups cards into columns and answers a blocked card", async () => {
     }),
   );
   fireEvent.click(screen.getByText(/claude · COMPLETED/));
-  expect(await screen.findByText(/tool · Read/)).toBeTruthy();
+  expect(await screen.findByText("Read")).toBeTruthy();
+  expect(screen.getByText(/成功 · 2 秒/)).toBeTruthy();
+  expect(screen.getByText(/1 次工具调用/)).toBeTruthy();
+  expect(screen.getByText("src/app.py")).toBeTruthy();
+  expect(screen.getByText("print(1)")).toBeTruthy();
 });
 
 it("creates a card for a bot", async () => {

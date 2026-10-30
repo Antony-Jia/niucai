@@ -73,7 +73,9 @@ class Engine(Protocol):
 
 ## 4. 事件映射
 
-Kernel 侧事件 `kind` 保持现有集合，不新增类型，Desktop 无需改动解析逻辑。`data` 中新增 `engine` 字段；工具事件仍只上报工具名和是否出错，不上报命令文本或文件内容，与 Pi 的现有粒度一致。
+Kernel 侧事件 `kind` 保持现有集合，不新增类型，Desktop 无需改动解析逻辑。`data` 中新增 `engine` 字段。
+
+工具事件除工具名和是否出错外，默认还带调用细节，供 Desktop 的执行日志展示（三个引擎一致）：开始事件的 `input`（命令、文件路径、搜索词或参数摘要，上限 500 字符）；结束事件的 `output`（工具输出，上限 1200 字符，shell 类工具保留末尾、其余保留开头）和 `exit_code`（有则带）。写入前会按模式隐藏 `sk-…`、`Bearer …`、`KEY=value` 形式的凭证和节点环境变量中的密钥值。这不是完整的脱敏保证：命令输出里的业务数据仍会原样进入 Kernel 事件表。需要恢复“只上报工具名”的旧粒度时，在节点设置 `NIUCAI_EVENT_DETAIL=off`。引擎进程的 stderr 以 `stderr` 事件（`payload.text`）节流上报，每个 Attempt 最多 20 条，失败时 stderr 末尾也并入 `error`。Pi 的 `args` / `result` 字段按其 RPC 文档实现，尚未用真实 Pi 帧核对。
 
 | 标准事件 | Pi RPC（现状） | Codex `exec --json` | Claude Code `stream-json` |
 |---|---|---|---|
@@ -223,7 +225,7 @@ E2 有意未做：`permission_profile` 目前只从 `config_snapshot` 读取，A
 - 命令行固定 `--bare --strict-mcp-config --mcp-config '{"mcpServers":{}}'`。实测默认模式会把工作区 `CLAUDE.md` 注入系统提示，而 `--bare` 不会；同时它跳过 hooks、插件、keychain 与自动记忆。`--bare` 只认 `ANTHROPIC_API_KEY`，与“只支持 API Key”的边界一致。
 - `--disallowedTools WebSearch WebFetch` 默认禁用联网类工具。
 - `read`：`--tools Read,Glob,Grep --permission-mode dontAsk`，写入与命令工具根本不存在（实测 Bash 调用返回 `No such tool available`），因此不依赖任何沙箱；`workspace`：`--permission-mode acceptEdits --allowedTools Bash Edit Write Read`，Bash 不做命令级限制，隔离靠容器，心跳 `sandbox: "container"`；`full`：`bypassPermissions`，仅在节点显式启用时可用。该 CLI 版本没有 `--max-turns`，预算只能用 `--max-budget-usd` 和作业超时。
-- 事件：`system/init` → `session`；`assistant` 的 `text` / `tool_use` 与 `user` 的 `tool_result` → `assistant` / `tool_execution_start` / `tool_execution_end`（工具名保持 Claude 原名，如 `Bash`，不含命令文本）；带 `parent_tool_use_id` 的子代理帧不上报；`thinking` 不上报；`system` 的其它子类型（`task_summary`、`post_turn_summary` 等）忽略。
+- 事件：`system/init` → `session`；`assistant` 的 `text` / `tool_use` 与 `user` 的 `tool_result` → `assistant` / `tool_execution_start` / `tool_execution_end`（工具名保持 Claude 原名，如 `Bash`；命令与输出见第 4 节的调用细节）；带 `parent_tool_use_id` 的子代理帧不上报；`thinking` 不上报；`system` 的其它子类型（`task_summary`、`post_turn_summary` 等）忽略。
 - 终态：`result` 帧 `subtype=success` 且 `is_error=false` 才算成功。实测存在 `subtype=success` 但 `is_error=true` 的失败（模型不可用），必须按 `is_error` 判定。结果带 `usage`（整数字段加 `num_turns`）与 `cost_usd`。
 
 验证：夹具单测（帧结构取自真实 CLI 输出）；`remote-pi-demo.ps1 -Codex -Claude` 后运行 `verify-remote-engines.py`：真实 Claude Code 2.1.307 容器对接模拟 Anthropic Messages API，Claude 工作包在 Claude 节点完成并返回 `proof.txt`、usage 与带引擎标记的事件，Codex 与 Claude 工作包指向无对应引擎的节点时以 `ENGINE_NOT_READY` 等待；`verify-remote-pi.py` 在多引擎 Runner 下仍全部通过（运行前需停掉 `node-codex` 与 `node-claude`）。模拟模型是确定性服务，不代表真实模型质量；`read` 档位只有命令行与本机实测，容器内联调尚未覆盖（API 暂不能写入 `permission_profile`，待 E4）。

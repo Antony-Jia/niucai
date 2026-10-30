@@ -370,6 +370,115 @@ def resume_session(job):
     return session
 
 
+EVENT_DETAIL = os.environ.get("NIUCAI_EVENT_DETAIL", "on").lower() not in {"off", "0", "false"}
+EVENT_INPUT_LIMIT = 500  # 事件载荷在 Kernel 侧限 16 KB（按 ASCII 转义计），中文每字约 6 字节
+EVENT_OUTPUT_LIMIT = 1200
+SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL", re.I)
+SECRET_PATTERNS = (
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S),
+    re.compile(r"\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}"),
+    re.compile(r"\b(?:ghp|gho|ghs|github_pat)_[A-Za-z0-9_]{8,}"),
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}", re.I),
+    re.compile(
+        r"((?:api[_-]?key|token|secret|password|passwd|authorization)[\"']?\s*[:=]\s*[\"']?)[^\s\"',;&]{4,}",
+        re.I,
+    ),
+)
+STDERR_EVENT_LIMIT = 1000
+STDERR_EVENT_MAX = 20  # 每个 Attempt 最多上报的 stderr 事件数
+STDERR_INTERVAL = 2  # 秒
+STDERR_TAIL = 2000
+SHELL_TOOLS = {"shell", "bash", "Bash"}
+# 命令行、文件路径、检索词等最能说明“这次调用在做什么”的参数，按优先级取第一个。
+INPUT_KEYS = ("command", "cmd", "file_path", "pattern", "url", "query", "path", "description", "prompt")
+
+
+def redact(text):
+    """Remove credentials from text that is about to leave the node: known env secrets and common token shapes."""
+    for name, value in os.environ.items():
+        if len(value) >= 8 and SECRET_NAME.search(name):
+            text = text.replace(value, "[已隐藏]")
+    for pattern in SECRET_PATTERNS:
+        text = pattern.sub(lambda m: (m.group(1) if m.groups() else "") + "[已隐藏]", text)
+    return text
+
+
+def clip(text, limit, tail=False):
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return "…" + text[-limit:] if tail else text[:limit] + "…"
+
+
+def text_of(value):
+    """Plain text of a tool result: a string, an MCP/Pi/Claude content list, or a dict wrapping one."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(part for part in map(text_of, value) if part)
+    if isinstance(value, dict):
+        if value.get("type") == "image":
+            return "[图片]"
+        for key in ("text", "content", "output", "message"):
+            if key in value:
+                return text_of(value[key])
+    return ""
+
+
+def input_summary(args):
+    if isinstance(args, str):
+        return args
+    if isinstance(args, dict):
+        for key in INPUT_KEYS:
+            if isinstance(args.get(key), str) and args[key]:
+                return args[key]
+        if args:
+            return json.dumps(args, ensure_ascii=False, default=str)
+    return ""
+
+
+def tool_detail(tool, args=None, output=None, exit_code=None):
+    """Bounded, redacted call detail for tool events; empty when NIUCAI_EVENT_DETAIL=off."""
+    if not EVENT_DETAIL:
+        return {}
+    detail = {}
+    call = input_summary(args)
+    if call:
+        detail["input"] = clip(redact(call), EVENT_INPUT_LIMIT)
+    result = text_of(output)
+    if result.strip():
+        # 命令输出的结尾（报错、退出信息）比开头更有用。
+        detail["output"] = clip(redact(result), EVENT_OUTPUT_LIMIT, tail=tool in SHELL_TOOLS)
+    if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+        detail["exit_code"] = exit_code
+    return detail
+
+
+async def drain_stderr(stream, report, tail):
+    """Read an engine's stderr to EOF (an undrained pipe would block the CLI).
+
+    `report(text)` gets throttled, redacted chunks (at most STDERR_EVENT_MAX per call); `tail[0]` always holds the
+    latest raw text so a failed attempt can quote it.
+    """
+    pending, last, sent = "", time.monotonic(), 0
+
+    def emit():
+        nonlocal pending, last, sent
+        text = clip(redact(pending), STDERR_EVENT_LIMIT, tail=True)
+        pending, last = "", time.monotonic()
+        if text and EVENT_DETAIL and sent < STDERR_EVENT_MAX:
+            sent += 1
+            report(text)
+
+    while chunk := await stream.read(4096):
+        text = chunk.decode("utf-8", "replace")
+        tail[:] = [((tail[0] if tail else "") + text)[-STDERR_TAIL:]]
+        pending = (pending + text)[-STDERR_EVENT_LIMIT * 4 :]
+        if time.monotonic() - last >= STDERR_INTERVAL:
+            emit()
+    emit()
+
+
 class PiEngine:
     """Pi RPC engine: the only engine today. Owns its Unix UID, HOME and CLI protocol."""
 
@@ -518,10 +627,12 @@ class PiEngine:
             if kind == "tool_execution_end" and not frame.get("isError"):
                 if frame.get("toolName") in {"card_submit", "card_block"}:
                     state["board_outcome"] = frame["toolName"]
-            data = {
-                "tool": str(frame.get("toolName", ""))[:100],
-                "is_error": bool(frame.get("isError")),
-            }
+            tool = str(frame.get("toolName", ""))[:100]
+            data = {"tool": tool, "is_error": bool(frame.get("isError"))}
+            if kind == "tool_execution_start":
+                data.update(tool_detail(tool, args=frame.get("args")))
+            else:
+                data.update(tool_detail(tool, output=frame.get("result")))
             return [(kind, data)], None
         if kind in {"agent_end", "agent_settled"}:
             if state.get("board_outcome") and not state["failed"]:
@@ -732,6 +843,33 @@ class CodexEngine:
             return status == "failed" or bool(item.get("error"))
         return status == "failed"
 
+    @staticmethod
+    def call_input(item):
+        item_type = item.get("type")
+        if item_type == "command_execution":
+            return item.get("command")
+        if item_type == "file_change":
+            changes = item.get("changes") or []
+            return "; ".join(f"{c.get('kind', '')} {c.get('path', '')}".strip() for c in changes[:20])
+        if item_type == "mcp_tool_call":
+            name = ".".join(str(item[k]) for k in ("server", "tool") if item.get(k))
+            args = item.get("arguments")
+            return f"{name} {json.dumps(args, ensure_ascii=False, default=str)}" if args else name
+        if item_type == "web_search":
+            return item.get("query")
+        return None
+
+    @staticmethod
+    def call_output(item):
+        if item.get("type") == "command_execution":
+            return item.get("aggregated_output")
+        if item.get("type") == "mcp_tool_call":
+            error = item.get("error")
+            if error:
+                return error.get("message") if isinstance(error, dict) else str(error)
+            return item.get("result")
+        return None
+
     def translate(self, frame, state):
         """Map one `codex exec --json` frame to (events, final), like PiEngine.translate."""
         kind = frame.get("type", "")
@@ -754,10 +892,13 @@ class CodexEngine:
             events = []
             if item.get("id") not in opened and kind != "item.updated":
                 opened.add(item.get("id"))
-                events.append(("tool_execution_start", {"tool": tool, "is_error": False}))
+                data = {"tool": tool, "is_error": False}
+                events.append(("tool_execution_start", {**data, **tool_detail(tool, args=self.call_input(item))}))
             if kind == "item.completed":
                 opened.discard(item.get("id"))
-                events.append(("tool_execution_end", {"tool": tool, "is_error": self.tool_failed(item)}))
+                data = {"tool": tool, "is_error": self.tool_failed(item)}
+                detail = tool_detail(tool, output=self.call_output(item), exit_code=item.get("exit_code"))
+                events.append(("tool_execution_end", {**data, **detail}))
             return events, None
         if kind == "turn.failed":
             raise RuntimeError(str((frame.get("error") or {}).get("message") or "Codex turn failed")[:500])
@@ -939,8 +1080,9 @@ class ClaudeEngine:
                 block_type = block.get("type") if isinstance(block, dict) else None
                 if kind == "user" and block_type == "tool_result":
                     tool = state.setdefault("tools", {}).pop(block.get("tool_use_id"), "tool")
+                    data = {"tool": tool, "is_error": bool(block.get("is_error"))}
                     events.append(
-                        ("tool_execution_end", {"tool": tool, "is_error": bool(block.get("is_error"))})
+                        ("tool_execution_end", {**data, **tool_detail(tool, output=block.get("content"))})
                     )
                 elif kind == "assistant" and block_type == "text":
                     state["answer"] = str(block.get("text", ""))
@@ -949,7 +1091,8 @@ class ClaudeEngine:
                 elif kind == "assistant" and block_type == "tool_use":
                     tool = str(block.get("name", "tool"))[:64]
                     state.setdefault("tools", {})[block.get("id")] = tool
-                    events.append(("tool_execution_start", {"tool": tool, "is_error": False}))
+                    data = {"tool": tool, "is_error": False}
+                    events.append(("tool_execution_start", {**data, **tool_detail(tool, args=block.get("input"))}))
                 elif block_type not in self.ignored_blocks and not (kind == "user" and block_type == "text"):
                     state["unknown_frames"] = state.get("unknown_frames", 0) + 1
             return events, None
@@ -1280,6 +1423,8 @@ class Runner:
         session = sessions / f"{ident}.jsonl"
         assets = self.root / "assets" / ident
         process = None
+        stderr_task = None
+        stderr_tail = []  # 单元素列表：闭包里就地更新最近的 stderr 文本
         heartbeat = None
         flusher = None
         board = None
@@ -1381,6 +1526,9 @@ class Runner:
                     return
             raise RuntimeError(f"{engine.label} exited before completion")
 
+        def read_stderr():
+            return drain_stderr(process.stderr, lambda text: progress("stderr", {"text": text}), stderr_tail)
+
         try:
             first = await self.post(base + "/heartbeat", {"attempt_id": attempt})
             if first["stop"]:
@@ -1443,10 +1591,11 @@ class Runner:
                 },
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
                 limit=2 * 1024 * 1024,
                 **spawn,
             )
+            stderr_task = asyncio.create_task(read_stderr())
             if WINDOWS:
                 # 进程启动后立即加入 Job：Runner 退出时句柄关闭，整棵进程树随之结束。
                 job_object = win_job.JobObject()
@@ -1485,6 +1634,16 @@ class Runner:
                 # Even on success stop background descendants before releasing the slot.
                 await kill_group(process.pid, job_object)
                 await process.wait()
+            if stderr_task:
+                # 进程已结束，管道很快读空；超时则放弃剩余输出。
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(stderr_task, timeout=2)
+                stderr_task.cancel()
+                if outcome["status"] == "FAILED" and stderr_tail and EVENT_DETAIL:
+                    error = outcome["result"].get("error", "")
+                    outcome["result"]["error"] = (
+                        f"{error[:300]} | stderr: {clip(redact(stderr_tail[0]), 180, tail=True)}"
+                    )
             if job_object:
                 job_object.close()
             shutil.rmtree(assets, ignore_errors=True)

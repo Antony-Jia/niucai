@@ -67,7 +67,7 @@ def test_codex_success_maps_events_and_usage(codex, tmp_path):
     assert events == [
         ("session", {"session_id": "th-1"}),
         ("tool_execution_start", {"tool": "shell", "is_error": False}),
-        ("tool_execution_end", {"tool": "shell", "is_error": False}),
+        ("tool_execution_end", {"tool": "shell", "is_error": False, "exit_code": 0}),
         ("tool_execution_start", {"tool": "edit", "is_error": False}),
         ("tool_execution_end", {"tool": "edit", "is_error": False}),
         ("assistant", {"text": "done", "stop_reason": "stop"}),
@@ -78,7 +78,6 @@ def test_codex_success_maps_events_and_usage(codex, tmp_path):
         "session_id": "th-1",
         "usage": {"input_tokens": 5, "output_tokens": 2},
     }
-    assert "secret cmd" not in json.dumps(events)  # command text is never reported
 
 
 def test_codex_nonzero_exit_marks_tool_error_and_unknown_frames_are_counted(codex, tmp_path):
@@ -90,7 +89,7 @@ def test_codex_nonzero_exit_marks_tool_error_and_unknown_frames_are_counted(code
         {"type": "turn.completed"},
     ]
     events, final = run_frames(codex, frames, tmp_path)
-    assert ("tool_execution_end", {"tool": "shell", "is_error": True}) in events
+    assert ("tool_execution_end", {"tool": "shell", "is_error": True, "exit_code": 2}) in events
     assert final["unknown_frames"] == 2
 
 
@@ -330,8 +329,8 @@ def test_claude_success_maps_events_usage_and_cost(claude, tmp_path):
     events, final = run_frames(claude, frames, tmp_path)
     assert events == [
         ("session", {"session_id": "sess-1"}),
-        ("tool_execution_start", {"tool": "Bash", "is_error": False}),
-        ("tool_execution_end", {"tool": "Bash", "is_error": False}),
+        ("tool_execution_start", {"tool": "Bash", "is_error": False, "input": "secret cmd"}),
+        ("tool_execution_end", {"tool": "Bash", "is_error": False, "output": "x"}),
         ("assistant", {"text": "done", "stop_reason": "stop"}),
     ]
     assert final == {
@@ -341,7 +340,6 @@ def test_claude_success_maps_events_usage_and_cost(claude, tmp_path):
         "usage": {"input_tokens": 22, "output_tokens": 14, "num_turns": 2},
         "cost_usd": 0.000368,
     }
-    assert "secret cmd" not in json.dumps(events)  # command text is never reported
 
 
 def test_claude_tool_errors_subagents_and_unknown_frames(claude, tmp_path):
@@ -493,3 +491,140 @@ def test_node_credentials_require_pairing_code(tmp_path, monkeypatch):
         monkeypatch.delenv(key, raising=False)
     with pytest.raises(SystemExit, match="PAIRING_REQUIRED"):
         runner.node_credentials(tmp_path, "http://kernel")
+
+
+def test_codex_reports_command_output_file_changes_and_mcp_calls(codex, tmp_path):
+    frames = [
+        {"type": "item.started", "item": {"id": "a", "type": "command_execution", "command": "ls -la"}},
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "a",
+                "type": "command_execution",
+                "command": "ls -la",
+                "aggregated_output": "total 0",
+                "exit_code": 1,
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "b",
+                "type": "file_change",
+                "changes": [{"path": "a.py", "kind": "update"}, {"path": "b.py", "kind": "add"}],
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "c",
+                "type": "mcp_tool_call",
+                "server": "chrome",
+                "tool": "screenshot",
+                "arguments": {"full": True},
+                "error": {"message": "window minimized"},
+                "status": "failed",
+            },
+        },
+        {"type": "item.completed", "item": {"id": "d", "type": "web_search", "query": "niucai"}},
+    ]
+    events, _ = run_frames(codex, frames, tmp_path)
+    assert events[0] == ("tool_execution_start", {"tool": "shell", "is_error": False, "input": "ls -la"})
+    assert events[1] == (
+        "tool_execution_end",
+        {"tool": "shell", "is_error": True, "output": "total 0", "exit_code": 1},
+    )
+    assert events[2][1]["input"] == "update a.py; add b.py"
+    assert events[4][1]["input"] == 'chrome.screenshot {"full": true}'
+    assert events[5][1] == {"tool": "mcp", "is_error": True, "output": "window minimized"}
+    assert events[6][1]["input"] == "niucai"
+
+
+def test_claude_reports_tool_input_and_result_blocks(claude, tmp_path):
+    frames = [
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "id": "g", "name": "Grep", "input": {"path": "src", "pattern": "TODO"}},
+                    {"type": "tool_use", "id": "m", "name": "mcp__x__shot", "input": {"a": 1}},
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "g",
+                        "content": [{"type": "text", "text": "a.py:1"}, {"type": "image"}],
+                    }
+                ]
+            },
+        },
+    ]
+    events, _ = run_frames(claude, frames, tmp_path)
+    assert events[0][1]["input"] == "TODO"  # pattern wins over path
+    assert events[1][1]["input"] == '{"a": 1}'
+    assert events[2][1] == {"tool": "Grep", "is_error": False, "output": "a.py:1\n[图片]"}
+
+
+def test_pi_reports_tool_args_and_result(tmp_path, monkeypatch):
+    monkeypatch.setenv("NIUCAI_PI_MODEL", "test-model")
+    monkeypatch.setattr(runner.os, "chown", lambda *a: None, raising=False)
+    pi = runner.PiEngine(tmp_path)
+    current = state(tmp_path)
+    start, _ = pi.translate({"type": "tool_execution_start", "toolName": "bash", "args": {"command": "pwd"}}, current)
+    end, _ = pi.translate(
+        {
+            "type": "tool_execution_end",
+            "toolName": "bash",
+            "isError": False,
+            "result": {"content": [{"type": "text", "text": "/work"}]},
+        },
+        current,
+    )
+    assert start == [("tool_execution_start", {"tool": "bash", "is_error": False, "input": "pwd"})]
+    assert end == [("tool_execution_end", {"tool": "bash", "is_error": False, "output": "/work"})]
+
+
+def test_event_detail_is_redacted_bounded_and_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("NIUCAI_CODEX_API_KEY", "sk-live-abcdef123456")
+    command = (
+        "curl -H 'Authorization: Bearer abcdefgh12345678' https://x "
+        "&& echo sk-live-abcdef123456 GITHUB_TOKEN=ghp_abcdefghijkl password=hunter22"
+    )
+    detail = runner.tool_detail("shell", args={"command": command})
+    for secret in ("abcdefgh12345678", "sk-live-abcdef123456", "ghp_abcdefghijkl", "hunter22"):
+        assert secret not in detail["input"]
+    assert "https://x" in detail["input"]
+    long = runner.tool_detail("shell", output="x" * 5000 + "TAIL")
+    assert len(long["output"]) <= runner.EVENT_OUTPUT_LIMIT + 1 and long["output"].endswith("TAIL")
+    head = runner.tool_detail("Read", output="HEAD" + "x" * 5000)
+    assert head["output"].startswith("HEAD")
+    monkeypatch.setattr(runner, "EVENT_DETAIL", False)
+    assert runner.tool_detail("shell", args={"command": "ls"}, output="x", exit_code=0) == {}
+
+
+def test_stderr_is_drained_throttled_redacted_and_kept_as_tail(monkeypatch):
+    import asyncio
+
+    class Stream:
+        def __init__(self, chunks):
+            self.chunks = list(chunks)
+
+        async def read(self, size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+    reports, tail = [], []
+    chunks = [b"warn: using token=abcdef123456\n", b"fatal: boom\n"]
+    asyncio.run(runner.drain_stderr(Stream(chunks), reports.append, tail))
+    assert reports == ["warn: using token=[已隐藏]\nfatal: boom"]  # one throttled report at EOF
+    assert "fatal: boom" in tail[0]
+
+    reports.clear()
+    monkeypatch.setattr(runner, "STDERR_INTERVAL", 0)
+    monkeypatch.setattr(runner, "STDERR_EVENT_MAX", 2)
+    asyncio.run(runner.drain_stderr(Stream([b"a\n"] * 6), reports.append, []))
+    assert len(reports) == 2  # capped per attempt

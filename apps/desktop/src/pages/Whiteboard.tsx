@@ -9,6 +9,7 @@ import {
   Modal,
   time,
 } from "../components/ui";
+import { JobLog } from "../components/JobLog";
 import { useApp } from "../lib/state";
 import {
   boardApi,
@@ -185,31 +186,6 @@ function NewCardForm({
   );
 }
 
-function AttemptEvents({ jobId }: { jobId: string }) {
-  const events = useQuery({
-    queryKey: ["job-events", jobId],
-    queryFn: () => boardApi.jobEvents(jobId),
-  });
-  if (events.isLoading) return <Loading />;
-  return (
-    <ol className="attempt-events">
-      {events.data?.slice(-30).map((e) => {
-        const payload = e.data.payload || {};
-        const text = String(
-          payload.text ?? payload.name ?? payload.error ?? "",
-        ).slice(0, 300);
-        return (
-          <li key={e.id}>
-            <small>{time(e.created_at)}</small> {e.data.kind || e.type}
-            {text && ` · ${text}`}
-          </li>
-        );
-      })}
-      {events.data?.length === 0 && <li className="muted">暂无事件</li>}
-    </ol>
-  );
-}
-
 export function CardDetailView({
   id,
   onClose,
@@ -356,7 +332,9 @@ export function CardDetailView({
                     {time(a.created_at)} · {a.engine} · {a.status}
                     {a.error ? ` · ${a.error}` : ""}
                   </button>
-                  {openAttempt === a.id && <AttemptEvents jobId={a.id} />}
+                  {openAttempt === a.id && (
+                    <JobLog jobId={a.id} engine={a.engine} status={a.status} />
+                  )}
                 </div>
               ))}
             </section>
