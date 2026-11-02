@@ -9,7 +9,9 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const ID = Type.Optional(Type.String({ description: "卡片 id，省略时为当前卡片" }));
 // 提交或提问后本次执行结束：跳过模型的自动续写，Runner 按工具结果收尾。
 const ENDS_ATTEMPT = new Set(["card_block", "card_submit"]);
-const MUTATING = new Set(["card_progress", "card_comment", "card_propose", "card_block", "card_submit", "artifact_put", "card_claim"]);
+// card_wait（含 card_delegate 的 wait=true）仅在真的进入等待时结束本次执行；条件已满足则把结果交回继续干活。
+const WAITS = new Set(["card_wait", "card_delegate"]);
+const MUTATING = new Set(["card_progress", "card_comment", "card_propose", "card_block", "card_submit", "artifact_put", "card_claim", "card_delegate", "card_wait"]);
 
 const TOOLS = [
   ["board_view", "列出同一目标下的所有卡片（id、标题、状态、负责 Bot、摘要）。", Type.Object({})],
@@ -92,6 +94,29 @@ const TOOLS = [
       mode: Type.Optional(Type.Union([Type.Literal("exclusive"), Type.Literal("shared")])),
     }),
   ],
+  [
+    "card_delegate",
+    "把一件事委派给同目标的另一个 Bot：to 填 Bot 名称，或 tags 按标签挑一个；title/goal/acceptance 写清楚要什么。inputs 引用已有产物（[{artifact_id}]），claims 声明对方要用的资源。对方始终使用自己的权限档位，不能由你指定；需要审批的接收方会先停在待批准。wait=true 等于创建后立即 card_wait：本次执行结束，对方完成后自动续接并附上结果。受 collab_policy、委派深度与目标预算限制，违反时调用失败并说明原因。",
+    Type.Object({
+      to: Type.Optional(Type.String({ description: "接收方 Bot 名称" })),
+      tags: Type.Optional(Type.Array(Type.String())),
+      title: Type.String(),
+      goal: Type.String(),
+      acceptance: Type.Optional(Type.String()),
+      inputs: Type.Optional(Type.Array(Type.Object({ artifact_id: Type.String() }))),
+      claims: Type.Optional(Type.Array(Type.String())),
+      wait: Type.Optional(Type.Boolean()),
+    }),
+  ],
+  [
+    "card_wait",
+    "等待同一目标内的若干卡片结束（DONE/FAILED/CANCELLED）。mode=all 等全部，any 等任一；timeout 秒，默认 1800，最大 14400。条件尚未满足时本次执行结束并进入等待，满足或超时后自动续接会话；已满足则直接返回结果。不能形成环形等待。",
+    Type.Object({
+      card_ids: Type.Array(Type.String()),
+      mode: Type.Optional(Type.Union([Type.Literal("all"), Type.Literal("any")])),
+      timeout: Type.Optional(Type.Integer()),
+    }),
+  ],
 ] as const;
 
 function call(tool: string, args: Record<string, unknown>): Promise<{ ok: boolean; result?: unknown; error?: unknown }> {
@@ -128,6 +153,10 @@ function call(tool: string, args: Record<string, unknown>): Promise<{ ok: boolea
   });
 }
 
+function waitsNow(result: unknown): boolean {
+  return typeof result === "object" && result !== null && "next" in result && !(result as { ready?: boolean }).ready;
+}
+
 export default function (pi: ExtensionAPI) {
   if (!process.env.NIUCAI_BOARD_ADDRESS) return; // 非卡片作业没有白板
   for (const [name, description, parameters] of TOOLS) {
@@ -146,7 +175,7 @@ export default function (pi: ExtensionAPI) {
           return {
             content: [{ type: "text", text: JSON.stringify(reply.result) }],
             details: undefined,
-            terminate: ENDS_ATTEMPT.has(name),
+            terminate: ENDS_ATTEMPT.has(name) || (WAITS.has(name) && waitsNow(reply.result)),
           };
         },
       }),

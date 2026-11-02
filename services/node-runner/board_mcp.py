@@ -143,6 +143,52 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "card_delegate",
+        "description": (
+            "把一件事委派给同目标的另一个 Bot：to 填 Bot 名称，或 tags 按标签挑一个；title/goal/acceptance 写清楚要什么。"
+            "inputs 引用已有产物（[{artifact_id}]），claims 声明对方要用的资源。对方始终使用自己的权限档位，不能由你指定；"
+            "需要审批的接收方会先停在待批准。wait=true 等于创建后立即 card_wait：本次执行结束，对方完成后自动续接并附上结果。"
+            "受 collab_policy、委派深度与目标预算限制，违反时调用失败并说明原因。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "接收方 Bot 名称"},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "title": {"type": "string"},
+                "goal": {"type": "string"},
+                "acceptance": {"type": "string"},
+                "inputs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"artifact_id": {"type": "string"}},
+                        "required": ["artifact_id"],
+                    },
+                },
+                "claims": {"type": "array", "items": {"type": "string"}},
+                "wait": {"type": "boolean"},
+            },
+            "required": ["title", "goal"],
+        },
+    },
+    {
+        "name": "card_wait",
+        "description": (
+            "等待同一目标内的若干卡片结束（DONE/FAILED/CANCELLED）。mode=all 等全部，any 等任一；timeout 秒，默认 1800，最大 14400。"
+            "条件尚未满足时本次执行结束并进入等待，满足或超时后自动续接会话；已满足则直接返回结果。不能形成环形等待。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "card_ids": {"type": "array", "items": {"type": "string"}},
+                "mode": {"type": "string", "enum": ["all", "any"]},
+                "timeout": {"type": "integer"},
+            },
+            "required": ["card_ids"],
+        },
+    },
 ]
 NAMES = {tool["name"] for tool in TOOLS}
 MUTATING = {
@@ -153,6 +199,8 @@ MUTATING = {
     "card_submit",
     "artifact_put",
     "card_claim",
+    "card_delegate",
+    "card_wait",
 }
 
 

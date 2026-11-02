@@ -454,3 +454,19 @@ def test_new_collab_tools_are_exposed_identically():
     comment = next(tool for tool in board_mcp.TOOLS if tool["name"] == "card_comment")
     assert "reply_to" in comment["inputSchema"]["properties"]
     assert {"artifact_put", "card_claim"} <= board_mcp.MUTATING
+
+
+def test_delegate_and_wait_tools_are_exposed_identically():
+    names = [tool["name"] for tool in board_mcp.TOOLS]
+    assert names[-2:] == ["card_delegate", "card_wait"] == list(runner.BOARD_TOOLS[-2:])
+    assert {"card_delegate", "card_wait"} <= board_mcp.MUTATING
+    delegate = next(tool for tool in board_mcp.TOOLS if tool["name"] == "card_delegate")
+    props = delegate["inputSchema"]["properties"]
+    assert {"to", "tags", "title", "goal", "acceptance", "inputs", "claims", "wait"} <= set(props)
+    assert "permission_profile" not in props  # 权限档位始终是接收方自己的
+    wait = next(tool for tool in board_mcp.TOOLS if tool["name"] == "card_wait")
+    assert set(wait["inputSchema"]["properties"]) == {"card_ids", "mode", "timeout"}
+    source = (Path(__file__).parent.parent / "board-extension.ts").read_text(encoding="utf-8")
+    muting = next(line for line in source.splitlines() if line.startswith("const MUTATING"))
+    assert '"card_delegate"' in muting and '"card_wait"' in muting  # 必须保持单行
+    assert '"card_delegate",\n' in source and '"card_wait",\n' in source

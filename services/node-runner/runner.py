@@ -61,6 +61,8 @@ BOARD_TOOLS = (
     "artifact_put",
     "artifact_get",
     "card_claim",
+    "card_delegate",
+    "card_wait",
 )
 ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}")
@@ -749,6 +751,10 @@ class PiEngine:
             if kind == "tool_execution_end" and not frame.get("isError"):
                 if frame.get("toolName") in {"card_submit", "card_block"}:
                     state["board_outcome"] = frame["toolName"]
+                elif frame.get("toolName") in {"card_wait", "card_delegate"} and '"next"' in json.dumps(
+                    frame.get("result"), ensure_ascii=False
+                ):
+                    state["board_outcome"] = frame["toolName"]  # 进入等待：本次执行到此结束
             tool = str(frame.get("toolName", ""))[:100]
             data = {"tool": tool, "is_error": bool(frame.get("isError"))}
             if kind == "tool_execution_start":
