@@ -216,20 +216,42 @@ def check_dependencies(s, card_id, depends_on):
         stack.extend(row.depends_on if row else [])
 
 
-def check_goal_budget(s, settings, conversation_id):
-    """每个 Goal 的卡片总数与 Attempt 总数上限：超出后拒绝新的 Bot 委派与 @kernel 建卡，防止失控扩张。"""
-    if not conversation_id:
+def check_goal_budget(s, settings, conversation_id, card=None):
+    """每个 Goal 的卡片总数与 Attempt 总数上限：超出后拒绝新的 Bot 委派与 @kernel 建卡，防止失控扩张。
+
+    无 Goal 的卡片（传入 card）按它所在的委派树（根卡及其全部后代）计数，同样的上限。
+    """
+    if conversation_id:
+        scope, label = Card.conversation_id == conversation_id, "每个 Goal"
+    elif card is not None:
+        scope, label = Card.id.in_(delegation_tree(s, card)), "无 Goal 的每棵委派树"
+    else:
         return
-    cards = s.scalar(select(func.count(Card.id)).where(Card.conversation_id == conversation_id))
+    cards = s.scalar(select(func.count(Card.id)).where(scope))
     if cards >= settings.goal_max_cards:
-        raise Conflict(f"每个 Goal 最多 {settings.goal_max_cards} 张卡片")
+        raise Conflict(f"{label}最多 {settings.goal_max_cards} 张卡片")
     attempts = s.scalar(
-        select(func.count(RemoteJob.id))
-        .join(Card, Card.id == RemoteJob.card_id)
-        .where(Card.conversation_id == conversation_id)
+        select(func.count(RemoteJob.id)).join(Card, Card.id == RemoteJob.card_id).where(scope)
     )
     if attempts >= settings.goal_max_attempts:
-        raise Conflict(f"每个 Goal 最多 {settings.goal_max_attempts} 次 Attempt")
+        raise Conflict(f"{label}最多 {settings.goal_max_attempts} 次 Attempt")
+
+
+def delegation_tree(s, card):
+    """card 所在委派树的全部卡片 ID：先沿 parent_card_id 找到根，再逐层取后代。"""
+    root, seen = card, {card.id}
+    while root.parent_card_id and root.parent_card_id not in seen:
+        parent = s.get(Card, root.parent_card_id)
+        if parent is None:
+            break
+        seen.add(parent.id)
+        root = parent
+    found, frontier = {root.id}, [root.id]
+    while frontier:
+        children = s.scalars(select(Card.id).where(Card.parent_card_id.in_(frontier)))
+        frontier = [i for i in children if i not in found]
+        found.update(frontier)
+    return found
 
 
 def scope_of(card):
@@ -249,6 +271,11 @@ def wait_ready(s, waiting):
     if not closed:
         return True
     return all(closed) if waiting.get("mode", "all") == "all" else any(closed)
+
+
+def wait_expired(waiting):
+    until = (waiting or {}).get("until")
+    return bool(until) and datetime.fromisoformat(until) < now()
 
 
 def card_bot_id(s, card):
@@ -294,6 +321,7 @@ def wait_cycle(s, card, targets):
         )
         return out
 
+    targets = [t for t in targets if t.status not in CLOSED]  # 已结束的卡片立即满足，不会成环
     seen, stack = set(), [t.id for t in targets]
     while stack:
         ident = stack.pop()
@@ -536,6 +564,9 @@ def claim_card(s, settings, node):
             bot = next((b for b in idle if b.id == card.assignee_bot_id), None)
         elif card.workdir:
             continue  # 本机目录只在指定节点上有意义：必须指派 Bot，不进公共池
+        elif owner := resume_owner(s, card):
+            # 待续接（等待唤醒、回答、退回）的公共池卡片只给上次执行的 Bot：换人会丢会话与工作区上下文。
+            bot = next((b for b in idle if b.id == owner), None)
         else:
             initiator = initiator_of(s, card)
             pool = [
@@ -558,6 +589,15 @@ def claim_card(s, settings, node):
             continue
         return start_attempt(s, settings, card, bot, node)
     return None
+
+
+def resume_owner(s, card):
+    """待续接的公共池卡片由上次执行的 Bot 接手；该 Bot 已删除或停用时返回 None，卡片回到公共池。"""
+    if not card.result.get("resume"):
+        return None
+    owner = card_bot_id(s, card)
+    bot = s.get(Bot, owner) if owner else None
+    return bot.id if bot and bot.enabled else None
 
 
 def delegation_pool_ok(initiator, bot, node):
@@ -748,10 +788,12 @@ def expire_cards(s, settings):
             requeue(s, card, "kernel", "Attempt 租约丢失超过宽限期")
     # 等待超时：唤醒挂起的卡片，提示里带上超时说明。事件的 actor 用 system（编排会忽略 kernel 的事件），
     # 好让编排收到 wait_timeout 通知。
-    for ident in list(s.scalars(select(Card.id).where(Card.status == "WAITING"))):
+    # 每次心跳/领取都会扫描：先按 until 筛出已超时的，只给这些卡片加行锁，锁后再确认一次。
+    for ident, waiting in list(s.execute(select(Card.id, Card.waiting_on).where(Card.status == "WAITING"))):
+        if not wait_expired(waiting):
+            continue
         card = s.scalar(select(Card).where(Card.id == ident).with_for_update())
-        until = (card.waiting_on or {}).get("until") if card and card.status == "WAITING" else None
-        if until and datetime.fromisoformat(until) < now():
+        if card and card.status == "WAITING" and wait_expired(card.waiting_on):
             card.waiting_on = {**card.waiting_on, "timed_out": True}
             wake(s, card, "system", "等待超时，已唤醒", wait_timeout=True)
 
@@ -1558,7 +1600,7 @@ class CardManager:
         cap = min(self.settings.delegation_max_depth, DEPTH_CAP)
         if depth > cap:
             raise Conflict(f"委派深度超限（最多 {cap} 层）")
-        check_goal_budget(s, self.settings, card.conversation_id)
+        check_goal_budget(s, self.settings, card.conversation_id, card)
         child = Card(
             id=uid(),
             conversation_id=card.conversation_id,

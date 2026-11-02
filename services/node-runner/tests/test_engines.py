@@ -262,6 +262,25 @@ def test_pi_submit_without_final_text_completes(tmp_path, monkeypatch):
         pi.translate({"type": "agent_end"}, failed)
 
 
+def test_pi_wait_without_final_text_completes(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner.os, "chown", lambda *a: None, raising=False)
+    monkeypatch.setenv("NIUCAI_PI_MODEL", "pi-model")
+    pi = runner.PiEngine(tmp_path)
+
+    def result(data):  # Pi 工具结果的真实形状：content 列表里的 JSON 文本
+        return {"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False)}]}
+
+    ready = state(tmp_path)
+    end = {"type": "tool_execution_end", "toolName": "card_wait", "isError": False}
+    pi.translate({**end, "result": result({"ok": True, "ready": True, "cards": []})}, ready)
+    with pytest.raises(RuntimeError):  # 已就绪：Bot 应继续工作，不能当作结束
+        pi.translate({"type": "agent_end"}, ready)
+    waiting = state(tmp_path)
+    pi.translate({**end, "result": result({"ok": True, "next": "结束本次执行"})}, waiting)
+    _, final = pi.translate({"type": "agent_end"}, waiting)
+    assert "card_wait" in final["answer"]
+
+
 def test_codex_without_engine_sandbox_offers_only_container_isolated_profiles(tmp_path, monkeypatch):
     monkeypatch.setattr(runner.os, "chown", lambda *a: None, raising=False)
     monkeypatch.setenv("NIUCAI_CODEX_API_KEY", "sk-codex")

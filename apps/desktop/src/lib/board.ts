@@ -60,13 +60,13 @@ export interface CollabPolicy {
   accept_from: string[];
   auto_approve_from: string[];
 }
-/** 只有前四项里的 can_delegate / delegate_to / accept_from / auto_approve_from 会被 Kernel 强制执行。 */
+/** 与 Kernel 默认值一致；C2 只强制执行 can_delegate / delegate_to / accept_from / auto_approve_from，其余留给 C4/C5。 */
 export const defaultCollabPolicy: CollabPolicy = {
   can_delegate: false,
   delegate_to: [],
-  can_ask: false,
+  can_ask: true,
   can_discuss: false,
-  can_verify: false,
+  can_verify: true,
   accept_from: ["*"],
   auto_approve_from: [],
 };

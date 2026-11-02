@@ -13,7 +13,7 @@ from niucai.control import collab
 from niucai.control.cards import BOARD_TOOLS, CardManager, wake_waiters
 from niucai.control.orchestrator import Orchestrator
 from niucai.control.tasks import Conflict
-from niucai.storage.db import Card, CardEvent, Conversation, OrchestratorRun, now
+from niucai.storage.db import Card, CardEvent, Conversation, OrchestratorRun, RemoteJob, now
 
 ALL = {"can_delegate": True, "delegate_to": ["*"]}
 
@@ -233,6 +233,50 @@ def test_mutual_wait_is_rejected(setup):
         call(cards, node, b_job, "card_delegate", to="A", title="back", goal="g", wait=True)
 
 
+def test_waiting_on_finished_upstream_card_is_ready(setup):
+    env, claimed, parent, a, goal = start(setup)
+    db, settings, remote, cards, node = env
+    bot(cards, node, "B", engine="codex", collab_policy=ALL)
+    upstream = card(cards, "x", assignee_bot_id=a["id"], conversation_id=goal)["id"]
+    child = call(cards, node, claimed, "card_delegate", to="B", title="t", goal="g", wait=True)["card_id"]
+    finish(remote, node, claimed)
+    jobs = {j["card_id"]: j for j in (remote.claim(node["id"]), remote.claim(node["id"]))}
+    complete(env, jobs[upstream])
+    # A 是 B 的上游 Bot，但 A 已结束的卡片不会再等任何人：不算环形等待，立即就绪。
+    result = call(cards, node, jobs[child], "card_wait", card_ids=[upstream])
+    assert result["ready"] and result["cards"][0]["status"] == "DONE"
+
+
+def test_pool_card_resumes_on_previous_bot(setup):
+    db, settings, remote, cards, node = board(setup, slots=4)
+    names = {bot(cards, node, n, collab_policy=ALL, tags=["dev"])["id"]: n for n in ("A1", "A2")}
+    bot(cards, node, "B", engine="codex", tags=["web"])
+    goal = new_goal(db)
+    parent = card(cards, "parent", required_tags=["dev"], conversation_id=goal)["id"]
+    claimed = remote.claim(node["id"])
+    remote.event(node["id"], claimed["id"], claimed["attempt_id"], 1, "session", {"session_id": "sess-A"})
+    with db.sessions() as s:
+        owner = s.get(RemoteJob, claimed["id"]).bot_id
+    assert owner in names
+    child = call(cards, node, claimed, "card_delegate", to="B", title="t", goal="g", wait=True)["card_id"]
+    finish(remote, node, claimed)
+    child_job = remote.claim(node["id"])
+    assert child_job["card_id"] == child
+    other = card(cards, "other", assignee_bot_id=owner, conversation_id=new_goal(db))["id"]
+    other_job = remote.claim(node["id"])
+    assert other_job["card_id"] == other
+
+    complete((db, settings, remote, cards, node), child_job)
+    assert status(db, parent) == "READY"
+    assert not remote.claim(node["id"])  # 原 Bot 正忙：另一个 dev Bot 不能接走待续接的卡片
+    complete((db, settings, remote, cards, node), other_job)
+    resumed = remote.claim(node["id"])
+    assert resumed["card_id"] == parent
+    assert resumed["config_snapshot"]["resume"] == {"job_id": claimed["id"], "session_id": "sess-A"}
+    with db.sessions() as s:
+        assert s.get(RemoteJob, resumed["id"]).bot_id == owner
+
+
 def test_delegation_depth_limit(setup):
     env, claimed, parent, a, goal = start(setup, slots=4)
     db, settings, remote, cards, node = env
@@ -268,6 +312,24 @@ def test_goal_budget_rejects_delegation_and_kernel_cards(setup):
         call(cards, node, claimed, "card_delegate", to="B", title="3", goal="g")
     with pytest.raises(Conflict, match="Attempt"):
         orchestrator.tool_card_create(goal, {"title": "kernel card"})
+
+
+def test_goalless_delegation_tree_has_its_own_budget(setup):
+    db, settings, remote, cards, node = board(setup)
+    a = bot(cards, node, "A", collab_policy=ALL)
+    bot(cards, node, "B", engine="codex")
+    for i in range(3):
+        card(cards, f"unrelated {i}", draft=True)  # 不在这棵委派树里，不计入
+    card(cards, "parent", assignee_bot_id=a["id"])
+    claimed = remote.claim(node["id"])
+    settings.goal_max_cards = 2
+    call(cards, node, claimed, "card_delegate", to="B", title="1", goal="g")
+    with pytest.raises(Conflict, match="委派树最多 2 张卡片"):
+        call(cards, node, claimed, "card_delegate", to="B", title="2", goal="g")
+    settings.goal_max_cards = 50
+    settings.goal_max_attempts = 1
+    with pytest.raises(Conflict, match="Attempt"):
+        call(cards, node, claimed, "card_delegate", to="B", title="3", goal="g")
 
 
 def test_policy_rejections(setup):

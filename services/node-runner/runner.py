@@ -540,6 +540,18 @@ def text_of(value):
     return ""
 
 
+def board_waits(result):
+    """card_wait / card_delegate 是否让本次执行进入等待：结果带 next 且未 ready。
+
+    结果是 JSON 文本，可能包在 content 列表里。
+    """
+    try:
+        data = json.loads(text_of(result))
+    except ValueError:
+        return False
+    return isinstance(data, dict) and "next" in data and not data.get("ready")
+
+
 def input_summary(args):
     if isinstance(args, str):
         return args
@@ -751,10 +763,9 @@ class PiEngine:
             if kind == "tool_execution_end" and not frame.get("isError"):
                 if frame.get("toolName") in {"card_submit", "card_block"}:
                     state["board_outcome"] = frame["toolName"]
-                elif frame.get("toolName") in {"card_wait", "card_delegate"} and '"next"' in json.dumps(
-                    frame.get("result"), ensure_ascii=False
-                ):
-                    state["board_outcome"] = frame["toolName"]  # 进入等待：本次执行到此结束
+                elif frame.get("toolName") in {"card_wait", "card_delegate"}:
+                    if board_waits(frame.get("result")):
+                        state["board_outcome"] = frame["toolName"]  # 进入等待：本次执行到此结束
             tool = str(frame.get("toolName", ""))[:100]
             data = {"tool": tool, "is_error": bool(frame.get("isError"))}
             if kind == "tool_execution_start":
