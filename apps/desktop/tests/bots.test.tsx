@@ -266,3 +266,58 @@ it("shows the probed environment read-only and saves only the manual part", asyn
     ),
   );
 });
+
+it("views and edits the collab policy", async () => {
+  const { BotForm } = await import("../src/components/BotForm");
+  const bot = {
+    id: "b2",
+    name: "lead",
+    node_id: "n1",
+    engine: "claude",
+    role: "",
+    instructions: "",
+    tags: [],
+    model: "",
+    permission_profile: "workspace",
+    skills: [],
+    mcp_servers: [],
+    requires_approval: false,
+    concurrency: 1,
+    enabled: true,
+    running: 0,
+    config_version: 1,
+    collab_policy: {
+      can_delegate: true,
+      delegate_to: ["vps", "tag:browser"],
+      accept_from: ["*"],
+      auto_approve_from: [],
+    },
+  } as never;
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <BotForm nodeId="n1" engines={["claude"]} bot={bot} onClose={() => {}} />
+    </QueryClientProvider>,
+  );
+  expect(screen.getByLabelText("允许委派给其它 Bot")).toBeChecked();
+  expect(screen.getByLabelText("可委派给")).toHaveValue("vps, tag:browser");
+  expect(screen.getByLabelText("接受谁的委派")).toHaveValue("*");
+  fireEvent.change(screen.getByLabelText("这些 Bot 的委派免批准"), {
+    target: { value: "lead, tag:ops" },
+  });
+  fireEvent.click(screen.getByLabelText("允许委派给其它 Bot"));
+  fireEvent.click(screen.getByRole("button", { name: "保存" }));
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith(
+      "/api/bots/b2",
+      "PATCH",
+      expect.objectContaining({
+        collab_policy: {
+          can_delegate: false,
+          delegate_to: ["vps", "tag:browser"],
+          accept_from: ["*"],
+          auto_approve_from: ["lead", "tag:ops"],
+        },
+      }),
+    ),
+  );
+});

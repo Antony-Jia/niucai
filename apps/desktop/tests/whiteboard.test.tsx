@@ -179,3 +179,27 @@ it("offers the operations each status allows", () => {
   expect(cardOperations("FAILED")).toEqual(["reopen"]);
   expect(cardOperations("RUNNING")).toEqual(["cancel"]);
 });
+
+it("shows WAITING cards with what they wait on and the delegating Bot", async () => {
+  const { waitingText, initiatorText, statusText, boardColumns } =
+    await import("../src/lib/board");
+  const parent = {
+    ...card,
+    id: "p1",
+    status: "WAITING",
+    waiting_on: { cards: ["c2", "zzzzzzzz-1"], mode: "any" },
+  } as never;
+  expect(statusText.WAITING).toBe("等待其它卡片");
+  expect(waitingText(parent, board.cards as never)).toBe(
+    "等待（任一）：Docs、zzzzzzzz",
+  );
+  expect(waitingText({ ...card } as never)).toBe("");
+  expect(initiatorText({ ...card, initiator_name: "claude-a" } as never)).toBe(
+    "由 @claude-a 委派",
+  );
+  expect(initiatorText(card as never)).toBe("");
+  expect(
+    boardColumns.find((c) => c.statuses.includes("WAITING" as never))?.key,
+  ).toBe("running");
+  expect(cardOperations("WAITING" as never)).toEqual(["cancel"]);
+});

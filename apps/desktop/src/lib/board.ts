@@ -8,6 +8,7 @@ export type CardStatus =
   | "READY"
   | "WAITING_APPROVAL"
   | "RUNNING"
+  | "WAITING"
   | "REVIEW"
   | "BLOCKED"
   | "DONE"
@@ -49,10 +50,32 @@ export interface BotEnvironment {
   manual: Partial<BotEnvironmentManual>;
 }
 
+/** Bot 之间的委派策略；名单条目是 Bot 名称、tag:<标签> 或 *。 */
+export interface CollabPolicy {
+  can_delegate: boolean;
+  delegate_to: string[];
+  can_ask: boolean;
+  can_discuss: boolean;
+  can_verify: boolean;
+  accept_from: string[];
+  auto_approve_from: string[];
+}
+/** 只有前四项里的 can_delegate / delegate_to / accept_from / auto_approve_from 会被 Kernel 强制执行。 */
+export const defaultCollabPolicy: CollabPolicy = {
+  can_delegate: false,
+  delegate_to: [],
+  can_ask: false,
+  can_discuss: false,
+  can_verify: false,
+  accept_from: ["*"],
+  auto_approve_from: [],
+};
+
 export interface Bot extends BotConfig {
   id: string;
   /** 同事视角的环境画像；探测部分由节点上报，手填部分可在 Bot 设置里编辑。 */
   environment?: BotEnvironment;
+  collab_policy?: CollabPolicy;
   enabled: boolean;
   running: number;
   node_name?: string;
@@ -100,9 +123,19 @@ export interface Card {
     mentions: string[];
     at: string;
   }[];
+  /** 委派出的卡片：发起委派的 Bot 名称；用户或编排创建的卡片没有。 */
+  initiator_name?: string | null;
+  /** WAITING 时正在等待的卡片与条件。 */
+  waiting_on?: WaitingOn | null;
   summary: string;
   created_at: string;
   updated_at: string;
+}
+export interface WaitingOn {
+  cards: string[];
+  mode: "all" | "any";
+  until?: string;
+  timed_out?: boolean;
 }
 export interface CardEvent {
   id: number;
@@ -157,6 +190,7 @@ export const statusText: Record<CardStatus, string> = {
   READY: "待领取",
   WAITING_APPROVAL: "待批准",
   RUNNING: "执行中",
+  WAITING: "等待其它卡片",
   REVIEW: "待验收",
   BLOCKED: "等待回答",
   DONE: "已完成",
@@ -171,7 +205,7 @@ export const boardColumns: {
 }[] = [
   { key: "draft", label: "草稿", statuses: ["DRAFT"] },
   { key: "ready", label: "待领取", statuses: ["READY", "WAITING_APPROVAL"] },
-  { key: "running", label: "执行中", statuses: ["RUNNING"] },
+  { key: "running", label: "执行中", statuses: ["RUNNING", "WAITING"] },
   { key: "attention", label: "需要你", statuses: ["BLOCKED", "REVIEW"] },
   { key: "closed", label: "已结束", statuses: ["DONE", "FAILED", "CANCELLED"] },
 ];
@@ -200,6 +234,21 @@ export const operationText: Record<CardOperation, string> = {
 export const needsBody = (op: CardOperation) =>
   op === "answer" || op === "reject";
 
+/** WAITING 卡片在卡片上的一行说明：等哪几张、全部还是任一。 */
+export function waitingText(card: Card, all: Card[] = []): string {
+  const waiting = card.waiting_on;
+  if (card.status !== "WAITING" || !waiting) return "";
+  const names = waiting.cards.map(
+    (id) => all.find((c) => c.id === id)?.title ?? id.slice(0, 8),
+  );
+  const how = waiting.cards.length > 1 && waiting.mode === "any" ? "任一" : "";
+  return `等待${how ? "（" + how + "）" : ""}：${names.join("、")}`;
+}
+
+/** 委派来源的一行说明；非委派卡片返回空串。 */
+export const initiatorText = (card: Card) =>
+  card.initiator_name ? `由 @${card.initiator_name} 委派` : "";
+
 export const splitList = (value: string) =>
   value
     .split(/[,，\s]+/)
@@ -209,12 +258,14 @@ export const splitList = (value: string) =>
 export const boardApi = {
   board: () => request<Board>("/api/board"),
   bots: () => request<Bot[]>("/api/bots"),
-  createBot: (bot: BotConfig) => request<Bot>("/api/bots", "POST", bot),
+  createBot: (bot: BotConfig & { collab_policy?: Partial<CollabPolicy> }) =>
+    request<Bot>("/api/bots", "POST", bot),
   updateBot: (
     id: string,
     changes: Partial<BotConfig> & {
       enabled?: boolean;
       environment?: BotEnvironmentManual;
+      collab_policy?: Partial<CollabPolicy>;
     },
   ) => request<Bot>(`/api/bots/${id}`, "PATCH", changes),
   deleteBot: (id: string) => request(`/api/bots/${id}`, "DELETE"),

@@ -68,7 +68,7 @@ export const boardGroups: {
   statuses: CardStatus[];
 }[] = [
   { key: "ready", label: "待领取", statuses: ["READY", "WAITING_APPROVAL"] },
-  { key: "running", label: "进行中", statuses: ["RUNNING"] },
+  { key: "running", label: "进行中", statuses: ["RUNNING", "WAITING"] },
   { key: "attention", label: "需处理", statuses: ["BLOCKED", "REVIEW"] },
   { key: "closed", label: "已结束", statuses: ["DONE", "FAILED", "CANCELLED"] },
   { key: "draft", label: "草稿", statuses: ["DRAFT"] },
@@ -127,6 +127,7 @@ const stamp = (value: string | undefined | null) => {
  */
 function executorOf(card: Card): string | null {
   if (card.status === "RUNNING") return card.current_job?.bot_id ?? null;
+  if (card.status === "WAITING") return card.last_job?.bot_id ?? null;
   if (card.status === "BLOCKED" || card.status === "REVIEW")
     return card.current_job?.bot_id ?? card.last_job?.bot_id ?? null;
   return null;

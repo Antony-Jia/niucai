@@ -19,6 +19,8 @@ import {
   operationText,
   splitList,
   statusText,
+  initiatorText,
+  waitingText,
   type Board,
   type Card,
   type CardDetail,
@@ -202,6 +204,7 @@ export function CardDetailView({
     queryKey: ["card", id],
     queryFn: () => boardApi.card(id),
   });
+  const siblings = cache.getQueryData<Board>(["board"])?.cards ?? [];
   const [body, setBody] = useState("");
   const [comment, setComment] = useState("");
   const [openAttempt, setOpenAttempt] = useState<string | null>(null);
@@ -236,6 +239,12 @@ export function CardDetailView({
             {card.assignee_name ? `@${card.assignee_name}` : "公共池"} · 第{" "}
             {card.attempts}/{card.budget.max_attempts ?? 3} 次尝试
           </p>
+          {initiatorText(card) && (
+            <p className="muted">{initiatorText(card)}</p>
+          )}
+          {waitingText(card, siblings) && (
+            <p className="muted">{waitingText(card, siblings)}</p>
+          )}
           {card.goal && <p className="card-goal">{card.goal}</p>}
           {card.acceptance && (
             <p className="muted">验收标准：{card.acceptance}</p>
@@ -345,7 +354,15 @@ export function CardDetailView({
   );
 }
 
-function CardTile({ card, onOpen }: { card: Card; onOpen: () => void }) {
+function CardTile({
+  card,
+  siblings,
+  onOpen,
+}: {
+  card: Card;
+  siblings: Card[];
+  onOpen: () => void;
+}) {
   return (
     <button className="kanban-card board-card" onClick={onOpen}>
       <strong>{card.title}</strong>
@@ -357,6 +374,10 @@ function CardTile({ card, onOpen }: { card: Card; onOpen: () => void }) {
         {card.required_tags.length > 0 &&
           ` · #${card.required_tags.join(" #")}`}
       </small>
+      {initiatorText(card) && <small>{initiatorText(card)}</small>}
+      {waitingText(card, siblings) && (
+        <small>{waitingText(card, siblings)}</small>
+      )}
       {card.latest && <small className="muted">{card.latest.body}</small>}
     </button>
   );
@@ -381,7 +402,12 @@ export function BoardColumns({
               <span>{items.length}</span>
             </h3>
             {items.map((c) => (
-              <CardTile key={c.id} card={c} onOpen={() => onOpen(c.id)} />
+              <CardTile
+                key={c.id}
+                card={c}
+                siblings={cards}
+                onOpen={() => onOpen(c.id)}
+              />
             ))}
           </section>
         );

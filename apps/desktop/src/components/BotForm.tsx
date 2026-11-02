@@ -8,6 +8,8 @@ import {
   type BotConfig,
   type BotEnvironmentManual,
   type BotEnvironmentProbed,
+  type CollabPolicy,
+  defaultCollabPolicy,
   type Engine,
   type PermissionProfile,
 } from "../lib/board";
@@ -113,6 +115,13 @@ export function BotForm({
     resources: bot?.environment?.manual.resources?.join(", ") ?? "",
     notes: bot?.environment?.manual.notes ?? "",
   });
+  const policy0 = { ...defaultCollabPolicy, ...bot?.collab_policy };
+  const [policy, setPolicy] = useState({
+    can_delegate: policy0.can_delegate,
+    delegate_to: policy0.delegate_to.join(", "),
+    accept_from: policy0.accept_from.join(", "),
+    auto_approve_from: policy0.auto_approve_from.join(", "),
+  });
   const probed = probedLines(bot?.environment?.probed);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -146,9 +155,20 @@ export function BotForm({
       resources: splitList(manual.resources),
       notes: manual.notes.trim(),
     };
+    const collab_policy: Partial<CollabPolicy> = {
+      can_delegate: policy.can_delegate,
+      delegate_to: splitList(policy.delegate_to),
+      accept_from: splitList(policy.accept_from),
+      auto_approve_from: splitList(policy.auto_approve_from),
+    };
     try {
-      if (bot) await boardApi.updateBot(bot.id, { ...config, environment });
-      else await boardApi.createBot(config);
+      if (bot)
+        await boardApi.updateBot(bot.id, {
+          ...config,
+          environment,
+          collab_policy,
+        });
+      else await boardApi.createBot({ ...config, collab_policy });
       await Promise.all([
         cache.invalidateQueries({ queryKey: ["topology"] }),
         cache.invalidateQueries({ queryKey: ["bots"] }),
@@ -454,6 +474,54 @@ export function BotForm({
             </label>
           </details>
         )}
+        <details className="bot-advanced bot-collab">
+          <summary>协作 · 允许这个 Bot 委派或接收委派</summary>
+          <small>
+            名单里写 Bot 名称、tag:标签，或 *
+            表示全部，逗号分隔。委派出去的卡片始终用接收方自己的权限档位。
+          </small>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={policy.can_delegate}
+              onChange={(e) =>
+                setPolicy({ ...policy, can_delegate: e.target.checked })
+              }
+            />
+            允许委派给其它 Bot
+          </label>
+          <label>
+            可委派给
+            <input
+              value={policy.delegate_to}
+              disabled={!policy.can_delegate}
+              onChange={(e) =>
+                setPolicy({ ...policy, delegate_to: e.target.value })
+              }
+              placeholder="例如：vps-browser, tag:browser；默认为空"
+            />
+          </label>
+          <label>
+            接受谁的委派
+            <input
+              value={policy.accept_from}
+              onChange={(e) =>
+                setPolicy({ ...policy, accept_from: e.target.value })
+              }
+              placeholder="默认 *（所有人）"
+            />
+          </label>
+          <label>
+            这些 Bot 的委派免批准
+            <input
+              value={policy.auto_approve_from}
+              onChange={(e) =>
+                setPolicy({ ...policy, auto_approve_from: e.target.value })
+              }
+              placeholder="需要批准的 Bot 或 Windows 本机，对名单内的委派不再询问"
+            />
+          </label>
+        </details>
         <label className="checkbox">
           <input
             type="checkbox"
