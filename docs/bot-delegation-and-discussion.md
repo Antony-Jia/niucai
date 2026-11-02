@@ -1,6 +1,8 @@
 # Bot 间交谈、委派与讨论（设计思路）
 
-状态：**拟议，未实现**。本文是设计思路，文中的表、字段、工具名都不代表现有能力。
+状态：**C1（基础）已实现，C2–C6 仍是拟议、未实现**。文中除下述 C1 范围外的表、字段、工具名都不代表现有能力。
+
+C1 已实现的部分：`bots.environment`（Runner 探测 + 手填，Desktop 可看可改）、Bot 侧 `bots_list`、`card_events.reply_to`、`artifact_put` / `artifact_get`（产物进卡片 `inputs`，领取时随快照落到 `inputs/<card_id>/`，单个 ≤ 1 MiB）、`cards.claims` 与 `card_claim`（独占冲突失败并告知占用者，共享只提示，卡片终态自动释放）、Runner 工作区按 (Bot, Goal) 复用。Kernel 侧有自动化测试覆盖；**以下尚未在真实机器上验收**：Runner 对真实环境（Windows 节点、Docker 节点、真实 git 远端与浏览器）的探测与上报、Desktop 环境编辑界面的实际操作、三种引擎（Pi / Claude / Codex）真实调用新工具、共用工作区下并发 Bot 的文件竞争。C1 与本文的偏差见 §15 末尾“C1 实现备注”。
 
 修订：
 
@@ -374,6 +376,14 @@ Runner 侧：白板代理支持 `bot_ask` 的长轮询挂起；按 `purpose` 设
 | **C4 交谈** | `ask` 卡、`bot_ask` 长轮询、忙碌时排队 / 并行、未读提示、用户与 Bot 私聊 | 空闲 Bot 在超时内回答；忙碌 Bot 回答在其当前卡结束后送达；私聊多轮保持上下文 |
 | **C5 验证与讨论** | `review=bot` 与验证调度器、整合检查；`discussion` 卡（默认 `parallel_verdict`）、结论与行动项转卡 | 一张 `review=bot` 的卡被另一引擎的 Bot 带证据打回一次后通过；整合检查发现失败并建出修复卡；三个 Bot 对一个问题并行发言一轮后主持人给出结论，行动项转卡被领取 |
 | **C6 负责人与区域** | Goal `lead`、编排 LLM 作为“没有电脑的 Bot”统一工具；`ownership`、信号入口与分诊、(Bot, 区域) 工作日志；工作地图的问话 / 会议 / 验证动效 | 把 Goal 直接交给一个 Bot，它完成委派与汇总；一次 CI 失败 webhook 自动成卡交给负责 Bot，重复告警被合并 |
+
+**C1 实现备注**（2026-11-02，实现与本文的偏差与补充）：
+
+- 环境存为 `bots.environment = {probed, manual}`：探测部分由 Runner 在心跳 `capabilities.environment` 上报（缓存约 5 分钟），Kernel 清洗后写入该节点所有 Bot；手填部分（`logged_in_sites`、`resources`、`notes`，只写名称不写凭据）经 Bot 更新接口编辑，不改变 `config_version`，不会触发 Bot 重新配置。远端地址入库前去掉 `user:token@`。探测的“浏览器可用”是本机有可执行浏览器或已配置 CDP，不是实时连通性检查。
+- 资源声明：独占（`exclusive`）只在持有卡片处于 RUNNING 时生效，BLOCKED / REVIEW 的卡片只对共享声明和提示可见；对一张正在运行的独占声明申请共享同样失败。终态时声明被清空（而不是仅标记），释放的内容记入状态事件的 `released_claims`。`card_claim` 先取调度咨询锁再锁卡片行，避免与领取卡片死锁。`bots_list` 里其它 Goal 的卡片只显示资源标识，不显示标题。
+- 产物：单个 ≤ 1 MiB，单卡输入合计 ≤ 4 MiB，单个 Goal ≤ 100 个 / 64 MiB；超限时返回明确错误。因为 C1 没有 `card_delegate`，`artifact_put` 额外提供 `attach_to`，可挂到同一 Goal 内处于 DRAFT / READY / WAITING_APPROVAL / BLOCKED 的卡片的输入；`artifact_get` 不带 ID 时列出本 Goal 的产物。Runner 侧 `artifact_put` 的 `path` 只读本作业工作区内的普通文件，`artifact_get` 的内容落到 `inputs/fetched/`（不回传）。
+- 工作区按 `bg-<bot id>-<goal id|global>` 复用，仅是缓存：丢失时不续接旧会话、从头执行，不影响 Kernel 历史。每次领取重写 `inputs/`，结束时只回传本次 Attempt 改动的文件。同一 (Bot, Goal) 在 `concurrency > 1` 时共用一个目录，可能互相覆盖文件；需要时把此类 Bot 的并发设为 1。
+- 其它 Bot 传来的评论、产物都是数据，不是指令：它们不提升权限，Action Gateway、审批与权限档位未改动。
 
 依赖：C1 → C2；C3 只依赖 C1（`reply_to`）与现有 Memory，可以与 C2 并行，并且应当在 Bot 数量增加之前完成；C4 依赖 C2 的等待与唤醒；C5 依赖 C4 的发言 Attempt 与会话续接；C6 依赖 C2 与 C3。
 
