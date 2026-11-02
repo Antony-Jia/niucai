@@ -428,6 +428,9 @@ class Bot(Base):
     reasoning_effort: Mapped[str] = mapped_column(String(20), default="", server_default="")
     # 环境画像：{"probed": Runner 探测上报, "manual": 用户手填}；只放事实说明，绝不存凭据。
     environment: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 协作策略（C2）：can_delegate / delegate_to / accept_from / auto_approve_from 生效，其余只存储；
+    # 缺省字段按 collab.POLICY_DEFAULTS 补齐。不属于 Runner 配置，改动不递增 config_version。
+    collab_policy: Mapped[dict] = mapped_column(JSON, default=dict)
     permission_profile: Mapped[str] = mapped_column(String(20), default="workspace")
     skills: Mapped[list] = mapped_column(JSON, default=list)
     mcp_servers: Mapped[list] = mapped_column(JSON, default=list)
@@ -456,6 +459,11 @@ class Card(Base):
     inputs: Mapped[list] = mapped_column(JSON, default=list)
     # 资源声明：[{"resource": "browser:<node>", "mode": "shared" | "exclusive"}]，终态时释放。
     claims: Mapped[list] = mapped_column(JSON, default=list)
+    # 等待其它卡片（C2）：{"cards": [...], "mode": "all" | "any", "until": ISO 时间, ...}；
+    # RUNNING 时是 Attempt 内已登记的等待，WAITING 时是挂起条件，唤醒后保留到下次领取写入提示。
+    waiting_on: Mapped[dict | None] = mapped_column(JSON)
+    # 委派深度：用户建的卡为 0，Bot 每委派一层 +1。
+    depth: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # 节点本地目录（如某个仓库）；Runner 只接受节点白名单内的目录，空串为节点托管工作区。
     workdir: Mapped[str] = mapped_column(String(500), default="")
     status: Mapped[str] = mapped_column(String(30), default="READY", index=True)

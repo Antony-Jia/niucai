@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     orchestrator_max_tool_calls: int = Field(default=30, ge=1, le=200)
     orchestrator_runs_per_hour: int = Field(default=30, ge=1, le=1000)
     orchestrator_lease_seconds: int = Field(default=600, ge=30, le=3600)
+    # Bot 协作 C2：委派链深度（用户卡片为 0，每次 Bot 委派 +1）默认 2、硬上限 3；
+    # 每个 Goal 的卡片总数与 Attempt 总数上限，超出后新的委派与 @kernel 建卡被拒绝。
+    delegation_max_depth: int = Field(default=2, ge=1, le=3)
+    goal_max_cards: int = Field(default=50, ge=1, le=500)
+    goal_max_attempts: int = Field(default=100, ge=1, le=2000)
     artifact_max_file_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     artifact_max_item_bytes: int = Field(default=100 * 1024 * 1024, ge=1)
     artifact_upload_ttl_seconds: int = Field(default=3600, ge=60)

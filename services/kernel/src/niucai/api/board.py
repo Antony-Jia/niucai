@@ -1,7 +1,7 @@
 from typing import Literal
 
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from niucai.control.cards import CardManager
 
@@ -17,6 +17,19 @@ def not_null(model):
     return model
 
 
+class CollabPolicy(BaseModel):
+    """协作策略：名单条目是 Bot 名称、tag:<标签> 或 *；只传要改的字段，其余保持。"""
+
+    model_config = ConfigDict(extra="forbid")
+    can_delegate: StrictBool | None = None
+    delegate_to: list[str] | None = Field(default=None, max_length=50)
+    can_ask: StrictBool | None = None
+    can_discuss: StrictBool | None = None
+    can_verify: StrictBool | None = None
+    accept_from: list[str] | None = Field(default=None, max_length=50)
+    auto_approve_from: list[str] | None = Field(default=None, max_length=50)
+
+
 class BotFields(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     role: str = Field(default="", max_length=500)
@@ -30,6 +43,7 @@ class BotFields(BaseModel):
     mcp_servers: list[str] = Field(default_factory=list, max_length=32)
     requires_approval: bool | None = None
     concurrency: int = Field(default=1, ge=1, le=16)
+    collab_policy: CollabPolicy | None = None
 
 
 class BotCreate(BotFields):
@@ -56,6 +70,8 @@ class BotUpdate(BaseModel):
     enabled: bool | None = None
     # 手填的环境说明（登录过的站点名、特殊资源、备注）；探测部分由 Runner 上报，不能在这里改。
     environment: dict | None = None
+    # 协作策略（C2）；不属于 Runner 落地的配置，修改它不会提升 config_version。
+    collab_policy: CollabPolicy | None = None
 
     _not_null = model_validator(mode="after")(not_null)
 

@@ -13,7 +13,7 @@ from datetime import timedelta
 
 from sqlalchemy import func, or_, select
 
-from niucai.control.cards import CLOSED, CardManager
+from niucai.control.cards import CLOSED, CardManager, check_goal_budget
 from niucai.control.conversations import append_message, lock_conversation
 from niucai.control.tasks import Conflict, Missing, require
 from niucai.domain.schemas import Role
@@ -33,7 +33,6 @@ from niucai.storage.db import (
 log = logging.getLogger("niucai.orchestrator")
 ACTOR = "kernel"
 TRIGGER_LIMIT = 20  # 一个运行最多合并的触发数，更早的丢弃（上下文里只看最近的）
-CARD_LIMIT = 50  # 每个 Goal 的卡片上限，防止编排失控拆卡
 MESSAGE_WINDOW = 20
 RECOVER_LIMIT = 2  # 同一批触发因 Worker 崩溃被重新排队的次数上限，防止崩溃循环
 
@@ -202,10 +201,14 @@ def on_card_event(s, card, event):
             kind = "blocked"
         elif target == "CANCELLED":
             kind = "cancelled"
+        elif (event.data or {}).get("wait_timeout"):
+            kind = "wait_timeout"  # 等待超时的卡片已被唤醒：只通知编排，不需要审批
         if kind and target in CLOSED and all_closed(s, card.conversation_id):
             kind = "all_closed"
     elif event.kind == "proposal":
         kind = "proposal"
+    elif event.kind == "delegate":
+        kind = "delegated"  # Bot 之间的委派：只是知会编排，不需要它批准
     elif event.kind in {"comment", "answer"} and ACTOR in (event.mentions or []):
         kind = "mention"
     if kind is None or (kind == "cancelled" and event.actor == "user"):
@@ -536,9 +539,7 @@ class Orchestrator:
 
     def tool_card_create(self, goal_id, args):
         with self.db.sessions() as s:
-            count = s.scalar(select(func.count(Card.id)).where(Card.conversation_id == goal_id))
-            if count >= CARD_LIMIT:
-                raise Conflict(f"每个 Goal 最多 {CARD_LIMIT} 张卡片")
+            check_goal_budget(s, self.settings, goal_id)
             # 没写 bot 时落到用户 @ 指定的第一个助手；写了就以编排者的选择为准（需是已启用的 Bot）。
             wanted = args.get("bot") or next(iter(preferred_bots(require(s, Conversation, goal_id))), None)
             bot_id = self.bot_id(s, wanted)

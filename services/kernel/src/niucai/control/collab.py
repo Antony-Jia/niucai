@@ -1,6 +1,6 @@
-"""Bot 协作 C1 的纯逻辑：环境画像、资源声明与冲突判断、白板产物。
+"""Bot 协作 C1–C2 的纯逻辑：环境画像、资源声明与冲突判断、白板产物、协作策略。
 
-设计见 docs/bot-delegation-and-discussion.md §6、§7、§10。这里不开事务，调用方持有会话与卡片锁。
+设计见 docs/bot-delegation-and-discussion.md §6–§10。这里不开事务，调用方持有会话与卡片锁。
 """
 
 import base64
@@ -99,6 +99,63 @@ def environment_view(bot):
     return {"probed": probe, "manual": manual}
 
 
+# ---- 协作策略 -------------------------------------------------------------------
+
+# can_delegate / delegate_to / accept_from / auto_approve_from 在 C2 生效；
+# can_ask / can_discuss / can_verify 先只存储与校验，供 C4/C5 使用。
+POLICY_DEFAULTS = {
+    "can_delegate": False,
+    "delegate_to": [],
+    "can_ask": True,
+    "can_discuss": False,
+    "can_verify": True,
+    "accept_from": ["*"],
+    "auto_approve_from": [],
+}
+POLICY_BOOLS = ("can_delegate", "can_ask", "can_discuss", "can_verify")
+POLICY_LISTS = ("delegate_to", "accept_from", "auto_approve_from")
+POLICY_ENTRY = re.compile(r"\*|tag:[^\s:]{1,40}|[A-Za-z0-9_\-一-鿿]{1,60}")
+
+
+def policy_view(bot):
+    """生效的策略：存储的字段覆盖默认值。"""
+    return {**POLICY_DEFAULTS, **(bot.collab_policy or {})}
+
+
+def clean_policy(value, base=None):
+    """校验并合并策略更新；未知字段、类型不对、条目格式不对都拒绝。"""
+    if not isinstance(value, dict):
+        raise ValueError("collab_policy must be an object")
+    unknown = set(value) - set(POLICY_DEFAULTS)
+    if unknown:
+        raise ValueError(f"unknown collab_policy fields: {', '.join(sorted(unknown))}")
+    result = {**POLICY_DEFAULTS, **(base or {})}
+    for key, item in value.items():
+        if key in POLICY_BOOLS:
+            if not isinstance(item, bool):
+                raise ValueError(f"collab_policy.{key} must be a boolean")
+            result[key] = item
+            continue
+        if not isinstance(item, list) or len(item) > 50:
+            raise ValueError(f"collab_policy.{key} must be a list of at most 50 entries")
+        entries = []
+        for entry in item:
+            text = str(entry).strip() if isinstance(entry, str) else ""
+            if not POLICY_ENTRY.fullmatch(text):
+                raise ValueError(
+                    f"collab_policy.{key}: invalid entry {str(entry)[:60]!r} (use a Bot name, tag:<tag> or *)"
+                )
+            if text not in entries:
+                entries.append(text)
+        result[key] = entries
+    return result
+
+
+def policy_allows(entries, bot):
+    """名单是否覆盖这个 Bot：`*`、Bot 名称或 `tag:<标签>`。"""
+    return "*" in entries or bot.name in entries or any(f"tag:{t}" in entries for t in bot.tags or [])
+
+
 # ---- 资源声明 -------------------------------------------------------------------
 
 RESOURCE = re.compile(r"(repo|path|site|desktop|browser|ext):(\S{1,190})")
@@ -107,7 +164,8 @@ MODES = ("shared", "exclusive")
 CLAIM_LIMIT = 20
 # exclusive 只在 Attempt 执行期间持有；shared 在卡片被阻塞/待验收时仍显示（工作未合入）。
 EXCLUSIVE_HOLD = {"RUNNING"}
-SHARED_HOLD = {"RUNNING", "BLOCKED", "REVIEW"}
+# WAITING（等其它卡片）同 BLOCKED：工作未合入，仍显示共享声明，但不再持有独占。
+SHARED_HOLD = {"RUNNING", "WAITING", "BLOCKED", "REVIEW"}
 
 
 def normalize_claims(raw):
