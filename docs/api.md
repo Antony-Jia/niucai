@@ -169,6 +169,15 @@ FAILED 若仍有待审批动作，retry 只恢复为 WAITING_HUMAN，必须显�
 - `PATCH /api/goals/{id}`：`{judge_enabled: true|false|null}` → `{id, judge_enabled, judge_default}`；`GET /api/goals/{id}` 另含 `judge_enabled` 与 `judge_default`（全局开关）。
 - 数据库迁移 `fe021029d018`：新增 `judge_runs`、`conversations.judge_enabled`、`memories.meta`。
 
+### Bot 交谈（C4）
+
+- 卡片多了 `kind`（`task|ask`），Attempt 多了 `purpose`（`work|answer`，`answer` 一律走 `read` 档位）。迁移 `ff021029d019`。
+- Bot 工具 `bot_ask(to, question, wait_seconds?)`（`wait_seconds` 默认 60、最多 120，只由 Runner 的 board 代理使用）：建一张 `kind=ask` 的卡片并等答案。答复为 `{card_id, status, answered:true, answer, note}`（答案截断到 4000 字）；未答（超时、失败、取消）为 `answered:false` 加 `note`，超时的 `note` 提示用 `card_wait`。违反 `can_ask` / `accept_from`、自问、超出深度或预算、接收方不能强制只读 → 409。回答期间不能再用 `card_delegate` / `bot_ask` / `card_wait` / `card_claim` / `card_propose` / `card_block`。`card_get` 多返回 `error`（卡片失败原因，没有为 `null`）。所有 board 工具的字典返回值在有人提问时附 `pending_asks: {count, note}`。
+- `GET /api/bots/{bot_id}/chats`：该 Bot 的私聊线程（用户创建的 ask 卡，最近 50 个）。
+- `POST /api/bots/{bot_id}/chats`：`{message, allow_unsafe_profile?}` → 201 卡片视图。Bot 不能强制只读时 409，`allow_unsafe_profile=true` 才会按 Bot 自己的档位回答（卡片记录这一降级）。
+- `POST /api/cards/{card_id}/messages`：`{message}` 在线程里追问；已结束的卡片重开并续接会话。线程 RUNNING / WAITING、不是私聊线程、超过 200 条 → 409。
+- 私聊线程不出现在 `GET /api/board`，也不出现在其它 Bot 的 board 工具里（`card_get` 等对别人的私聊线程返回 403 `card belongs to another goal`）。
+
 ## Goal、编排 LLM 与 Memory（重构 P3）
 
 需 `NIUCAI_ORCHESTRATOR_ENABLED=true`（创建 Goal 与发消息在关闭时返回 409）并重启 Kernel 与 Worker；编排循环跑在 Worker 内，与 Task 执行槽分开。Goal 是 `settings.mode=goal` 的会话，旧的 `/api/conversations/{id}/messages` 对它返回 409。
