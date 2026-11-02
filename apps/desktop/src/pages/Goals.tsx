@@ -17,6 +17,7 @@ import {
   type GoalDetail,
   type OrchestratorRun,
 } from "../lib/goals";
+import { JudgePanel } from "../components/JudgePanel";
 import { BoardColumns, CardDetailView } from "./Whiteboard";
 
 function errorText(e: unknown) {
@@ -126,6 +127,18 @@ function GoalView({ id }: { id: string }) {
           才会处理这个 Goal。
         </p>
       )}
+      <label className="judge-toggle">
+        <input
+          type="checkbox"
+          disabled={busy || demo}
+          checked={data.judge_enabled ?? data.judge_default ?? true}
+          onChange={(e) =>
+            void run(() => goalsApi.setJudge(id, e.target.checked))
+          }
+        />
+        裁判：Bot 的取舍类提问先由裁判按你以往的回答代答或退回，没有先例才来问你
+        {data.judge_enabled == null && "（当前跟随全局设置）"}
+      </label>
       <ol className="goal-messages">
         {data.messages.map((m) => (
           <li
@@ -166,6 +179,7 @@ function GoalView({ id }: { id: string }) {
         </p>
       )}
       <BoardColumns cards={data.board.cards} onOpen={setCard} />
+      <JudgePanel goalId={id} />
       <Runs runs={data.runs} />
       {card && <CardDetailView id={card} onClose={() => setCard(null)} />}
     </div>

@@ -125,6 +125,14 @@ export interface Card {
   }[];
   /** 委派出的卡片：发起委派的 Bot 名称；用户或编排创建的卡片没有。 */
   initiator_name?: string | null;
+  /** 最近一次裁判（C3）：处理中 / 代答 / 退回 / 转交用户；没有裁判参与时为空。 */
+  judge?: {
+    id: string;
+    status: "PENDING" | "DONE" | "FAILED";
+    verdict: "decided" | "returned" | "held" | null;
+    cited_ids: string[];
+    explanation: string;
+  } | null;
   /** WAITING 时正在等待的卡片与条件。 */
   waiting_on?: WaitingOn | null;
   summary: string;

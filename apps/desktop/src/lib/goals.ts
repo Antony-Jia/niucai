@@ -42,6 +42,9 @@ export interface GoalDetail {
   title: string;
   status: GoalStatus;
   orchestrator_enabled: boolean;
+  /** 裁判开关：null 跟随全局（judge_default）。 */
+  judge_enabled?: boolean | null;
+  judge_default?: boolean;
   question?: GoalSummary["question"];
   messages: GoalMessage[];
   runs: OrchestratorRun[];
@@ -84,6 +87,8 @@ export const goalsApi = {
       content,
       client_id: crypto.randomUUID(),
     }),
+  setJudge: (id: string, judge_enabled: boolean | null) =>
+    request(`/api/goals/${id}`, "PATCH", { judge_enabled }),
   rerun: (id: string) => request(`/api/goals/${id}/run`, "POST"),
   run: (id: string) => request<OrchestratorRun>(`/api/orchestrator/runs/${id}`),
 };

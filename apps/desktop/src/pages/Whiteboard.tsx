@@ -11,6 +11,7 @@ import {
 } from "../components/ui";
 import { JobLog } from "../components/JobLog";
 import { useApp } from "../lib/state";
+import { judgeText } from "../lib/judge";
 import {
   boardApi,
   boardColumns,
@@ -35,6 +36,7 @@ const eventText: Record<string, string> = {
   answer: "回答",
   proposal: "提议",
   submit: "提交",
+  verdict: "裁判",
 };
 
 function errorText(e: unknown) {
@@ -245,6 +247,12 @@ export function CardDetailView({
           {waitingText(card, siblings) && (
             <p className="muted">{waitingText(card, siblings)}</p>
           )}
+          {judgeText(card) && (
+            <p className="muted judge-note">
+              {judgeText(card)}
+              {card.judge?.explanation ? `：${card.judge.explanation}` : ""}
+            </p>
+          )}
           {card.goal && <p className="card-goal">{card.goal}</p>}
           {card.acceptance && (
             <p className="muted">验收标准：{card.acceptance}</p>
@@ -378,6 +386,7 @@ function CardTile({
       {waitingText(card, siblings) && (
         <small>{waitingText(card, siblings)}</small>
       )}
+      {judgeText(card) && <small>{judgeText(card)}</small>}
       {card.latest && <small className="muted">{card.latest.body}</small>}
     </button>
   );
