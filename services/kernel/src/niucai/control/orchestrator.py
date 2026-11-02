@@ -13,7 +13,7 @@ from datetime import timedelta
 
 from sqlalchemy import func, or_, select
 
-from niucai.control.cards import CLOSED, CardManager, check_goal_budget
+from niucai.control.cards import CLOSED, CardManager, check_goal_budget, read_only_answer
 from niucai.control.conversations import append_message, lock_conversation
 from niucai.control.tasks import Conflict, Missing, require
 from niucai.domain.schemas import Role
@@ -137,6 +137,13 @@ TOOLS = [
         {"card_id": STRING, "body": STRING},
         ["card_id", "body"],
     ),
+    tool(
+        "bot_ask",
+        "向某个 Bot 提一个事实问题（只读短问答，默认 5 分钟超时）；不会等待，答案是这张 ask 卡的结果，"
+        "卡片结束时会再触发你，届时用 card_get 读取",
+        {"bot": STRING, "question": STRING},
+        ["bot", "question"],
+    ),
     tool("ask_user", "向用户提问（显示在 Goal 对话里）", {"question": STRING}, ["question"]),
     tool(
         "goal_reply",
@@ -211,6 +218,8 @@ def on_card_event(s, card, event):
         kind = "delegated"  # Bot 之间的委派：只是知会编排，不需要它批准
     elif event.kind in {"comment", "answer"} and ACTOR in (event.mentions or []):
         kind = "mention"
+    if card.kind == "ask" and card.created_by.startswith("bot:") and kind in {"done", "failed", "cancelled"}:
+        return  # Bot 之间的提问由提问方自己消化，不吵编排；全部结束仍会走 all_closed
     if kind is None or (kind == "cancelled" and event.actor == "user"):
         return  # 用户亲手取消的卡片不需要编排介入，除非这让 Goal 全部结束
     enqueue(
@@ -564,6 +573,19 @@ class Orchestrator:
             actor=ACTOR,
         )
         return {"card_id": card["id"], "status": card["status"]}
+
+    def tool_bot_ask(self, goal_id, args):
+        question = str(args.get("question", "")).strip()
+        if not question:
+            raise ValueError("question required")
+        with self.db.sessions.begin() as s:
+            check_goal_budget(s, self.settings, goal_id)
+            bot = s.get(Bot, self.bot_id(s, args.get("bot")))
+            readable, reason = read_only_answer(s, bot)
+            if not readable:
+                raise Conflict(reason)
+            card = CardManager.ask_card(s, goal_id, None, 0, ACTOR, "编排者", bot, question)
+            return {"card_id": card.id, "status": card.status}
 
     def tool_card_update(self, goal_id, args):
         changes = {}

@@ -443,6 +443,8 @@ class RemoteJob(Base):
     # 白板链路：一张卡的每次执行就是一条 remote_jobs（Attempt）。
     card_id: Mapped[str | None] = mapped_column(ForeignKey("cards.id"), index=True)
     bot_id: Mapped[str | None] = mapped_column(ForeignKey("bots.id"), index=True)
+    # Attempt 用途（C4）：work 为干活；answer 为回答 ask 卡，只读档位、独立工作区。
+    purpose: Mapped[str] = mapped_column(String(10), default="work", server_default="work")
     board_token_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
@@ -497,6 +499,8 @@ class Card(Base):
     # 等待其它卡片（C2）：{"cards": [...], "mode": "all" | "any", "until": ISO 时间, ...}；
     # RUNNING 时是 Attempt 内已登记的等待，WAITING 时是挂起条件，唤醒后保留到下次领取写入提示。
     waiting_on: Mapped[dict | None] = mapped_column(JSON)
+    # 卡片种类（C4）：task 干活；ask 向 Bot 提问（bot_ask 或用户私聊）。C5 再加 discussion。
+    kind: Mapped[str] = mapped_column(String(10), default="task", server_default="task")
     # 委派深度：用户建的卡为 0，Bot 每委派一层 +1。
     depth: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # 节点本地目录（如某个仓库）；Runner 只接受节点白名单内的目录，空串为节点托管工作区。

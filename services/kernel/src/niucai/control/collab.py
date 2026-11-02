@@ -102,7 +102,7 @@ def environment_view(bot):
 # ---- 协作策略 -------------------------------------------------------------------
 
 # can_delegate / delegate_to / accept_from / auto_approve_from 在 C2 生效；
-# can_ask / can_discuss / can_verify 先只存储与校验，供 C4/C5 使用。
+# can_ask（C4 起生效，bot_ask 校验）/ can_discuss / can_verify 先只存储与校验，供 C5 使用。
 POLICY_DEFAULTS = {
     "can_delegate": False,
     "delegate_to": [],

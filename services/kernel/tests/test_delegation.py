@@ -480,6 +480,6 @@ def test_cancel_parent_cancels_unstarted_children_only(setup):
 
 
 def test_board_tools_include_delegate_and_wait():
-    assert BOARD_TOOLS[-2:] == ("card_delegate", "card_wait")
+    assert BOARD_TOOLS[-3:] == ("card_delegate", "card_wait", "bot_ask")
     assert CardManager.tool_card_delegate and CardManager.tool_card_wait
     assert asyncio  # 保持导入以便后续并发用例扩展

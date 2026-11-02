@@ -134,6 +134,18 @@ class CardAction(BaseModel):
     scope: Literal["global", "goal", "bot"] | None = None
 
 
+class ChatCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    message: str = Field(min_length=1, max_length=16000)
+    # 接收方无法强制只读（如 Pi）时，用户明确同意后才按 Bot 自己的权限档位回答。
+    allow_unsafe_profile: bool = False
+
+
+class ChatMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    message: str = Field(min_length=1, max_length=16000)
+
+
 class CommentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     body: str = Field(min_length=1, max_length=16000)
@@ -160,6 +172,18 @@ def board_router(db, settings, auth):
     @router.delete("/api/bots/{bot_id}", dependencies=auth)
     def delete_bot(bot_id: str):
         return manager.delete_bot(bot_id)
+
+    @router.get("/api/bots/{bot_id}/chats", dependencies=auth)
+    def bot_chats(bot_id: str):
+        return manager.chats(bot_id)
+
+    @router.post("/api/bots/{bot_id}/chats", dependencies=auth, status_code=201)
+    def create_chat(bot_id: str, request: ChatCreate):
+        return manager.chat_create(bot_id, request.message, request.allow_unsafe_profile)
+
+    @router.post("/api/cards/{card_id}/messages", dependencies=auth)
+    def chat_message(card_id: str, request: ChatMessage):
+        return manager.chat_send(card_id, request.message)
 
     @router.get("/api/board", dependencies=auth)
     def board(conversation_id: str | None = None):
