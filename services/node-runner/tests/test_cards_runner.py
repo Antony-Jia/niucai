@@ -64,7 +64,7 @@ def instance(tmp_path, monkeypatch):
     value.ledgers.mkdir(parents=True)
     value.board_dir = tmp_path / "board"
     value.tasks, value.prefix = {}, "/api/remote/runner/n1"
-    value.job_workspaces, value.job_uids = {}, {}
+    value.job_workspaces, value.job_workdirs, value.job_uids = {}, {}, {}
     return value
 
 
@@ -405,6 +405,46 @@ def test_artifact_put_reads_workspace_file_and_get_writes_inputs(instance, tmp_p
     # 文本直传不经过本地文件，原样转发。
     asyncio.run(instance.board_call(job, "artifact_put", {"name": "n.txt", "text": "hi"}))
     assert sent[-1][1] == {"name": "n.txt", "text": "hi"}
+
+
+def test_artifact_put_refuses_hidden_and_secret_files(instance, tmp_path):
+    workspace = tmp_path / "workspaces" / "bg-b-g"
+    (workspace / ".git").mkdir(parents=True)
+    (workspace / "keys").mkdir()
+    secret = (".env", ".git/config", "keys/id_rsa", "server.pem", "prod.env", "credentials.json")
+    for name in (*secret, "notes.md"):
+        (workspace / name).write_text("x")
+    instance.job_workspaces["job-1"] = workspace
+    job = card_job()
+    for bad in secret:
+        args, failure = instance.artifact_upload_args(job, {"path": bad})
+        assert failure == "hidden or secret-like files are not uploaded", bad
+    assert instance.artifact_upload_args(job, {"path": "notes.md"})[1] == ""
+
+
+def test_workdir_mode_keeps_fetched_artifacts_out_of_user_directory(instance, tmp_path):
+    workspace = tmp_path / "workspaces" / "bg-b-g"
+    workspace.mkdir(parents=True)
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+    (workdir / "report.md").write_text("# r")
+    (workdir / ".env").write_text("TOKEN=1")
+
+    def handler(request):
+        body = {"artifact_id": "abcd1234-0", "name": "r.md", "size": 3, "base64": "IyByCg=="}
+        return httpx.Response(200, json=body)
+
+    instance.client = httpx.AsyncClient(base_url="http://kernel", transport=httpx.MockTransport(handler))
+    instance.job_workspaces["job-1"], instance.job_workdirs["job-1"] = workspace, workdir
+    job = card_job()
+    # 相对路径按引擎 cwd（用户目录）解析；.env 不能上传。
+    assert instance.artifact_upload_args(job, {"path": "report.md"})[1] == ""
+    assert instance.artifact_upload_args(job, {"path": ".env"})[1]
+    got = asyncio.run(instance.board_call(job, "artifact_get", {"artifact_id": "abcd1234-0"}))
+    path = Path(got["result"]["path"])
+    assert path.is_absolute() and path.is_relative_to(workspace / "inputs" / "fetched")
+    assert path.read_bytes() == b"# r\n"
+    assert sorted(p.name for p in workdir.iterdir()) == [".env", "report.md"]  # 用户目录没有多出 inputs/
 
 
 def test_new_collab_tools_are_exposed_identically():

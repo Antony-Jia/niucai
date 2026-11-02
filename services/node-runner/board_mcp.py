@@ -95,7 +95,7 @@ TOOLS = [
     {
         "name": "artifact_put",
         "description": (
-            "把工作区里的文件（path）或一段文本（text）作为产物上传，单个不超过 1 MiB。"
+            "把工作区里的文件（path）或一段文本（text）作为产物上传，单个不超过 1 MiB；隐藏文件与密钥类文件（.env、私钥等）不能按路径上传。"
             "attach_to 可把它挂为同一目标内尚未开始的卡片的输入，对方领取时会放进 inputs/<card_id>/。"
         ),
         "inputSchema": {

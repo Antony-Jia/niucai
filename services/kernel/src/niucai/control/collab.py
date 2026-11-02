@@ -161,17 +161,20 @@ def other_claims(s, card):
     ]
 
 
-def holder_text(s, holder, resource):
+def holder_text(s, card, holder, resource):
+    """占用者描述；与 bots_list 一致，别的 Goal 的卡片只说明存在，不露 ID 与标题。"""
     bot = s.get(Bot, holder.assignee_bot_id) if holder.assignee_bot_id else None
     since = holder.updated_at.strftime("%H:%M") if holder.updated_at else "?"
-    return (
-        f"{resource} 由卡片 {holder.id}《{holder.title}》（{holder.status}"
-        f"{'，Bot ' + bot.name if bot else ''}，自 {since} 起）持有"
+    who = (
+        f"卡片 {holder.id}《{holder.title}》"
+        if holder.conversation_id == card.conversation_id
+        else "其它 Goal 的卡片"
     )
+    return f"{resource} 由{who}（{holder.status}{'，Bot ' + bot.name if bot else ''}，自 {since} 起）持有"
 
 
 def claim_conflicts(s, card, wanted):
-    """返回 (exclusive 冲突, shared 提示)；两者都是文本列表，冲突时卡片信息已在文本里。"""
+    """返回 (exclusive 冲突, shared 提示)；两者都是文本列表，同一 Goal 的占用卡片信息已在文本里。"""
     conflicts, hints = [], []
     for holder in other_claims(s, card):
         for claim in wanted:
@@ -179,7 +182,7 @@ def claim_conflicts(s, card, wanted):
                 if not overlaps(claim["resource"], held["resource"]):
                     continue
                 hard = "exclusive" in (claim["mode"], held["mode"])
-                text = holder_text(s, holder, held["resource"])
+                text = holder_text(s, card, holder, held["resource"])
                 if hard and holder.status in EXCLUSIVE_HOLD:
                     conflicts.append(text)
                 else:

@@ -60,7 +60,7 @@ const TOOLS = [
   ],
   [
     "artifact_put",
-    "把工作区里的文件（path）或一段文本（text）作为产物上传，单个不超过 1 MiB。attach_to 可把它挂为同一目标内尚未开始的卡片的输入，对方领取时会放进 inputs/<card_id>/。",
+    "把工作区里的文件（path）或一段文本（text）作为产物上传，单个不超过 1 MiB；隐藏文件与密钥类文件（.env、私钥等）不能按路径上传。attach_to 可把它挂为同一目标内尚未开始的卡片的输入，对方领取时会放进 inputs/<card_id>/。",
     Type.Object({
       name: Type.Optional(Type.String()),
       path: Type.Optional(Type.String({ description: "工作区内的文件路径" })),

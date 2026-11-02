@@ -334,6 +334,55 @@ def test_workspace_is_per_bot_and_goal_and_results_merge_by_path(setup):
     assert first["id"] == a["card_id"]
 
 
+def new_goal(db, title="other"):
+    from niucai.storage.db import Conversation
+
+    with db.sessions.begin() as s:
+        goal = Conversation(title=title)
+        s.add(goal)
+        s.flush()
+        return goal.id
+
+
+def test_same_bot_and_goal_runs_one_card_at_a_time(setup):
+    db, settings, remote, cards, node = board(setup, slots=3)
+    worker = bot(cards, node, "worker", concurrency=2)
+    goal = new_goal(db)
+    first = card(cards, "one", assignee_bot_id=worker["id"])
+    second = card(cards, "two", assignee_bot_id=worker["id"])
+    elsewhere = card(cards, "three", assignee_bot_id=worker["id"], conversation_id=goal)
+    a = remote.claim(node["id"])
+    assert a["card_id"] == first["id"]
+    # 第二张卡与运行中的卡共用 bg-<bot>-global 工作区：跳过；并发额度用在别的 Goal 上。
+    b = remote.claim(node["id"])
+    assert b["card_id"] == elsewhere["id"]
+    assert b["config_snapshot"]["workspace"] != a["config_snapshot"]["workspace"]
+    assert remote.claim(node["id"]) is None
+    with db.sessions() as s:
+        assert s.get(Card, second["id"]).status == "READY"
+    finish(remote, node, a)
+    assert remote.claim(node["id"])["card_id"] == second["id"]
+
+
+def test_claim_conflict_hides_other_goal_title(setup):
+    db, settings, remote, cards, node = board(setup)
+    first = bot(cards, node, "first")
+    second = bot(cards, node, "second", engine="codex")
+    goal = new_goal(db)
+    hidden = card(cards, "secret project", assignee_bot_id=first["id"], conversation_id=goal)
+    card(cards, "mine", assignee_bot_id=second["id"])
+    held = remote.claim(node["id"])
+    mine = remote.claim(node["id"])
+    if held["card_id"] != hidden["id"]:
+        held, mine = mine, held
+    call(cards, node, held, "card_claim", resource="desktop:vps-1")
+    with pytest.raises(Conflict) as error:
+        call(cards, node, mine, "card_claim", resource="desktop:vps-1")
+    message = str(error.value)
+    assert "desktop:vps-1" in message and "其它 Goal" in message
+    assert "secret project" not in message and held["card_id"] not in message
+
+
 def test_mcp_and_extension_tool_lists_include_collab_tools():
     from niucai.control.cards import BOARD_TOOLS
 

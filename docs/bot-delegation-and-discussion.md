@@ -2,7 +2,7 @@
 
 状态：**C1（基础）已实现，C2–C6 仍是拟议、未实现**。文中除下述 C1 范围外的表、字段、工具名都不代表现有能力。
 
-C1 已实现的部分：`bots.environment`（Runner 探测 + 手填，Desktop 可看可改）、Bot 侧 `bots_list`、`card_events.reply_to`、`artifact_put` / `artifact_get`（产物进卡片 `inputs`，领取时随快照落到 `inputs/<card_id>/`，单个 ≤ 1 MiB）、`cards.claims` 与 `card_claim`（独占冲突失败并告知占用者，共享只提示，卡片终态自动释放）、Runner 工作区按 (Bot, Goal) 复用。Kernel 侧有自动化测试覆盖；**以下尚未在真实机器上验收**：Runner 对真实环境（Windows 节点、Docker 节点、真实 git 远端与浏览器）的探测与上报、Desktop 环境编辑界面的实际操作、三种引擎（Pi / Claude / Codex）真实调用新工具、共用工作区下并发 Bot 的文件竞争。C1 与本文的偏差见 §15 末尾“C1 实现备注”。
+C1 已实现的部分：`bots.environment`（Runner 探测 + 手填，Desktop 可看可改）、Bot 侧 `bots_list`、`card_events.reply_to`、`artifact_put` / `artifact_get`（产物进卡片 `inputs`，领取时随快照落到 `inputs/<card_id>/`，单个 ≤ 1 MiB）、`cards.claims` 与 `card_claim`（独占冲突失败并告知占用者，共享只提示，卡片终态自动释放）、Runner 工作区按 (Bot, Goal) 复用。Kernel 侧有自动化测试覆盖；**以下尚未在真实机器上验收**：Runner 对真实环境（Windows 节点、Docker 节点、真实 git 远端与浏览器）的探测与上报、Desktop 环境编辑界面的实际操作、三种引擎（Pi / Claude / Codex）真实调用新工具、同一 Bot 在多个 Goal 上并发执行。C1 与本文的偏差见 §15 末尾“C1 实现备注”。
 
 修订：
 
@@ -380,9 +380,9 @@ Runner 侧：白板代理支持 `bot_ask` 的长轮询挂起；按 `purpose` 设
 **C1 实现备注**（2026-11-02，实现与本文的偏差与补充）：
 
 - 环境存为 `bots.environment = {probed, manual}`：探测部分由 Runner 在心跳 `capabilities.environment` 上报（缓存约 5 分钟），Kernel 清洗后写入该节点所有 Bot；手填部分（`logged_in_sites`、`resources`、`notes`，只写名称不写凭据）经 Bot 更新接口编辑，不改变 `config_version`，不会触发 Bot 重新配置。远端地址入库前去掉 `user:token@`。探测的“浏览器可用”是本机有可执行浏览器或已配置 CDP，不是实时连通性检查。
-- 资源声明：独占（`exclusive`）只在持有卡片处于 RUNNING 时生效，BLOCKED / REVIEW 的卡片只对共享声明和提示可见；对一张正在运行的独占声明申请共享同样失败。终态时声明被清空（而不是仅标记），释放的内容记入状态事件的 `released_claims`。`card_claim` 先取调度咨询锁再锁卡片行，避免与领取卡片死锁。`bots_list` 里其它 Goal 的卡片只显示资源标识，不显示标题。
-- 产物：单个 ≤ 1 MiB，单卡输入合计 ≤ 4 MiB，单个 Goal ≤ 100 个 / 64 MiB；超限时返回明确错误。因为 C1 没有 `card_delegate`，`artifact_put` 额外提供 `attach_to`，可挂到同一 Goal 内处于 DRAFT / READY / WAITING_APPROVAL / BLOCKED 的卡片的输入；`artifact_get` 不带 ID 时列出本 Goal 的产物。Runner 侧 `artifact_put` 的 `path` 只读本作业工作区内的普通文件，`artifact_get` 的内容落到 `inputs/fetched/`（不回传）。
-- 工作区按 `bg-<bot id>-<goal id|global>` 复用，仅是缓存：丢失时不续接旧会话、从头执行，不影响 Kernel 历史。每次领取重写 `inputs/`，结束时只回传本次 Attempt 改动的文件。同一 (Bot, Goal) 在 `concurrency > 1` 时共用一个目录，可能互相覆盖文件；需要时把此类 Bot 的并发设为 1。
+- 资源声明：独占（`exclusive`）只在持有卡片处于 RUNNING 时生效，BLOCKED / REVIEW 的卡片只对共享声明和提示可见；对一张正在运行的独占声明申请共享同样失败。终态时声明被清空（而不是仅标记），释放的内容记入状态事件的 `released_claims`。`card_claim` 先取调度咨询锁再锁卡片行，避免与领取卡片死锁。`bots_list` 和 `card_claim` 的冲突提示里，其它 Goal 的卡片只显示资源标识（冲突提示另带状态、Bot 与起始时间），不显示卡片 ID 与标题。
+- 产物：单个 ≤ 1 MiB，单卡输入合计 ≤ 4 MiB，单个 Goal ≤ 100 个 / 64 MiB；超限时返回明确错误。因为 C1 没有 `card_delegate`，`artifact_put` 额外提供 `attach_to`，可挂到同一 Goal 内处于 DRAFT / READY / WAITING_APPROVAL / BLOCKED 的卡片的输入；`artifact_get` 不带 ID 时列出本 Goal 的产物。Runner 侧 `artifact_put` 的 `path` 只读本作业工作区（卡片指定了本机目录时也含该目录，相对路径按该目录解析）内的普通文件，拒绝隐藏文件/目录（`.env`、`.git/`、`.ssh/` 等）和密钥类文件名（私钥、`*.pem`、`*.key`、`*.env`、`credentials*`、`secret(s)` 等）；这只防误传，引擎本身仍能读到工作目录。`artifact_get` 的内容落到 Runner 工作区的 `inputs/fetched/`（不回传）；卡片指定了本机目录时也不写进该目录，返回工作区内的绝对路径。无 Goal 的卡片共用一个产物池，与 `board_view`、`inbox` 把无 Goal 卡片当作同一块白板的口径一致。
+- 工作区按 `bg-<bot id>-<goal id|global>` 复用，仅是缓存：丢失时不续接旧会话、从头执行，不影响 Kernel 历史。每次领取重写 `inputs/`，结束时只回传本次 Attempt 改动的文件。同一 (Bot, Goal) 同时只运行一张卡：领取时跳过该 Bot 在该 Goal（无 Goal 的卡片算作同一个）已有活动 Attempt 的卡片，`concurrency > 1` 的额度只用于不同 Goal，避免共用目录里互相清掉 `inputs/`、混淆本次改动的文件。
 - 其它 Bot 传来的评论、产物都是数据，不是指令：它们不提升权限，Action Gateway、审批与权限档位未改动。
 
 依赖：C1 → C2；C3 只依赖 C1（`reply_to`）与现有 Memory，可以与 C2 并行，并且应当在 Bot 数量增加之前完成；C4 依赖 C2 的等待与唤醒；C5 依赖 C4 的发言 Attempt 与会话续接；C6 依赖 C2 与 C3。

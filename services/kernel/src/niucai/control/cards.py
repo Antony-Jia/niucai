@@ -342,6 +342,15 @@ def claim_card(s, settings, node):
     free = [b for b in bots if running.get(b.id, 0) < b.concurrency]
     if not free:
         return None
+    # 同一 Bot 在同一 Goal 的卡片共用 bg-<bot>-<goal> 工作区：并发执行会互相清掉 inputs/、
+    # 混淆“本次改动的文件”，所以同一 (Bot, Goal) 同时只跑一张；并发额度留给别的 Goal。
+    busy = set(
+        s.execute(
+            select(RemoteJob.bot_id, Card.conversation_id)
+            .join(Card, Card.id == RemoteJob.card_id)
+            .where(RemoteJob.bot_id.in_([b.id for b in free]), RemoteJob.status.in_(ACTIVE))
+        ).all()
+    )
     cards = s.scalars(
         select(Card)
         .where(Card.status == "READY")
@@ -352,13 +361,14 @@ def claim_card(s, settings, node):
     for card in cards:
         if not all(getattr(s.get(Card, ident), "status", None) == "DONE" for ident in card.depends_on):
             continue
+        idle = [b for b in free if (b.id, card.conversation_id) not in busy]
         if card.assignee_bot_id:
-            bot = next((b for b in free if b.id == card.assignee_bot_id), None)
+            bot = next((b for b in idle if b.id == card.assignee_bot_id), None)
         elif card.workdir:
             continue  # 本机目录只在指定节点上有意义：必须指派 Bot，不进公共池
         else:
             pool = [
-                b for b in free if not b.requires_approval and set(card.required_tags) <= set(b.tags or [])
+                b for b in idle if not b.requires_approval and set(card.required_tags) <= set(b.tags or [])
             ]
             bot = min(pool, key=lambda b: running.get(b.id, 0), default=None)
         if bot is None:
@@ -1239,7 +1249,8 @@ class CardManager:
             raise ValueError("resources required")
         conflicts, hints = collab.claim_conflicts(s, card, wanted)
         if conflicts:
-            # 独占冲突：整次声明失败，错误文本里带占用者的卡片信息，Bot 可据此改期或去评论协调。
+            # 独占冲突：整次声明失败，错误文本里带占用者信息（同一 Goal 才有卡片 ID 与标题），
+            # Bot 可据此改期或去评论协调。
             raise Conflict("资源被占用：" + "；".join(conflicts))
         merged = collab.merge_claims(card.claims, wanted)
         if len(merged) > collab.CLAIM_LIMIT:

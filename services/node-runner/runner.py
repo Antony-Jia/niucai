@@ -35,6 +35,10 @@ SAFE_ID = re.compile(r"[a-zA-Z0-9-]{1,36}")
 # 卡片工作区按 (Bot, Goal) 命名 bg-<bot id>-<goal id | global>；card-<id> 是旧版命名，保留以便旧快照仍可执行。
 CARD_WORKSPACE = re.compile(r"(?:card|bg)-[a-zA-Z0-9-]{1,80}")
 ARTIFACT_MAX = 1024 * 1024  # 与 Kernel 的单个产物上限一致，超过时在本地直接报错，不必把文件传一遍
+# artifact_put 按路径上传时拒绝的密钥类文件；隐藏文件/目录（.env、.git、.ssh…）另行整体拒绝。
+SECRET_FILE = re.compile(
+    r"(?i)(id_(rsa|dsa|ecdsa|ed25519).*|.*\.(pem|key|p12|pfx|jks|keystore|kdbx|env)|credentials(\.\w+)?|secrets?)"
+)
 PROBE_TTL = 300  # 环境探测结果缓存秒数：心跳每几秒一次，git/CLI 探测不必跟着跑
 PROBE_CLI = ("git", "node", "npm", "python", "uv", "docker", "gh")
 BROWSER_COMMANDS = ("google-chrome", "chromium", "chromium-browser", "chrome", "msedge")
@@ -1432,7 +1436,8 @@ class Runner:
         if not WINDOWS:
             os.chmod(self.board_dir, 0o711)  # 引擎 UID 可进入但不能列出；socket 本身 0600 归引擎 UID
         self.tasks = {}
-        self.job_workspaces = {}  # 作业 id → 工作区/工作目录，供 artifact_put/get 做文件读写
+        self.job_workspaces = {}  # 作业 id → Runner 管理的 bg-/card- 工作区，artifact_get 的落盘位置
+        self.job_workdirs = {}  # 作业 id → 卡片指定的本机目录（P4）；artifact_put 也可读其中文件
         self.job_uids = {}
         self.draining = False
         self.offline_grace = float(os.environ.get("NIUCAI_OFFLINE_GRACE", "240"))
@@ -1594,7 +1599,7 @@ class Runner:
             bot = snapshot.get("bot") or {}
             head = f"你是 Bot @{bot.get('name', '')}" + (f"，角色：{bot['role']}" if bot.get("role") else "")
             # 指定本机目录时依赖卡片的输入不放进用户目录，提示其所在位置。
-            note = f"依赖卡片的输入文件在 {inputs}（只读参考）。" if inputs else ""
+            note = f"依赖卡片的输入与 artifact_get 取回的文件在 {inputs}（只读参考）。" if inputs else ""
             parts = [head, snapshot.get("instructions") or "", assets, note, job["prompt"]]
             return "\n\n".join(p for p in parts if p)
         visible = {k: v for k, v in snapshot.items() if k not in {"skills", "mcp_servers"}}
@@ -1647,18 +1652,28 @@ class Runner:
             return {"ok": True, "result": result}
 
     def artifact_upload_args(self, job, args):
-        """artifact_put 的 path：只读本作业工作区（或其白名单目录）内的普通文件，转成 base64 再交给 Kernel。"""
+        """artifact_put 的 path：只读本作业工作区（或卡片指定目录）内的普通文件，转成 base64 再交给 Kernel。
+
+        隐藏文件和密钥类文件名一律拒绝，防止把用户仓库里的 .env、私钥误传上白板；
+        这只是防误传，不是隔离边界——引擎本身仍能读到工作目录里的文件。
+        """
         workspace = self.job_workspaces.get(job["id"])
         if workspace is None:
             return args, "workspace unavailable"
+        workdir = self.job_workdirs.get(job["id"])
         raw = Path(str(args["path"]))
-        path = raw if raw.is_absolute() else workspace / raw
-        roots = [workspace.resolve()]  # 用户工作目录模式下 workspace 即该目录（见 execute 注册处）
+        path = raw if raw.is_absolute() else (workdir or workspace) / raw  # 相对路径按引擎 cwd 解析
+        roots = [r.resolve() for r in (workdir, workspace) if r]
         try:
             if path.is_symlink() or not path.is_file():
                 return args, "path is not a regular file"
-            if not any(path.resolve().is_relative_to(root) for root in roots):
+            resolved = path.resolve()
+            root = next((r for r in roots if resolved.is_relative_to(r)), None)
+            if root is None:
                 return args, "path is outside the job workspace"
+            parts = resolved.relative_to(root).parts
+            if any(p.startswith(".") or SECRET_FILE.fullmatch(p) for p in parts):
+                return args, "hidden or secret-like files are not uploaded"
             if path.stat().st_size > ARTIFACT_MAX:
                 return args, f"artifact exceeds {ARTIFACT_MAX} bytes"
             content = path.read_bytes()
@@ -1670,7 +1685,10 @@ class Runner:
         return args, ""
 
     def artifact_save(self, job, workspace, result):
-        """artifact_get 取回的内容落到 inputs/fetched/，只把路径还给引擎（不把整份内容塞进对话）。"""
+        """artifact_get 取回的内容落到 Runner 工作区的 inputs/fetched/，只把路径还给引擎（不塞进对话）。
+
+        卡片指定了本机目录时引擎 cwd 是用户目录：文件不写进去，返回工作区里的绝对路径。
+        """
         name = re.sub(r"[^A-Za-z0-9._-]", "_", str(result.get("name") or "artifact"))[:100] or "artifact"
         directory = workspace / "inputs" / "fetched"
         directory.mkdir(parents=True, exist_ok=True)
@@ -1680,7 +1698,8 @@ class Runner:
         if uid is not None:
             for item in (workspace / "inputs", directory, target):
                 chown(item, uid)
-        return {**{k: v for k, v in result.items() if k != "base64"}, "path": target.relative_to(workspace).as_posix()}
+        path = str(target) if self.job_workdirs.get(job["id"]) else target.relative_to(workspace).as_posix()
+        return {**{k: v for k, v in result.items() if k != "base64"}, "path": path}
 
     async def board_server(self, job, uid):
         secret = secrets.token_urlsafe(24) if WINDOWS else None
@@ -1923,8 +1942,13 @@ class Runner:
             socket_path = None
             if job.get("board_token"):
                 board, socket_path = await self.board_server(job, uid)
-                self.job_workspaces[ident] = workdir or workspace
-                self.job_uids[ident] = None if workdir else uid
+                self.job_workspaces[ident] = workspace
+                self.job_workdirs[ident] = workdir
+                self.job_uids[ident] = uid
+                if workdir:
+                    # artifact_get 往工作区 inputs/fetched/ 落文件：先建好，引擎启动时才拿得到该目录的访问权。
+                    (workspace / "inputs").mkdir(exist_ok=True)
+                    chown(workspace / "inputs", uid)
             inputs = workspace / "inputs" if workdir and (workspace / "inputs").exists() else None
             snapshot = job.get("config_snapshot") or {}
             # P5：Bot 绑定的 skill 落到本作业的资产目录，结束后删除；MCP 只给支持的引擎。
@@ -2016,6 +2040,7 @@ class Runner:
                 board.close()
                 (self.board_dir / f"{ident}.sock").unlink(missing_ok=True)
             self.job_workspaces.pop(ident, None)
+            self.job_workdirs.pop(ident, None)
             self.job_uids.pop(ident, None)
             if outcome["status"] == "COMPLETED" and workdir:
                 outcome["result"]["files"] = []  # 用户目录里的改动留在原地，不回传

@@ -326,6 +326,8 @@ def test_card_workdir_requires_assignee_and_reaches_snapshot(setup):
     claimed = remote.claim(node["id"])
     assert claimed["card_id"] == pooled["id"] and claimed["config_snapshot"]["workdir"] == "D:/Code/app"
     card(cards, "plain")
+    assert remote.claim(node["id"]) is None  # 同一 (Bot, Goal) 同时只跑一张
+    remote.finish(node["id"], claimed["id"], claimed["attempt_id"], "COMPLETED", {"answer": "ok"})
     assert "workdir" not in remote.claim(node["id"])["config_snapshot"]
 
 
