@@ -118,6 +118,9 @@ def create_app(settings=None, db=None, chat_gateway=None):
     from niucai.api.goals import goals_router
 
     app.include_router(goals_router(db, settings, auth))
+    from niucai.api.judge import judge_router
+
+    app.include_router(judge_router(db, settings, auth))
     from niucai.api.bots import bot_router
 
     app.include_router(bot_router(db, settings, auth))

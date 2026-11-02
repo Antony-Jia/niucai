@@ -316,8 +316,22 @@ class Worker:
                     log.exception("orchestrator loop failed")
                 await asyncio.sleep(self.settings.poll_seconds)
 
+        async def judge():
+            from niucai.control.judge import Judge
+
+            engine = Judge(self.db, self.settings, self.runtime.gateway)
+            while True:
+                try:
+                    if await engine.run_once():
+                        continue
+                except Exception:
+                    log.exception("judge loop failed")
+                await asyncio.sleep(self.settings.poll_seconds)
+
         runners = [asyncio.create_task(slot()) for _ in range(self.settings.worker_slots)]
         runners.append(asyncio.create_task(scheduler()))
+        # 裁判循环始终运行：即使开关中途被关闭，也要把已排队的问题按 held 转交用户，不能卡死。
+        runners.append(asyncio.create_task(judge()))
         if self.settings.orchestrator_enabled:
             # 编排运行与任务槽位分开：一个 Goal 的 LLM 循环不占用 Task 执行槽。
             runners.append(asyncio.create_task(orchestrator()))

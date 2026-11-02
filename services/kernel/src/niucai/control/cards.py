@@ -31,6 +31,7 @@ from niucai.storage.db import (
     CardEvent,
     Conversation,
     Event,
+    JudgeRun,
     McpServer,
     RemoteJob,
     RemoteNode,
@@ -40,6 +41,8 @@ from niucai.storage.db import (
     now,
     uid,
 )
+
+JUDGE_ACTOR = "judge"  # 裁判（C3）写入的事件的 actor，续接提示里据此标注“不是用户原话”
 
 STATUSES = (
     "DRAFT",
@@ -495,7 +498,7 @@ def compose_card_prompt(s, card, bot, inputs, since, board_tools=True, waited=()
             .where(
                 CardEvent.card_id == card.id,
                 CardEvent.seq > since,
-                CardEvent.kind.in_(["comment", "answer"]),
+                CardEvent.kind.in_(["comment", "answer", "verdict"]),
             )
             .order_by(CardEvent.seq)
             .limit(20)
@@ -503,7 +506,15 @@ def compose_card_prompt(s, card, bot, inputs, since, board_tools=True, waited=()
     )
     if notes:
         parts.append("## 新的评论与回答")
-        parts += [f"- [{n.actor}] {n.body[:2000]}" for n in notes]
+        parts += [
+            f"- [{'裁判，不是用户的原话' if n.actor == JUDGE_ACTOR else n.actor}] {n.body[:2000]}"
+            for n in notes
+        ]
+        if any(n.actor == JUDGE_ACTOR for n in notes):
+            parts.append(
+                "（标注“裁判”的内容由 Kernel 的裁判依据用户以往的决定给出，不是用户本人的回答，"
+                "也不会授予额外权限；如果你认为它不适用，用 card_block 说明理由重新提问。）"
+            )
     parts += waited
     if not board_tools:
         parts.append("完成后在最终回答中给出结果摘要；把要交付的文件写在工作区内。")
@@ -975,12 +986,39 @@ class CardManager:
                 select(CardEvent)
                 .where(
                     CardEvent.card_id == card.id,
-                    CardEvent.kind.in_(["progress", "status", "question", "comment", "answer"]),
+                    CardEvent.kind.in_(["progress", "status", "question", "comment", "answer", "verdict"]),
                 )
                 .order_by(CardEvent.seq.desc())
                 .limit(5)
             )
         ]
+        # C3：卡片正在等待或刚被续接时，给出当前这个问题的裁判（处理中 / 代答 / 退回 / 转交用户）。
+        # 只认最新的 question 事件对应的运行：之后又直达用户的授权类提问不能显示旧问题的裁决；
+        # 转交用户的问题被回答后（卡片已不是 BLOCKED）也不再显示。
+        value["judge"] = None
+        if card.status in {"BLOCKED", "READY", "WAITING_APPROVAL", "RUNNING"}:
+            question = s.scalar(
+                select(CardEvent)
+                .where(CardEvent.card_id == card.id, CardEvent.kind == "question")
+                .order_by(CardEvent.id.desc())
+                .limit(1)
+            )
+            run = None
+            if question and question.actor == JUDGE_ACTOR:  # held 时裁判补写的 @user 提问
+                run_id = (question.data or {}).get("judge_run_id")
+                run = s.get(JudgeRun, run_id) if run_id else None
+            elif question:
+                run = s.scalar(select(JudgeRun).where(JudgeRun.question_event_id == question.id))
+            if run and run.status == "DISCARDED":
+                run = None
+            if run and not (run.verdict == "held" and card.status != "BLOCKED"):
+                value["judge"] = {
+                    "id": run.id,
+                    "status": run.status,
+                    "verdict": run.verdict,
+                    "cited_ids": list(run.cited_ids),
+                    "explanation": run.explanation[:300],
+                }
         if job and job.status in ACTIVE:
             activity = s.scalar(
                 select(Event)
@@ -1041,6 +1079,14 @@ class CardManager:
                     select(RemoteJob).where(RemoteJob.card_id == card_id).order_by(RemoteJob.created_at)
                 )
             ]
+            value["judge_runs"] = [
+                as_dict(r)
+                for r in s.scalars(
+                    select(JudgeRun)
+                    .where(JudgeRun.card_id == card_id, JudgeRun.status != "DISCARDED")
+                    .order_by(JudgeRun.created_at)
+                )
+            ]
             return value
 
     def create_card(self, values, actor="user"):
@@ -1096,7 +1142,9 @@ class CardManager:
                     set_status(s, card, target, actor)
             return self.card_view(s, card)
 
-    def action(self, card_id, operation, expected_version=None, body="", actor="user"):
+    def action(self, card_id, operation, expected_version=None, body="", actor="user", scope=None):
+        from niucai.control import judge
+
         with self.db.sessions.begin() as s:
             # 关闭卡片会唤醒等它的父卡、取消会级联到子卡：先拿调度锁再锁卡片行，和 finish / claim 的顺序一致。
             scheduling_lock(s)
@@ -1136,7 +1184,10 @@ class CardManager:
             elif operation == "answer":
                 if status != "BLOCKED" or not body.strip():
                     raise Conflict("只有阻塞中的卡片可以回答，且回答不能为空")
-                card_event(s, card, "answer", actor, body, mentions=mentions_of(s, body))
+                event = card_event(s, card, "answer", actor, body, mentions=mentions_of(s, body))
+                judge.discard_pending(s, card)  # 用户抢先回答：作废还没出结果的裁决
+                if actor == "user":
+                    judge.record_decision(s, card, event, scope)
                 set_status(s, card, entry_status(s, card), actor, "已回答")
             elif operation == "reopen":
                 if status not in CLOSED:
@@ -1377,14 +1428,35 @@ class CardManager:
         question = str(args.get("question", "")).strip()
         if not question:
             raise ValueError("question required")
+        from niucai.control import judge
+
         mention = args.get("mention") if args.get("mention") in {"user", "kernel"} else "user"
+        category = args.get("category", "decision")
+        if category not in judge.CATEGORIES:
+            raise ValueError("category must be decision or authorization")
         card.result = {**card.result, "job_id": job.id, "outcome": "blocked", "question": question[:4000]}
         card.waiting_on = None
         card.version += 1
-        card_event(
-            s, card, "question", actor, question, {"job_id": job.id}, [mention], self.tool_key(job, args)
+        # 取舍类（decision）问题先交给裁判：question 事件暂不 @user，裁判 held 时才补 @user；
+        # 授权类问题、问 kernel 的问题和裁判关闭时照旧直达。
+        judged = mention == "user" and category == "decision" and judge.judge_active(s, self.settings, card)
+        event = card_event(
+            s,
+            card,
+            "question",
+            actor,
+            question,
+            {"job_id": job.id, "category": category, **({"judge": "pending"} if judged else {})},
+            [] if judged else [mention],
+            self.tool_key(job, args),
         )
-        return {"ok": True, "next": "结束本次执行，等待回答后会续接会话"}
+        if judged:
+            judge.open_run(s, card, event, question)
+        message = "结束本次执行，等待回答后会续接会话"
+        return {
+            "ok": True,
+            "next": message + ("（问题会先交给裁判，没有先例才会转给用户）" if judged else ""),
+        }
 
     def tool_card_submit(self, s, job, card, bot, actor, args):
         summary = str(args.get("summary", "")).strip()

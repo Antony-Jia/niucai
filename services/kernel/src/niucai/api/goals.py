@@ -41,6 +41,12 @@ class GoalMessage(BaseModel):
     client_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 
+class GoalUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # 本 Goal 的裁判开关：true / false 显式开关，null 跟随全局（NIUCAI_JUDGE_ENABLED）。
+    judge_enabled: bool | None = None
+
+
 class MemoryUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     content: str | None = Field(default=None, min_length=1, max_length=16000)
@@ -253,6 +259,8 @@ def goals_router(db, settings, auth):
                 "title": conversation.title,
                 "status": goal_status(conversation),
                 "orchestrator_enabled": settings.orchestrator_enabled,
+                "judge_enabled": conversation.judge_enabled,
+                "judge_default": settings.judge_enabled,
                 "question": (
                     open_questions(s, [goal_id]).get(goal_id) if goal_status(conversation) != "DONE" else None
                 ),
@@ -261,6 +269,19 @@ def goals_router(db, settings, auth):
             }
         value["board"] = cards.board(goal_id)
         return value
+
+    @router.patch("/api/goals/{goal_id}", dependencies=auth)
+    def update(goal_id: str, request: GoalUpdate):
+        with db.sessions.begin() as s:
+            conversation = goal(s, goal_id, lock=True)
+            if "judge_enabled" in request.model_fields_set:
+                conversation.judge_enabled = request.judge_enabled
+            emit(s, "goal.updated", conversation_id=goal_id)
+            return {
+                "id": goal_id,
+                "judge_enabled": conversation.judge_enabled,
+                "judge_default": settings.judge_enabled,
+            }
 
     @router.delete("/api/goals/{goal_id}", dependencies=auth)
     def delete(goal_id: str):

@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     delegation_max_depth: int = Field(default=2, ge=1, le=3)
     goal_max_cards: int = Field(default=50, ge=1, le=500)
     goal_max_attempts: int = Field(default=100, ge=1, le=2000)
+    # Bot 协作 C3：裁判。card_block 的取舍类问题先交给 Kernel 侧的一次只读模型调用，Goal 可单独关闭。
+    judge_enabled: bool = True
+    judge_timeout_seconds: int = Field(default=60, ge=5, le=600)
+    judge_context_chars: int = Field(default=12000, ge=1000, le=100000)
+    # 同一张卡片上裁判给出 decided / returned 的次数上限，超出后一律 held，防止 Bot 与裁判来回打转。
+    judge_max_per_card: int = Field(default=3, ge=1, le=20)
     artifact_max_file_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     artifact_max_item_bytes: int = Field(default=100 * 1024 * 1024, ge=1)
     artifact_upload_ttl_seconds: int = Field(default=3600, ge=60)

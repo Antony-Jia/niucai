@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -84,6 +85,8 @@ class Conversation(Base):
     next_sequence: Mapped[int] = mapped_column(Integer, default=0)
     # mode: agent|chat；autonomy: {"actions": bool, "remote": bool}（YOLO，委派会话继承）。
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Bot 协作 C3：本 Goal 是否启用裁判；空表示跟随全局开关（NIUCAI_JUDGE_ENABLED），False 为关闭。
+    judge_enabled: Mapped[bool | None] = mapped_column(Boolean)
     # 软删除：用户从列表移除已结束的任务；审计、动作和卡片记录仍保留。
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
@@ -218,7 +221,39 @@ class Memory(Base):
     # 白板记忆（P3）：kind=card 时 ref_id 为卡片，kind=goal 时为 Goal 会话；同一 ref 只保留一条。
     ref_id: Mapped[str | None] = mapped_column(String(36), index=True)
     bot_id: Mapped[str | None] = mapped_column(String(36))
+    # kind=decision（C3）的结构化字段放这里而不是加列：检索是“按时间取最近 N 条再在内存里筛”，
+    # 不需要按这些字段建索引；字段 scope / goal_id / question / answer / principle / card_id /
+    # event_id / corrects / corrected_by 见 control/judge.py。其它 kind 为空。
+    meta: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class JudgeRun(Base):
+    """裁判运行（C3）：一次 card_block 取舍类提问对应一行，question_event_id 唯一保证同一个问题只裁决一次。"""
+
+    __tablename__ = "judge_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    card_id: Mapped[str] = mapped_column(ForeignKey("cards.id"), index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    question_event_id: Mapped[int] = mapped_column(ForeignKey("card_events.id"), unique=True)
+    question: Mapped[str] = mapped_column(Text)
+    # PENDING / DONE / FAILED / DISCARDED（用户抢先回答、卡片已不在等这个问题）
+    status: Mapped[str] = mapped_column(String(12), default="PENDING", index=True)
+    verdict: Mapped[str | None] = mapped_column(String(10))  # decided / returned / held
+    record_ids: Mapped[list] = mapped_column(JSON, default=list)  # 提供给模型的 decision 记录
+    cited_ids: Mapped[list] = mapped_column(JSON, default=list)  # 裁决引用的记录
+    answer: Mapped[str] = mapped_column(Text, default="")
+    explanation: Mapped[str] = mapped_column(Text, default="")
+    model: Mapped[str] = mapped_column(String(200), default="")
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    usage: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime)
+    correction: Mapped[str | None] = mapped_column(Text)
+    correction_record_id: Mapped[str | None] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 class Artifact(Base):

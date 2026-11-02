@@ -130,6 +130,8 @@ class CardAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_version: int | None = Field(default=None, ge=1)
     body: str = Field(default="", max_length=16000)
+    # 仅 answer：这条回答作为 decision 记录的适用范围；省略时按卡片所属 Goal（无 Goal 为全局）。
+    scope: Literal["global", "goal", "bot"] | None = None
 
 
 class CommentCreate(BaseModel):
@@ -187,6 +189,6 @@ def board_router(db, settings, auth):
         operation: Literal["ready", "approve", "cancel", "accept", "reject", "answer", "reopen"],
         request: CardAction,
     ):
-        return manager.action(card_id, operation, request.expected_version, request.body)
+        return manager.action(card_id, operation, request.expected_version, request.body, scope=request.scope)
 
     return router
