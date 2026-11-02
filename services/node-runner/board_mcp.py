@@ -43,7 +43,11 @@ TOOLS = [
         "description": "在当前或同目标的另一张卡片上发评论，正文里用 @名称 提及其他 Bot。",
         "inputSchema": {
             "type": "object",
-            "properties": {"body": {"type": "string"}, "card_id": ID},
+            "properties": {
+                "body": {"type": "string"},
+                "card_id": ID,
+                "reply_to": {"type": "integer", "description": "回复的动态（事件）编号，用于接上某条评论的上下文"},
+            },
             "required": ["body"],
         },
     },
@@ -83,9 +87,73 @@ TOOLS = [
             "required": ["summary"],
         },
     },
+    {
+        "name": "bots_list",
+        "description": "列出同事 Bot：名称、角色、标签、环境摘要（系统/引擎/浏览器/仓库/已登录站点）、在线与忙闲、当前占用的资源。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "artifact_put",
+        "description": (
+            "把工作区里的文件（path）或一段文本（text）作为产物上传，单个不超过 1 MiB。"
+            "attach_to 可把它挂为同一目标内尚未开始的卡片的输入，对方领取时会放进 inputs/<card_id>/。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "path": {"type": "string", "description": "工作区内的文件路径"},
+                "text": {"type": "string"},
+                "attach_to": {"type": "string", "description": "接收输入的卡片 id"},
+            },
+        },
+    },
+    {
+        "name": "artifact_get",
+        "description": "按 artifact_id 取回同一目标内的产物，内容落到工作区 inputs/fetched/ 并返回路径；不带 artifact_id 则列出本目标的产物。",
+        "inputSchema": {"type": "object", "properties": {"artifact_id": {"type": "string"}}},
+    },
+    {
+        "name": "card_claim",
+        "description": (
+            "声明要使用的资源（repo:/path:/site:/desktop:/browser:/ext: 前缀的标识），mode 为 exclusive 或 shared。"
+            "独占被他人占用时调用失败并告知占用者；共享重叠只提示。卡片结束时自动释放。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "resources": {
+                    "type": "array",
+                    "items": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "resource": {"type": "string"},
+                                    "mode": {"type": "string", "enum": ["exclusive", "shared"]},
+                                },
+                                "required": ["resource"],
+                            },
+                        ]
+                    },
+                },
+                "resource": {"type": "string"},
+                "mode": {"type": "string", "enum": ["exclusive", "shared"]},
+            },
+        },
+    },
 ]
 NAMES = {tool["name"] for tool in TOOLS}
-MUTATING = {"card_progress", "card_comment", "card_propose", "card_block", "card_submit"}
+MUTATING = {
+    "card_progress",
+    "card_comment",
+    "card_propose",
+    "card_block",
+    "card_submit",
+    "artifact_put",
+    "card_claim",
+}
 
 
 def connect(path):

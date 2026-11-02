@@ -9,7 +9,7 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const ID = Type.Optional(Type.String({ description: "卡片 id，省略时为当前卡片" }));
 // 提交或提问后本次执行结束：跳过模型的自动续写，Runner 按工具结果收尾。
 const ENDS_ATTEMPT = new Set(["card_block", "card_submit"]);
-const MUTATING = new Set(["card_progress", "card_comment", "card_propose", "card_block", "card_submit"]);
+const MUTATING = new Set(["card_progress", "card_comment", "card_propose", "card_block", "card_submit", "artifact_put", "card_claim"]);
 
 const TOOLS = [
   ["board_view", "列出同一目标下的所有卡片（id、标题、状态、负责 Bot、摘要）。", Type.Object({})],
@@ -23,7 +23,11 @@ const TOOLS = [
   [
     "card_comment",
     "在当前或同目标的另一张卡片上发评论，正文里用 @名称 提及其他 Bot。",
-    Type.Object({ body: Type.String(), card_id: ID }),
+    Type.Object({
+      body: Type.String(),
+      card_id: ID,
+      reply_to: Type.Optional(Type.Integer({ description: "回复的动态（事件）编号，用于接上某条评论的上下文" })),
+    }),
   ],
   [
     "card_propose",
@@ -48,6 +52,45 @@ const TOOLS = [
     "card_submit",
     "提交当前卡片的结果摘要；交付文件写在工作区内。提交后结束本次执行。",
     Type.Object({ summary: Type.String() }),
+  ],
+  [
+    "bots_list",
+    "列出同事 Bot：名称、角色、标签、环境摘要（系统/引擎/浏览器/仓库/已登录站点）、在线与忙闲、当前占用的资源。",
+    Type.Object({}),
+  ],
+  [
+    "artifact_put",
+    "把工作区里的文件（path）或一段文本（text）作为产物上传，单个不超过 1 MiB。attach_to 可把它挂为同一目标内尚未开始的卡片的输入，对方领取时会放进 inputs/<card_id>/。",
+    Type.Object({
+      name: Type.Optional(Type.String()),
+      path: Type.Optional(Type.String({ description: "工作区内的文件路径" })),
+      text: Type.Optional(Type.String()),
+      attach_to: Type.Optional(Type.String({ description: "接收输入的卡片 id" })),
+    }),
+  ],
+  [
+    "artifact_get",
+    "按 artifact_id 取回同一目标内的产物，内容落到工作区 inputs/fetched/ 并返回路径；不带 artifact_id 则列出本目标的产物。",
+    Type.Object({ artifact_id: Type.Optional(Type.String()) }),
+  ],
+  [
+    "card_claim",
+    "声明要使用的资源（repo:/path:/site:/desktop:/browser:/ext: 前缀的标识），mode 为 exclusive 或 shared。独占被他人占用时调用失败并告知占用者；共享重叠只提示。卡片结束时自动释放。",
+    Type.Object({
+      resources: Type.Optional(
+        Type.Array(
+          Type.Union([
+            Type.String(),
+            Type.Object({
+              resource: Type.String(),
+              mode: Type.Optional(Type.Union([Type.Literal("exclusive"), Type.Literal("shared")])),
+            }),
+          ]),
+        ),
+      ),
+      resource: Type.Optional(Type.String()),
+      mode: Type.Optional(Type.Union([Type.Literal("exclusive"), Type.Literal("shared")])),
+    }),
   ],
 ] as const;
 

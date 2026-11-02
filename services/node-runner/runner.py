@@ -9,6 +9,7 @@ import contextlib
 import hmac
 import json
 import os
+import platform as host_platform
 import re
 import secrets
 import shutil
@@ -31,7 +32,12 @@ except ImportError:  # Windows
 WINDOWS = os.name == "nt"
 RUNNER_VERSION = "p4"
 SAFE_ID = re.compile(r"[a-zA-Z0-9-]{1,36}")
-CARD_WORKSPACE = re.compile(r"card-[a-zA-Z0-9-]{1,36}")
+# 卡片工作区按 (Bot, Goal) 命名 bg-<bot id>-<goal id | global>；card-<id> 是旧版命名，保留以便旧快照仍可执行。
+CARD_WORKSPACE = re.compile(r"(?:card|bg)-[a-zA-Z0-9-]{1,80}")
+ARTIFACT_MAX = 1024 * 1024  # 与 Kernel 的单个产物上限一致，超过时在本地直接报错，不必把文件传一遍
+PROBE_TTL = 300  # 环境探测结果缓存秒数：心跳每几秒一次，git/CLI 探测不必跟着跑
+PROBE_CLI = ("git", "node", "npm", "python", "uv", "docker", "gh")
+BROWSER_COMMANDS = ("google-chrome", "chromium", "chromium-browser", "chrome", "msedge")
 MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}")
 BOARD_TOOL = re.compile(r"[a-z_]{1,40}")
 BOARD_SCRIPT = Path(__file__).with_name("board_mcp.py")
@@ -47,6 +53,10 @@ BOARD_TOOLS = (
     "card_propose",
     "card_block",
     "card_submit",
+    "bots_list",
+    "artifact_put",
+    "artifact_get",
+    "card_claim",
 )
 ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}")
@@ -123,6 +133,57 @@ def resolve_command(args):
 
 def workdir_allowlist():
     return [Path(p) for p in os.environ.get("NIUCAI_WORKDIR_ALLOW", "").split(os.pathsep) if p.strip()]
+
+
+def git_remote(directory):
+    """仓库的 origin 地址；Kernel 入库前会去掉其中的用户名/令牌，这里只管取。"""
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(directory), "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip()[:300] if done.returncode == 0 else ""
+
+
+def probe_repos():
+    """白名单目录本身或其下一层里的 git 仓库：名称与远端地址，不含路径内容。"""
+    repos = []
+    for root in workdir_allowlist():
+        if not root.is_dir():
+            continue
+        candidates = [root] if (root / ".git").exists() else []
+        if not candidates:
+            try:
+                candidates = [d for d in sorted(root.iterdir()) if d.is_dir() and (d / ".git").exists()]
+            except OSError:
+                continue
+        repos += [{"name": d.name, "remote": git_remote(d)} for d in candidates]
+    return repos[:20]
+
+
+def probe_environment(executors):
+    """给同事看的环境画像（探测部分）：只有事实，不含密钥、路径或环境变量值。"""
+    cdp_configured = bool(os.environ.get("NIUCAI_BROWSER_CDP_URL")) or (
+        os.environ.get("NIUCAI_PI_BROWSER_ENABLED") == "true"
+    )
+    return {
+        "os": f"{host_platform.system()} {host_platform.release()}".strip()[:200],
+        "engines": {
+            name: {"available": bool(status.get("available")), "version": str(status.get("version", ""))[:60]}
+            for name, status in executors.items()
+        },
+        # 浏览器：本机装了可执行的浏览器，或已配置 CDP 地址；后者是配置声明，不是实时连通探测。
+        "browser": {
+            "available": cdp_configured or any(shutil.which(c) for c in BROWSER_COMMANDS),
+            "cdp": cdp_configured,
+        },
+        "repos": probe_repos(),
+        "cli": [name for name in PROBE_CLI if shutil.which(name)],
+    }
 
 
 def allowed_workdir(raw):
@@ -374,6 +435,11 @@ def job_timeout(snapshot):
 def write_card_inputs(workspace, inputs, uid):
     """依赖卡片的内联文件写到 inputs/<card_id>/，路径不得逃出该目录。"""
     root = workspace / "inputs"
+    # 工作区按 (Bot, Goal) 共用：inputs/ 只反映本次领取下发的内容，先清掉上一张卡留下的。
+    # fetched/ 放 artifact_get 取回的文件，不受影响。
+    for old in root.iterdir() if root.is_dir() else ():
+        if old.name != "fetched":
+            shutil.rmtree(old, ignore_errors=True) if old.is_dir() else old.unlink(missing_ok=True)
     for item in inputs or []:
         card = str(item.get("card_id", ""))
         if not SAFE_ID.fullmatch(card):
@@ -1366,6 +1432,8 @@ class Runner:
         if not WINDOWS:
             os.chmod(self.board_dir, 0o711)  # 引擎 UID 可进入但不能列出；socket 本身 0600 归引擎 UID
         self.tasks = {}
+        self.job_workspaces = {}  # 作业 id → 工作区/工作目录，供 artifact_put/get 做文件读写
+        self.job_uids = {}
         self.draining = False
         self.offline_grace = float(os.environ.get("NIUCAI_OFFLINE_GRACE", "240"))
         self.lock = (self.control / "runner.lock").open("a+")
@@ -1480,6 +1548,12 @@ class Runner:
             if ledger.stem not in self.tasks:
                 await self.finish_ledger(ledger)
 
+    def environment_probe(self, executors):
+        cached = getattr(self, "_probe", None)
+        if cached is None or time.monotonic() - cached[0] > PROBE_TTL:
+            cached = self._probe = (time.monotonic(), probe_environment(executors))
+        return cached[1]
+
     def heartbeat_payload(self):
         executors = {name: engine.status() for name, engine in self.engines.items()}
         if "pi" in self.engines:
@@ -1499,6 +1573,7 @@ class Runner:
             "kernel_instance_id": self.kernel_instance_id,
             "platform": platform(),
             "runner_version": RUNNER_VERSION,
+            "environment": self.environment_probe(executors),
             **({"workdir_allow": allow} if allow else {}),
             # 画面预览由 Desktop 直连节点；地址由部署者配置，Kernel 只记录不代理。
             **({"preview_url": url} if (url := os.environ.get("NIUCAI_PREVIEW_URL")) else {}),
@@ -1542,6 +1617,13 @@ class Runner:
         """引擎侧 MCP 工具调用经 Runner 转发；板令牌与节点令牌都不进入引擎进程。"""
         if not BOARD_TOOL.fullmatch(str(tool)) or not isinstance(args, dict):
             return {"ok": False, "error": "invalid board call"}
+        workspace = None
+        if tool == "artifact_put" and args.get("path"):
+            args, failure = self.artifact_upload_args(job, args)
+            if failure:
+                return {"ok": False, "error": failure}
+        elif tool == "artifact_get":
+            workspace = self.job_workspaces.get(job["id"])
         url = f"{self.prefix}/jobs/{job['id']}/board/{tool}"
         for count in range(3):
             try:
@@ -1559,7 +1641,46 @@ class Runner:
                 except ValueError:
                     detail = response.text
                 return {"ok": False, "error": str(detail)[:500]}
-            return {"ok": True, "result": response.json()}
+            result = response.json()
+            if workspace is not None and isinstance(result, dict) and result.get("base64") is not None:
+                result = self.artifact_save(job, workspace, result)
+            return {"ok": True, "result": result}
+
+    def artifact_upload_args(self, job, args):
+        """artifact_put 的 path：只读本作业工作区（或其白名单目录）内的普通文件，转成 base64 再交给 Kernel。"""
+        workspace = self.job_workspaces.get(job["id"])
+        if workspace is None:
+            return args, "workspace unavailable"
+        raw = Path(str(args["path"]))
+        path = raw if raw.is_absolute() else workspace / raw
+        roots = [workspace.resolve()]  # 用户工作目录模式下 workspace 即该目录（见 execute 注册处）
+        try:
+            if path.is_symlink() or not path.is_file():
+                return args, "path is not a regular file"
+            if not any(path.resolve().is_relative_to(root) for root in roots):
+                return args, "path is outside the job workspace"
+            if path.stat().st_size > ARTIFACT_MAX:
+                return args, f"artifact exceeds {ARTIFACT_MAX} bytes"
+            content = path.read_bytes()
+        except OSError:
+            return args, "cannot read path"
+        args = {k: v for k, v in args.items() if k != "path"}
+        args.setdefault("name", path.name)
+        args["base64"] = base64.b64encode(content).decode("ascii")
+        return args, ""
+
+    def artifact_save(self, job, workspace, result):
+        """artifact_get 取回的内容落到 inputs/fetched/，只把路径还给引擎（不把整份内容塞进对话）。"""
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", str(result.get("name") or "artifact"))[:100] or "artifact"
+        directory = workspace / "inputs" / "fetched"
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / f"{str(result.get('artifact_id', ''))[:8]}-{name}"
+        target.write_bytes(base64.b64decode(result["base64"]))
+        uid = self.job_uids.get(job["id"])
+        if uid is not None:
+            for item in (workspace / "inputs", directory, target):
+                chown(item, uid)
+        return {**{k: v for k, v in result.items() if k != "base64"}, "path": target.relative_to(workspace).as_posix()}
 
     async def board_server(self, job, uid):
         secret = secrets.token_urlsafe(24) if WINDOWS else None
@@ -1597,7 +1718,7 @@ class Runner:
         return server, path
 
     def workspace_for(self, job):
-        """卡片 Attempt 共用 card-<id> 工作区；独立作业的续接沿用上一作业的工作区。"""
+        """卡片 Attempt 共用 (Bot, Goal) 的 bg-… 工作区；独立作业的续接沿用上一作业的工作区。"""
         ident = job["id"]
         snapshot = job.get("config_snapshot") or {}
         resume = snapshot.get("resume")
@@ -1607,7 +1728,8 @@ class Runner:
                 raise RuntimeError("invalid card workspace")
             workspace = self.work / named
             if resume and not workspace.is_dir():
-                raise RuntimeError("card workspace is gone; cannot resume")
+                # 工作区只是缓存：丢了就不续接旧会话（会话按路径索引），按卡片提示从头做，历史在 Kernel 里。
+                snapshot.pop("resume", None)
             return workspace
         previous = str(resume.get("job_id", "")) if resume else ""
         # A continuation reuses the previous job's workspace: the engine session is keyed by its path.
@@ -1760,6 +1882,7 @@ class Runner:
         def read_stderr():
             return drain_stderr(process.stderr, lambda text: progress("stderr", {"text": text}), stderr_tail)
 
+        before = None
         try:
             first = await self.post(base + "/heartbeat", {"attempt_id": attempt})
             if first["stop"]:
@@ -1768,6 +1891,8 @@ class Runner:
             heartbeat = asyncio.create_task(renew())
             flusher = asyncio.create_task(flush())
             write_card_inputs(workspace, (job.get("config_snapshot") or {}).get("card_inputs"), uid)
+            # 卡片工作区跨 Attempt 共用：记下起跑时的文件状态，结束时只回传这次改动的文件。
+            before = self.file_stamps(workspace) if (job.get("config_snapshot") or {}).get("workspace") else None
             for reference in job.get("input_artifacts", []):
                 if stopped.is_set():
                     raise RuntimeError("artifact download cancelled")
@@ -1798,6 +1923,8 @@ class Runner:
             socket_path = None
             if job.get("board_token"):
                 board, socket_path = await self.board_server(job, uid)
+                self.job_workspaces[ident] = workdir or workspace
+                self.job_uids[ident] = None if workdir else uid
             inputs = workspace / "inputs" if workdir and (workspace / "inputs").exists() else None
             snapshot = job.get("config_snapshot") or {}
             # P5：Bot 绑定的 skill 落到本作业的资产目录，结束后删除；MCP 只给支持的引擎。
@@ -1888,14 +2015,16 @@ class Runner:
             if board:
                 board.close()
                 (self.board_dir / f"{ident}.sock").unlink(missing_ok=True)
+            self.job_workspaces.pop(ident, None)
+            self.job_uids.pop(ident, None)
             if outcome["status"] == "COMPLETED" and workdir:
                 outcome["result"]["files"] = []  # 用户目录里的改动留在原地，不回传
             elif outcome["status"] == "COMPLETED" and not job.get("artifact_transport"):
                 # Standalone jobs and older Kernels only accept the bounded inline file result.
-                outcome["result"]["files"] = self.collect_files(workspace)
+                outcome["result"]["files"] = self.collect_files(workspace, before)
             elif outcome["status"] == "COMPLETED":
                 try:
-                    outcome["result"]["files"] = await self.upload_files(workspace, base, attempt, stopped)
+                    outcome["result"]["files"] = await self.upload_files(workspace, base, attempt, stopped, before)
                 except Exception as exc:
                     outcome = {
                         "status": "FAILED",
@@ -1917,7 +2046,7 @@ class Runner:
         with contextlib.suppress(httpx.HTTPError):
             await self.finish_ledger(ledger)
 
-    async def upload_files(self, workspace, base, attempt, stopped):
+    async def upload_files(self, workspace, base, attempt, stopped, before=None):
         outputs, budget, visited = [], 100 * 1024 * 1024, 0
         for directory, dirs, files in os.walk(workspace, followlinks=False):
             dirs[:] = sorted(
@@ -1935,6 +2064,11 @@ class Runner:
                 if not path.resolve().is_relative_to(workspace.resolve()):
                     continue
                 size = path.stat().st_size
+                if before is not None and before.get(path.relative_to(workspace).as_posix()) == (
+                    size,
+                    path.stat().st_mtime_ns,
+                ):
+                    continue  # 共用工作区里更早的卡片留下的文件
                 if size > 20 * 1024 * 1024 or size > budget:
                     raise RuntimeError("output file exceeds configured transport quota")
                 relative = path.relative_to(workspace).as_posix()  # 传输路径统一用 POSIX 格式
@@ -1975,7 +2109,24 @@ class Runner:
         return outputs
 
     @staticmethod
-    def collect_files(workspace):
+    def file_stamps(workspace):
+        """工作区文件的 (大小, 修改时间) 快照；用来在共用工作区里只挑出本次 Attempt 改动的文件。"""
+        stamps = {}
+        for directory, dirs, files in os.walk(workspace, followlinks=False):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and not (Path(directory) / d).is_symlink()]
+            for name in files:
+                path = Path(directory) / name
+                try:
+                    info = path.stat()
+                except OSError:
+                    continue
+                stamps[path.relative_to(workspace).as_posix()] = (info.st_size, info.st_mtime_ns)
+            if len(stamps) > 20000:
+                break
+        return stamps
+
+    @staticmethod
+    def collect_files(workspace, before=None):
         outputs, budget = [], 64000
         # Bound traversal as well as payload size; avoid following directory symlinks.
         candidates = []
@@ -1987,7 +2138,19 @@ class Runner:
                 and not (Path(directory) / d).is_symlink()
                 and not (d == "inputs" and Path(directory) == workspace)  # 依赖卡片的输入不回传
             )
-            candidates.extend(Path(directory) / name for name in sorted(files) if not name.startswith("."))
+            for name in sorted(files):
+                path = Path(directory) / name
+                if name.startswith("."):
+                    continue
+                if before is not None:
+                    try:
+                        info = path.stat()
+                    except OSError:
+                        continue
+                    key = path.relative_to(workspace).as_posix()
+                    if before.get(key) == (info.st_size, info.st_mtime_ns):
+                        continue  # 本次 Attempt 没动过：属于同一工作区里更早的卡片
+                candidates.append(path)
             if len(candidates) >= 256:
                 break
         for path in candidates[:256]:

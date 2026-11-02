@@ -64,6 +64,7 @@ def instance(tmp_path, monkeypatch):
     value.ledgers.mkdir(parents=True)
     value.board_dir = tmp_path / "board"
     value.tasks, value.prefix = {}, "/api/remote/runner/n1"
+    value.job_workspaces, value.job_uids = {}, {}
     return value
 
 
@@ -120,8 +121,10 @@ def test_card_workspace_and_prompt(instance):
     assert instance.workspace_for(job).name == f"card-{CARD}"
     with pytest.raises(RuntimeError):
         instance.workspace_for(card_job(workspace="../etc"))
-    with pytest.raises(RuntimeError):  # 续接要求卡片工作区仍在
-        instance.workspace_for(card_job(resume={"job_id": "old", "session_id": "s1"}))
+    # 工作区只是缓存：续接时它已丢失，不报错，而是丢掉 resume 从头来过（历史在 Kernel 里）。
+    lost = card_job(workspace="bg-bot1-goal1", resume={"job_id": "old", "session_id": "s1"})
+    assert instance.workspace_for(lost).name == "bg-bot1-goal1"
+    assert "resume" not in lost["config_snapshot"]
     prompt = runner.Runner.compose_prompt(card_job(instructions="只改 src/", card_inputs=[{"files": "x"}]))
     assert prompt.startswith("你是 Bot @coder，角色：dev") and "只改 src/" in prompt
     assert "card_inputs" not in prompt and "# 卡片：feature" in prompt
@@ -324,3 +327,90 @@ def test_transport_paths_are_posix_and_card_timeout(tmp_path, monkeypatch):
     assert runner.job_timeout({"timeout_seconds": 600}) == 600
     for bad in (None, 0, -5, 90000, "600", True):
         assert runner.job_timeout({"timeout_seconds": bad}) == 1800
+
+
+def test_inputs_dir_is_rewritten_and_changed_files_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner.os, "chown", lambda *a: None, raising=False)
+    first = [{"path": "a.txt", "base64": base64.b64encode(b"a").decode()}]
+    runner.write_card_inputs(tmp_path, [{"card_id": CARD, "files": first}], None)
+    (tmp_path / "inputs" / "fetched").mkdir()
+    (tmp_path / "inputs" / "fetched" / "keep.txt").write_text("k")
+    other = "1f8e2f8c-1111-2222-3333-444455556666"
+    runner.write_card_inputs(tmp_path, [{"card_id": other, "files": first}], None)
+    assert not (tmp_path / "inputs" / CARD).exists()  # 共用工作区里上一张卡的输入被清掉
+    assert (tmp_path / "inputs" / other / "a.txt").exists()
+    assert (tmp_path / "inputs" / "fetched" / "keep.txt").exists()
+    # 同一工作区里更早的卡片留下的文件不再回传，只回传本次改动。
+    (tmp_path / "old.txt").write_text("old")
+    before = runner.Runner.file_stamps(tmp_path)
+    (tmp_path / "new.txt").write_text("new")
+    (tmp_path / "old.txt").write_text("changed!")
+    assert [f["path"] for f in runner.Runner.collect_files(tmp_path, before)] == ["new.txt", "old.txt"]
+    assert [f["path"] for f in runner.Runner.collect_files(tmp_path, runner.Runner.file_stamps(tmp_path))] == []
+
+
+def test_environment_probe_reports_facts_only(tmp_path, monkeypatch):
+    repo = tmp_path / "proj"
+    (repo / ".git").mkdir(parents=True)
+    monkeypatch.setenv("NIUCAI_WORKDIR_ALLOW", str(tmp_path))
+    monkeypatch.setenv("NIUCAI_BROWSER_CDP_URL", "http://127.0.0.1:9222")
+    monkeypatch.setattr(runner, "git_remote", lambda directory: "https://example.com/team/proj.git")
+    monkeypatch.setattr(runner.shutil, "which", lambda name: "/bin/x" if name in {"git", "node"} else None)
+    environment = runner.probe_environment({"claude": {"available": True, "version": "2.1.307"}})
+    assert environment["engines"] == {"claude": {"available": True, "version": "2.1.307"}}
+    assert environment["browser"] == {"available": True, "cdp": True}
+    assert environment["repos"] == [{"name": "proj", "remote": "https://example.com/team/proj.git"}]
+    assert environment["cli"] == ["git", "node"] and environment["os"]
+    assert "127.0.0.1" not in json.dumps(environment)  # CDP 地址本身不上报
+
+
+def test_environment_probe_is_cached_between_heartbeats(instance, monkeypatch):
+    runs = []
+    monkeypatch.setattr(runner, "probe_environment", lambda executors: runs.append(1) or {"os": "x"})
+    assert instance.environment_probe({}) == {"os": "x"}
+    instance.environment_probe({})
+    assert len(runs) == 1
+
+
+def test_artifact_put_reads_workspace_file_and_get_writes_inputs(instance, tmp_path):
+    workspace = tmp_path / "workspaces" / "bg-b-g"
+    workspace.mkdir(parents=True)
+    (workspace / "report.md").write_text("# r")
+    (workspace / "big.bin").write_bytes(b"x" * (runner.ARTIFACT_MAX + 1))
+    outside = tmp_path / "secret.txt"
+    outside.write_text("s")
+    sent = []
+
+    def handler(request):
+        body = json.loads(request.content)["args"]
+        sent.append((request.url.path.rsplit("/", 1)[1], body))
+        if request.url.path.endswith("artifact_get"):
+            return httpx.Response(
+                200, json={"artifact_id": "abcd1234-0", "name": "r.md", "size": 3, "base64": body.get("fake", "IyByCg==")}
+            )
+        return httpx.Response(200, json={"artifact_id": "x"})
+
+    instance.client = httpx.AsyncClient(base_url="http://kernel", transport=httpx.MockTransport(handler))
+    instance.job_workspaces["job-1"] = workspace
+    job = card_job()
+    reply = asyncio.run(instance.board_call(job, "artifact_put", {"path": "report.md"}))
+    assert reply["ok"] and sent[0][1] == {"name": "report.md", "base64": base64.b64encode(b"# r").decode()}
+    for bad in ("big.bin", str(outside), "../secret.txt", "missing"):
+        assert asyncio.run(instance.board_call(job, "artifact_put", {"path": bad}))["ok"] is False
+    assert len(sent) == 1  # 被拒绝的路径没有发给 Kernel
+    got = asyncio.run(instance.board_call(job, "artifact_get", {"artifact_id": "abcd1234-0"}))
+    assert got["ok"] and "base64" not in got["result"]
+    assert (workspace / got["result"]["path"]).read_bytes() == b"# r\n"
+    assert got["result"]["path"].startswith("inputs/fetched/")
+    # 文本直传不经过本地文件，原样转发。
+    asyncio.run(instance.board_call(job, "artifact_put", {"name": "n.txt", "text": "hi"}))
+    assert sent[-1][1] == {"name": "n.txt", "text": "hi"}
+
+
+def test_new_collab_tools_are_exposed_identically():
+    names = [tool["name"] for tool in board_mcp.TOOLS]
+    assert list(runner.BOARD_TOOLS) == names
+    assert {"bots_list", "artifact_put", "artifact_get", "card_claim"} <= set(names)
+    comment = next(tool for tool in board_mcp.TOOLS if tool["name"] == "card_comment")
+    assert "reply_to" in comment["inputSchema"]["properties"]
+    assert {"artifact_put", "card_claim"} <= board_mcp.MUTATING
