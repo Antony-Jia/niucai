@@ -426,6 +426,8 @@ class Bot(Base):
     tags: Mapped[list] = mapped_column(JSON, default=list)
     model: Mapped[str] = mapped_column(String(200), default="")
     reasoning_effort: Mapped[str] = mapped_column(String(20), default="", server_default="")
+    # 环境画像：{"probed": Runner 探测上报, "manual": 用户手填}；只放事实说明，绝不存凭据。
+    environment: Mapped[dict] = mapped_column(JSON, default=dict)
     permission_profile: Mapped[str] = mapped_column(String(20), default="workspace")
     skills: Mapped[list] = mapped_column(JSON, default=list)
     mcp_servers: Mapped[list] = mapped_column(JSON, default=list)
@@ -450,7 +452,10 @@ class Card(Base):
     assignee_bot_id: Mapped[str | None] = mapped_column(ForeignKey("bots.id"), index=True)
     required_tags: Mapped[list] = mapped_column(JSON, default=list)
     depends_on: Mapped[list] = mapped_column(JSON, default=list)
+    # 输入产物：[{"artifact_id": ...}]，领取时随快照下发到 inputs/<来源卡片 id>/。
     inputs: Mapped[list] = mapped_column(JSON, default=list)
+    # 资源声明：[{"resource": "browser:<node>", "mode": "shared" | "exclusive"}]，终态时释放。
+    claims: Mapped[list] = mapped_column(JSON, default=list)
     # 节点本地目录（如某个仓库）；Runner 只接受节点白名单内的目录，空串为节点托管工作区。
     workdir: Mapped[str] = mapped_column(String(500), default="")
     status: Mapped[str] = mapped_column(String(30), default="READY", index=True)
@@ -497,8 +502,25 @@ class CardEvent(Base):
     body: Mapped[str] = mapped_column(Text, default="")
     data: Mapped[dict] = mapped_column(JSON, default=dict)
     idempotency_key: Mapped[str | None] = mapped_column(String(200), unique=True)
+    # 回复哪一条事件（card_events.id，同一 Goal 内）；可空。
+    reply_to: Mapped[int | None] = mapped_column(ForeignKey("card_events.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     __table_args__ = (UniqueConstraint("card_id", "seq"),)
+
+
+class BoardArtifact(Base):
+    """Bot 经 artifact_put 上传的产物（内容存库，有大小上限），同一 Goal 内可读取或列入卡片 inputs。"""
+
+    __tablename__ = "board_artifacts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    conversation_id: Mapped[str | None] = mapped_column(ForeignKey("conversations.id"), index=True)
+    card_id: Mapped[str] = mapped_column(ForeignKey("cards.id"), index=True)
+    bot_id: Mapped[str | None] = mapped_column(String(36))
+    name: Mapped[str] = mapped_column(String(200))
+    size: Mapped[int] = mapped_column(Integer)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 Index("ix_tasks_claim", Task.status, Task.lease_until, Task.created_at)

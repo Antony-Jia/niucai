@@ -54,6 +54,8 @@ class BotUpdate(BaseModel):
     requires_approval: bool | None = None
     concurrency: int | None = Field(default=None, ge=1, le=16)
     enabled: bool | None = None
+    # 手填的环境说明（登录过的站点名、特殊资源、备注）；探测部分由 Runner 上报，不能在这里改。
+    environment: dict | None = None
 
     _not_null = model_validator(mode="after")(not_null)
 
@@ -78,6 +80,9 @@ class CardCreate(BaseModel):
     review: Literal["none", "llm"] = "none"
     budget: Budget = Field(default_factory=Budget)
     workdir: str = Field(default="", max_length=500)
+    # 输入产物 [{artifact_id}] 与资源声明 [{resource, mode}]，细节校验在 Kernel。
+    inputs: list[dict] = Field(default_factory=list, max_length=32)
+    claims: list[dict] = Field(default_factory=list, max_length=20)
     draft: bool = False
 
 
@@ -94,6 +99,8 @@ class CardUpdate(BaseModel):
     review: Literal["none", "llm"] | None = None
     budget: Budget | None = None
     workdir: str | None = Field(default=None, max_length=500)
+    inputs: list[dict] | None = Field(default=None, max_length=32)
+    claims: list[dict] | None = Field(default=None, max_length=20)
 
     @model_validator(mode="after")
     def nullable(self):
@@ -113,6 +120,7 @@ class CommentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     body: str = Field(min_length=1, max_length=16000)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+    reply_to: int | None = Field(default=None, ge=1)
 
 
 def board_router(db, settings, auth):
@@ -155,7 +163,7 @@ def board_router(db, settings, auth):
     @router.post("/api/cards/{card_id}/comments", dependencies=auth, status_code=201)
     def comment(card_id: str, request: CommentCreate):
         key = f"user:{request.idempotency_key}" if request.idempotency_key else None
-        return manager.comment(card_id, request.body, key=key)
+        return manager.comment(card_id, request.body, key=key, reply_to=request.reply_to)
 
     @router.post("/api/cards/{card_id}/{operation}", dependencies=auth)
     def action(

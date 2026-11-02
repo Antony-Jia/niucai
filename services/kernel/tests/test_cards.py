@@ -105,7 +105,7 @@ def test_claim_respects_slots_bot_concurrency_tags_and_approval(setup):
     assert claimed["card_id"] == first["id"] and claimed["bot_id"] == coder["id"]
     assert claimed["board_token"] and claimed["artifact_transport"] is False
     snapshot = claimed["config_snapshot"]
-    assert snapshot["workspace"] == f"card-{first['id']}" and snapshot["bot"]["name"] == "coder"
+    assert snapshot["workspace"] == f"bg-{coder['id']}-global" and snapshot["bot"]["name"] == "coder"
     # coder 并发 1 已满，gated 不进公共池，rust 卡没有匹配标签。
     assert remote.claim(node["id"]) is None
 

@@ -452,6 +452,11 @@ class RemoteManager:
             for key in ("platform", "runner_version", "preview_url"):
                 if capabilities.get(key) is not None:
                     setattr(node, key, capabilities[key])
+            # 环境探测（OS、引擎版本、浏览器、白名单仓库）合入该节点各 Bot 的环境画像。
+            if capabilities.get("environment") is not None:
+                from niucai.control.collab import apply_probe
+
+                apply_probe(s, node.id, capabilities["environment"])
             self.expire(s)
             from niucai.control.instance import PROTOCOL_VERSION, instance
 

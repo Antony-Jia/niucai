@@ -75,7 +75,9 @@ TOOLS = [
     tool("card_get", "读取一张卡片的详情、最近时间线与结果摘要", {"card_id": STRING}, ["card_id"]),
     tool(
         "card_create",
-        "在当前 Goal 下创建卡片；bot 为 Bot 名称（留空进公共池按标签领取）",
+        "在当前 Goal 下创建卡片；bot 为 Bot 名称（留空进公共池按标签领取）；"
+        "claims 为资源标识（repo:/path:/site:/desktop:/browser:/ext:），"
+        "input_artifacts 为同一 Goal 内产物 ID",
         {
             "title": STRING,
             "goal": STRING,
@@ -85,6 +87,8 @@ TOOLS = [
             "depends_on": STRINGS,
             "review": {"type": "string", "enum": ["none", "llm"]},
             "priority": INT,
+            "claims": STRINGS,
+            "input_artifacts": STRINGS,
         },
         ["title", "goal"],
     ),
@@ -495,6 +499,7 @@ class Orchestrator:
                 and b["node_heartbeat_at"] > now() - timedelta(seconds=self.settings.remote_lease_seconds),
                 "running": b.get("running", 0),
                 "concurrency": b["concurrency"],
+                "environment": b["environment"],
             }
             for b in self.cards.bots()
         ]
@@ -552,6 +557,8 @@ class Orchestrator:
                 "review": "llm" if args.get("review") == "llm" else "none",
                 "priority": max(-100, min(100, int(args.get("priority") or 0))),
                 "budget": {"max_attempts": 3},
+                "claims": [str(c)[:200] for c in args.get("claims") or []][:20],
+                "inputs": [{"artifact_id": str(a)[:36]} for a in args.get("input_artifacts") or []][:32],
             },
             actor=ACTOR,
         )
