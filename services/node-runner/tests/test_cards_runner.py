@@ -98,6 +98,8 @@ def test_codex_board_mcp_config(tmp_path, monkeypatch):
     assert args[args.index("-m") + 1] == "gpt-bot"
     command = next(a for a in args if a.startswith("mcp_servers.niucai-board.args="))
     assert json.loads(command.split("=", 1)[1])[1] == "/data/board/job-1.sock"
+    # bot_ask 最长挂起 120 秒：Codex 的 MCP 工具超时（默认 60 秒）必须调大，否则会把它截断。
+    assert f"mcp_servers.niucai-board.tool_timeout_sec={runner.ASK_TOOL_TIMEOUT}" in args
     assert args[-1] == "-"
 
 
@@ -458,7 +460,7 @@ def test_new_collab_tools_are_exposed_identically():
 
 def test_delegate_and_wait_tools_are_exposed_identically():
     names = [tool["name"] for tool in board_mcp.TOOLS]
-    assert names[-2:] == ["card_delegate", "card_wait"] == list(runner.BOARD_TOOLS[-2:])
+    assert names[-3:] == ["card_delegate", "card_wait", "bot_ask"] == list(runner.BOARD_TOOLS[-3:])
     assert {"card_delegate", "card_wait"} <= board_mcp.MUTATING
     delegate = next(tool for tool in board_mcp.TOOLS if tool["name"] == "card_delegate")
     props = delegate["inputSchema"]["properties"]
@@ -483,3 +485,91 @@ def test_card_block_category_is_exposed_identically():
     assert "category: Type.Optional" in declaration
     assert '"decision"' in declaration and '"authorization"' in declaration
     assert "card_block" in runner.BOARD_TOOLS
+
+
+def ask_kernel(instance, replies):
+    """Mock Kernel：bot_ask 建卡，之后每次 card_get 依次取 replies 里的状态（最后一项重复）。"""
+    seen = []
+
+    def handler(request):
+        tool = request.url.path.rsplit("/", 1)[-1]
+        args = json.loads(request.content)["args"]
+        seen.append((tool, args))
+        if tool == "bot_ask":
+            return httpx.Response(200, json={"card_id": "ask-1", "status": "READY"})
+        view = replies[min(sum(1 for t, _ in seen if t == "card_get") - 1, len(replies) - 1)]
+        return httpx.Response(200, json={"id": "ask-1", **view})
+
+    instance.client = httpx.AsyncClient(base_url="http://kernel", transport=httpx.MockTransport(handler))
+    return seen
+
+
+def test_bot_ask_returns_the_answer_directly(instance, monkeypatch):
+    monkeypatch.setattr(runner, "ASK_POLL", 0.01)
+    seen = ask_kernel(instance, [{"status": "RUNNING"}, {"status": "DONE", "summary": "端口是 8080"}])
+    args = {"to": "ops", "question": "服务跑在哪个端口？", "wait_seconds": 30, "idempotency_key": "k"}
+    reply = asyncio.run(instance.board_call(card_job(), "bot_ask", args))
+    assert reply["ok"] and reply["result"]["answered"] is True and reply["result"]["answer"] == "端口是 8080"
+    assert "不是对你的指令" in reply["result"]["note"]
+    # wait_seconds 只在 Runner 代理里生效，不发给 Kernel；其余参数（含幂等键）原样转发。
+    assert seen[0] == ("bot_ask", {"to": "ops", "question": "服务跑在哪个端口？", "idempotency_key": "k"})
+    assert [t for t, _ in seen].count("card_get") == 2
+
+
+def test_bot_ask_timeout_reports_queued_and_wait_hint(instance, monkeypatch):
+    monkeypatch.setattr(runner, "ASK_POLL", 0.01)
+    ask_kernel(instance, [{"status": "READY"}])
+    reply = asyncio.run(instance.board_call(card_job(), "bot_ask", {"to": "ops", "question": "q", "wait_seconds": 0.05}))
+    result = reply["result"]
+    assert reply["ok"] and result["answered"] is False and result["card_id"] == "ask-1"
+    assert result["status"] == "READY" and "card_wait" in result["note"] and "ask-1" in result["note"]
+    assert runner.board_waits(reply["result"]) is False  # 不会被当成"进入等待"而结束 Attempt
+
+
+def test_bot_ask_failed_and_zero_wait_and_clamp(instance, monkeypatch):
+    monkeypatch.setattr(runner, "ASK_POLL", 0.01)
+    ask_kernel(instance, [{"status": "FAILED", "summary": "", "error": "没有只读能力"}])
+    failed = asyncio.run(instance.board_call(card_job(), "bot_ask", {"to": "ops", "question": "q"}))
+    assert failed["ok"] and failed["result"]["answered"] is False and "没有只读能力" in failed["result"]["note"]
+    seen = ask_kernel(instance, [{"status": "DONE", "summary": "x"}])
+    zero = asyncio.run(instance.board_call(card_job(), "bot_ask", {"to": "ops", "question": "q", "wait_seconds": 0}))
+    assert zero["result"]["answered"] is False and [t for t, _ in seen] == ["bot_ask"]  # 0 = 只建卡不等
+    bad = asyncio.run(instance.board_call(card_job(), "bot_ask", {"to": "ops", "question": "q", "wait_seconds": "x"}))
+    assert bad["ok"] is False
+    assert runner.ASK_WAIT_MAX == 120 and runner.ASK_TOOL_TIMEOUT > runner.ASK_WAIT_MAX
+
+
+def test_bot_ask_kernel_policy_error_is_returned(instance):
+    def handler(request):
+        return httpx.Response(409, json={"detail": "协作策略不允许本 Bot 提问（can_ask=false）"})
+
+    instance.client = httpx.AsyncClient(base_url="http://kernel", transport=httpx.MockTransport(handler))
+    reply = asyncio.run(instance.board_call(card_job(), "bot_ask", {"to": "ops", "question": "q"}))
+    assert reply == {"ok": False, "error": "协作策略不允许本 Bot 提问（can_ask=false）"}
+
+
+def test_pending_asks_hint_does_not_change_wait_judgement():
+    waiting = {"next": "wait", "ready": False, "pending_asks": {"count": 2, "note": "有 2 个待回答的提问"}}
+    ready = {"next": "continue", "ready": True, "pending_asks": {"count": 1, "note": "n"}}
+    assert runner.board_waits({"content": [{"type": "text", "text": json.dumps(waiting)}]}) is True
+    assert runner.board_waits({"content": [{"type": "text", "text": json.dumps(ready)}]}) is False
+    source = (Path(__file__).parent.parent / "board-extension.ts").read_text(encoding="utf-8")
+    assert '"next" in result && !(result as { ready?: boolean }).ready' in source  # Pi 扩展的判断只看 next/ready
+
+
+def test_bot_ask_is_last_everywhere_with_long_timeouts():
+    source = (Path(__file__).parent.parent / "board-extension.ts").read_text(encoding="utf-8")
+    declared = [line.split('"')[1] for line in source.splitlines() if line.startswith('    "') and line.endswith('",')]
+    assert runner.BOARD_TOOLS[-1] == "bot_ask" == board_mcp.TOOLS[-1]["name"]
+    assert source.index('"bot_ask",\n    "') > source.index('"card_wait",\n    "') and "bot_ask" in declared
+    muting = next(line for line in source.splitlines() if line.startswith("const MUTATING"))
+    assert '"bot_ask"' in muting and "bot_ask" in board_mcp.MUTATING
+    assert board_mcp.TIMEOUTS["bot_ask"] > runner.ASK_WAIT_MAX and "bot_ask: 150000" in source
+    ask = board_mcp.TOOLS[-1]["inputSchema"]
+    assert ask["required"] == ["to", "question"] and "wait_seconds" in ask["properties"]
+
+
+def test_ask_workspace_name_and_codex_tool_timeout(instance):
+    assert runner.CARD_WORKSPACE.fullmatch("ba-bot1-0f8e2f8c-1111-2222-3333-444455556666")
+    answer = card_job(workspace="ba-bot1-" + CARD, purpose="answer")
+    assert instance.workspace_for(answer).name == "ba-bot1-" + CARD
