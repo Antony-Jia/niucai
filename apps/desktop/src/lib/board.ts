@@ -30,8 +30,29 @@ export interface BotConfig {
   requires_approval: boolean;
   concurrency: number;
 }
+/** 手填的环境说明：只写名称和说明，不要写密码、令牌等凭据。 */
+export interface BotEnvironmentManual {
+  logged_in_sites: string[];
+  resources: string[];
+  notes: string;
+}
+/** Runner 探测并上报的环境事实，只读。 */
+export interface BotEnvironmentProbed {
+  os?: string;
+  engine?: { name: string; available?: boolean; version?: string };
+  browser?: { available: boolean; cdp: boolean };
+  repos?: { name: string; remote: string }[];
+  cli?: string[];
+}
+export interface BotEnvironment {
+  probed: BotEnvironmentProbed;
+  manual: Partial<BotEnvironmentManual>;
+}
+
 export interface Bot extends BotConfig {
   id: string;
+  /** 同事视角的环境画像；探测部分由节点上报，手填部分可在 Bot 设置里编辑。 */
+  environment?: BotEnvironment;
   enabled: boolean;
   running: number;
   node_name?: string;
@@ -191,7 +212,10 @@ export const boardApi = {
   createBot: (bot: BotConfig) => request<Bot>("/api/bots", "POST", bot),
   updateBot: (
     id: string,
-    changes: Partial<BotConfig> & { enabled?: boolean },
+    changes: Partial<BotConfig> & {
+      enabled?: boolean;
+      environment?: BotEnvironmentManual;
+    },
   ) => request<Bot>(`/api/bots/${id}`, "PATCH", changes),
   deleteBot: (id: string) => request(`/api/bots/${id}`, "DELETE"),
   card: (id: string) => request<CardDetail>(`/api/cards/${id}`),

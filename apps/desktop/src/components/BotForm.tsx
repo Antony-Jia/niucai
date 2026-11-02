@@ -6,6 +6,8 @@ import {
   splitList,
   type Bot,
   type BotConfig,
+  type BotEnvironmentManual,
+  type BotEnvironmentProbed,
   type Engine,
   type PermissionProfile,
 } from "../lib/board";
@@ -33,6 +35,30 @@ const profileText: Record<PermissionProfile, string> = {
   workspace: "工作区内读写",
   full: "完全权限",
 };
+
+/** 探测到的环境事实，一行一项；没有上报的项直接省略。 */
+export function probedLines(probed: BotEnvironmentProbed = {}): string[] {
+  const lines: string[] = [];
+  if (probed.os) lines.push(`系统：${probed.os}`);
+  if (probed.engine?.name)
+    lines.push(
+      `引擎：${probed.engine.name} ${probed.engine.version ?? ""}`.trim(),
+    );
+  if (probed.browser)
+    lines.push(
+      `浏览器：${probed.browser.available ? "可用" : "未发现"}${
+        probed.browser.cdp ? "（已配置 CDP）" : ""
+      }`,
+    );
+  if (probed.repos?.length)
+    lines.push(
+      `仓库：${probed.repos
+        .map((r) => (r.remote ? `${r.name}（${r.remote}）` : r.name))
+        .join("，")}`,
+    );
+  if (probed.cli?.length) lines.push(`命令行：${probed.cli.join("、")}`);
+  return lines;
+}
 
 /** 新建或编辑节点上的 Bot；引擎只列出该节点上报可用的。 */
 export function BotForm({
@@ -82,6 +108,12 @@ export function BotForm({
     requires_approval: bot?.requires_approval ?? windows,
     concurrency: bot?.concurrency ?? 1,
   });
+  const [manual, setManual] = useState({
+    sites: bot?.environment?.manual.logged_in_sites?.join(", ") ?? "",
+    resources: bot?.environment?.manual.resources?.join(", ") ?? "",
+    notes: bot?.environment?.manual.notes ?? "",
+  });
+  const probed = probedLines(bot?.environment?.probed);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const blocked = unavailable || synchronizing || available.length === 0;
@@ -108,8 +140,14 @@ export function BotForm({
       mcp_servers: splitList(form.mcp_servers),
       concurrency: Math.min(16, Math.max(1, form.concurrency)),
     };
+    // 手填环境只在编辑已有 Bot 时提交；新建时 Bot 还没有环境画像。
+    const environment: BotEnvironmentManual = {
+      logged_in_sites: splitList(manual.sites),
+      resources: splitList(manual.resources),
+      notes: manual.notes.trim(),
+    };
     try {
-      if (bot) await boardApi.updateBot(bot.id, config);
+      if (bot) await boardApi.updateBot(bot.id, { ...config, environment });
       else await boardApi.createBot(config);
       await Promise.all([
         cache.invalidateQueries({ queryKey: ["topology"] }),
@@ -370,6 +408,52 @@ export function BotForm({
             />
           </label>
         </details>
+        {bot && (
+          <details className="bot-advanced bot-environment">
+            <summary>环境说明 · 让同事知道这台电脑能做什么</summary>
+            {probed.length > 0 ? (
+              <ul aria-label="节点探测到的环境">
+                {probed.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            ) : (
+              <small>节点尚未上报环境信息（需要较新的 Runner）。</small>
+            )}
+            <small>只写名称和说明，不要填写密码、令牌或 Cookie 等凭据。</small>
+            <label>
+              已登录的站点
+              <input
+                value={manual.sites}
+                onChange={(e) =>
+                  setManual({ ...manual, sites: e.target.value })
+                }
+                placeholder="例如：GitHub, 公司内网 Wiki，逗号分隔"
+              />
+            </label>
+            <label>
+              特殊资源
+              <input
+                value={manual.resources}
+                onChange={(e) =>
+                  setManual({ ...manual, resources: e.target.value })
+                }
+                placeholder="例如：GPU, 打印机，逗号分隔"
+              />
+            </label>
+            <label>
+              备注
+              <textarea
+                rows={3}
+                maxLength={2000}
+                value={manual.notes}
+                onChange={(e) =>
+                  setManual({ ...manual, notes: e.target.value })
+                }
+              />
+            </label>
+          </details>
+        )}
         <label className="checkbox">
           <input
             type="checkbox"

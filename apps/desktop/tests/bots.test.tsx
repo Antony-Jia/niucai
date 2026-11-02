@@ -208,3 +208,61 @@ it("offers reasoning effort only when the node reports it and resets it per engi
   );
   expect(screen.queryByLabelText("推理强度")).toBeNull();
 });
+
+it("shows the probed environment read-only and saves only the manual part", async () => {
+  const { BotForm } = await import("../src/components/BotForm");
+  const bot = {
+    id: "b1",
+    name: "coder",
+    node_id: "n1",
+    engine: "pi",
+    role: "",
+    instructions: "",
+    tags: [],
+    model: "",
+    permission_profile: "workspace",
+    skills: [],
+    mcp_servers: [],
+    requires_approval: false,
+    concurrency: 1,
+    enabled: true,
+    running: 0,
+    config_version: 1,
+    environment: {
+      probed: {
+        os: "Windows 10",
+        engine: { name: "pi", version: "1.2" },
+        browser: { available: true, cdp: true },
+        repos: [{ name: "niucai", remote: "https://example.com/t/niucai.git" }],
+        cli: ["git", "node"],
+      },
+      manual: { logged_in_sites: ["GitHub"], resources: [], notes: "n" },
+    },
+  } as never;
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <BotForm nodeId="n1" engines={["pi"]} bot={bot} onClose={() => {}} />
+    </QueryClientProvider>,
+  );
+  expect(screen.getByText("系统：Windows 10")).toBeInTheDocument();
+  expect(screen.getByText("命令行：git、node")).toBeInTheDocument();
+  expect(screen.getByText(/不要填写密码/)).toBeInTheDocument();
+  expect(screen.getByLabelText("已登录的站点")).toHaveValue("GitHub");
+  fireEvent.change(screen.getByLabelText("特殊资源"), {
+    target: { value: "GPU, 打印机" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "保存" }));
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith(
+      "/api/bots/b1",
+      "PATCH",
+      expect.objectContaining({
+        environment: {
+          logged_in_sites: ["GitHub"],
+          resources: ["GPU", "打印机"],
+          notes: "n",
+        },
+      }),
+    ),
+  );
+});
