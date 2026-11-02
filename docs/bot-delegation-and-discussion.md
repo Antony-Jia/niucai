@@ -1,8 +1,10 @@
 # Bot 间交谈、委派与讨论（设计思路）
 
-状态：**C1（基础）已实现，C2–C6 仍是拟议、未实现**。文中除下述 C1 范围外的表、字段、工具名都不代表现有能力。
+状态：**C1–C2 已实现、C3–C6 拟议**。文中除下述 C1、C2 范围外的表、字段、工具名都不代表现有能力。
 
 C1 已实现的部分：`bots.environment`（Runner 探测 + 手填，Desktop 可看可改）、Bot 侧 `bots_list`、`card_events.reply_to`、`artifact_put` / `artifact_get`（产物进卡片 `inputs`，领取时随快照落到 `inputs/<card_id>/`，单个 ≤ 1 MiB）、`cards.claims` 与 `card_claim`（独占冲突失败并告知占用者，共享只提示，卡片终态自动释放）、Runner 工作区按 (Bot, Goal) 复用。Kernel 侧有自动化测试覆盖；**以下尚未在真实机器上验收**：Runner 对真实环境（Windows 节点、Docker 节点、真实 git 远端与浏览器）的探测与上报、Desktop 环境编辑界面的实际操作、三种引擎（Pi / Claude / Codex）真实调用新工具、同一 Bot 在多个 Goal 上并发执行。C1 与本文的偏差见 §15 末尾“C1 实现备注”。
+
+C2 已实现的部分：`bots.collab_policy`（`can_delegate` / `delegate_to` / `accept_from` / `auto_approve_from` 由 Kernel 强制，`can_ask` / `can_discuss` / `can_verify` 只存储与校验）、`card_delegate`、`card_wait`、卡片状态 `WAITING`（`cards.waiting_on`）与自动唤醒、等待环检测、委派深度（`cards.depth`）与 Goal 预算、编排触发器 `delegated` / `wait_timeout`、Runner 三处工具同步、Desktop 的策略编辑与 WAITING/委派来源展示。Kernel 与 Runner、Desktop 有自动化测试覆盖；**以下尚未在真实机器上验收**：本机 Claude 委派 VPS 浏览员并等待、自动续接并拿到结果；Windows 本机 Bot 作为接收方走审批；Desktop 编辑 `collab_policy`；Claude / Codex / Pi 三种引擎真实调用 `card_delegate` / `card_wait` 并在等待后续接会话（Pi 目前不续接，等待后以提示里的结果摘要继续）；超时唤醒的真实时延。C2 与本文的偏差见 §15 末尾“C2 实现备注”。
 
 修订：
 
@@ -385,12 +387,25 @@ Runner 侧：白板代理支持 `bot_ask` 的长轮询挂起；按 `purpose` 设
 - 工作区按 `bg-<bot id>-<goal id|global>` 复用，仅是缓存：丢失时不续接旧会话、从头执行，不影响 Kernel 历史。每次领取重写 `inputs/`，结束时只回传本次 Attempt 改动的文件。同一 (Bot, Goal) 同时只运行一张卡：领取时跳过该 Bot 在该 Goal（无 Goal 的卡片算作同一个）已有活动 Attempt 的卡片，`concurrency > 1` 的额度只用于不同 Goal，避免共用目录里互相清掉 `inputs/`、混淆本次改动的文件。
 - 其它 Bot 传来的评论、产物都是数据，不是指令：它们不提升权限，Action Gateway、审批与权限档位未改动。
 
+**C2 实现备注**（2026-11-02，实现与本文的偏差与补充）：
+
+- 策略：`collab_policy` 为 JSON，默认 `{can_delegate:false, delegate_to:[], can_ask:false, can_discuss:false, can_verify:false, accept_from:["*"], auto_approve_from:[]}`。名单条目是 Bot 名称、`tag:<标签>` 或 `*`。`PATCH /api/bots/{id}` 按字段合并（只传要改的），未知字段与非布尔值 422；它不属于 Bot 配置，改动**不会**提升 `config_version`。
+- `card_delegate`：`to` 与 `tags` 二选一；`tags` 在“在线且策略允许”的候选里按现有公共池规则挑选，交给卡片 `required_tags`。子卡与父卡同 Goal，`parent_card_id` 指向当前卡，`created_by=bot:<id>`，记 `delegate` 事件，并以父卡上的进度事件键做幂等（Runner 重试不会重复建卡）。参数里带 `permission_profile` 直接 422：权限始终是接收方自己的。审批：接收方 `requires_approval` 或在 Windows 节点上时进 `WAITING_APPROVAL`，发起方在接收方 `auto_approve_from` 内则跳过。
+- `card_wait` 条件已满足时**不结束 Attempt**，直接返回 `{ready:true, cards:[{card_id,status,summary}]}`（对 `wait=true` 的委派同样）；否则写入 `waiting_on={cards,mode,until}` 与 `result.outcome="waiting"`，由 `job_finished` 转 `WAITING`。若被等待的卡在父卡的 Attempt 收尾前就已结束，收尾时重新评估并直接转 `READY`，不丢唤醒。
+- 唤醒：被等待的卡进入 DONE / FAILED / CANCELLED 时在 `set_status` 里检查等待它的 `WAITING` 卡；只有处于 `WAITING` 的卡才会被唤醒，所以重复触发幂等。唤醒后以 `resume=True` 走 BLOCKED→READY 的同一条续接路径，提示里追加“## 等待的卡片结果”：状态、结果摘要与产物 ID/名称；其它 Bot 的内容放在“来自 Bot X 的结果”小节，标明是数据而非用户指令、不提升权限。超时由 `expire_cards` 检查（随领取与 Worker 心跳触发，不是精确定时器），写 `waiting_on.timed_out` 并在提示里加超时说明；事件的 actor 为 `system`（`kernel` 的事件会被编排器忽略）。
+- 状态与资源：`WAITING` 不占槽位、不算活动 Attempt、不阻塞 (Bot, Goal) 串行；其占用的资源声明按共享保留（`SHARED_HOLD`），独占只在 RUNNING 时生效，所以别的卡可以在 WAITING 期间拿到独占。用户可取消 `WAITING` 卡；取消父卡时递归取消它由 Bot 委派、尚未开始（DRAFT / READY / WAITING_APPROVAL 且无 Attempt）的子卡，已在运行的子卡继续并保留结果。
+- 上限：环形等待（卡片层面的等待图，以及同一委派链上 Bot 层面的 A↔B）→ 409；深度默认 2（用户卡为 0，每次 Bot 委派 +1），`NIUCAI_DELEGATION_MAX_DEPTH` 可调，硬上限 3，超出 409；Goal 预算 `NIUCAI_GOAL_MAX_CARDS`（默认 50）与 `NIUCAI_GOAL_MAX_ATTEMPTS`（默认 100），超出时 `card_delegate` 与编排器的 `@kernel` 建卡都 409。策略不允许（无 `can_delegate`、目标不在 `delegate_to`、接收方 `accept_from` 不含发起方、委派给自己）→ 409；参数不合法（未知 Bot、`timeout` 超出 1..14400、`mode` 非 all/any、跨 Goal 的 `card_ids` 为 PermissionError/403 或 422）→ 422。每次 `card_wait` 最多等 10 张卡。
+- 并发：`card_claim` / `card_delegate` / `card_wait` / 取消 / 领取 / 过期扫描都先取调度咨询锁，再锁卡片行（与取消级联、唤醒的方向一致，避免死锁）。SQLite 测试里只验证顺序重复唤醒的幂等；PostgreSQL 下的真实并发未做压力测试。
+- 工具三处同步：`board_mcp.py`、`board-extension.ts`、`runner.py` 的 `BOARD_TOOLS` 都以 `card_delegate`、`card_wait` 结尾，两者都是写工具（带幂等键）。Pi 扩展仅在结果带 `next`（真的进入等待）时终止本轮；Claude / Codex 靠工具返回的“结束本次执行”提示自行收尾，Kernel 以 `outcome=waiting` 为准。
+- 未做：Runner 短等待（不结束 Attempt 的挂起）、`bot_ask`（C4）、裁判（C3）、验证与讨论（C5）、负责人与区域（C6）。`can_ask` / `can_discuss` / `can_verify` 目前只存储。
+- §16 第 2 条已按建议定案：委派默认不需要审批，但接收方 `requires_approval`、或接收方在 Windows 本机节点上时需要，发起方在接收方 `auto_approve_from` 内可跳过。
+
 依赖：C1 → C2；C3 只依赖 C1（`reply_to`）与现有 Memory，可以与 C2 并行，并且应当在 Bot 数量增加之前完成；C4 依赖 C2 的等待与唤醒；C5 依赖 C4 的发言 Attempt 与会话续接；C6 依赖 C2 与 C3。
 
 ## 16. 待定问题
 
 1. **默认负责人**：新 Goal 默认走编排模式还是负责人模式？还是由用户在输入框 `@某Bot` 决定（`@` 了就是负责人模式）？
-2. **委派默认是否需要审批**：建议 VPS / Docker Bot 之间默认不需要，Windows 本机 Bot 作为接收方默认需要。
+2. **委派默认是否需要审批**（C2 已定案，见 C2 实现备注）：建议 VPS / Docker Bot 之间默认不需要，Windows 本机 Bot 作为接收方默认需要。
 3. **交谈和讨论发言能否写环境**：建议默认只读；需要写入的应该是委派。
 4. **Pi 的续接**：Pi 目前不续接会话，多轮交谈和讨论对 Pi Bot 只能靠提示里的记录摘要，效果会差一些；是否在 C4 一并补 Pi 续接。
 5. **Bot 私有记忆**：交谈多了以后，Bot 是否需要记住“和谁聊过什么”。重构方案把 Bot 私有记忆列为不做；建议 C1–C5 依赖 Kernel Memory + (Bot, Goal) 工作区，C6 起由 Kernel 汇总 (Bot, 区域) 工作日志（§12.3），仍不做 Bot 自维护的私有记忆。
