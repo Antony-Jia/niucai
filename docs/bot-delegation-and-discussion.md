@@ -6,6 +6,8 @@ C1 已实现的部分：`bots.environment`（Runner 探测 + 手填，Desktop �
 
 C2 已实现的部分：`bots.collab_policy`（`can_delegate` / `delegate_to` / `accept_from` / `auto_approve_from` 由 Kernel 强制，`can_ask` / `can_discuss` / `can_verify` 只存储与校验）、`card_delegate`、`card_wait`、卡片状态 `WAITING`（`cards.waiting_on`）与自动唤醒、等待环检测、委派深度（`cards.depth`）与 Goal 预算、编排触发器 `delegated` / `wait_timeout`、Runner 三处工具同步、Desktop 的策略编辑与 WAITING/委派来源展示。Kernel 与 Runner、Desktop 有自动化测试覆盖；**以下尚未在真实机器上验收**：本机 Claude 委派 VPS 浏览员并等待、自动续接并拿到结果；Windows 本机 Bot 作为接收方走审批；Desktop 编辑 `collab_policy`；Claude / Codex / Pi 三种引擎真实调用 `card_delegate` / `card_wait` 并在等待后续接会话（Pi 目前不续接，等待后以提示里的结果摘要继续）；超时唤醒的真实时延。C2 与本文的偏差见 §15 末尾“C2 实现备注”。
 
+C3 已实现的部分：`judge_runs` 表、`conversations.judge_enabled`、`memories.meta`、全局开关 `NIUCAI_JUDGE_ENABLED`、用户 `answer` BLOCKED 卡片时写入 `decision` 记录、Worker 内的裁判循环（`decided` / `returned` / `held` 三种裁决，任何失败降级为 `held`）、`card_block` 的 `category`（decision / authorization，三处工具同步）、裁决列表与“判错了”纠正、把记录标为“原则”、Goal 级开关，以及 Desktop 的裁决面板、卡片上的裁判状态与 Goal 开关。Kernel、Runner、Desktop 有自动化测试覆盖（模型调用用脚本化的 fake 网关）；**以下尚未在真实机器上验收**：真实模型下裁判对“相似问题”的判断质量与 JSON 遵循度、`decided` 的代答在三种引擎真实续接后的表现、Desktop 裁决面板与开关的实际操作、PostgreSQL 下裁判与用户同时回答的真实并发。C3 与本文的偏差见 §15 末尾“C3 实现备注”。
+
 修订：
 
 - 2026-11-02，初稿。
@@ -400,6 +402,22 @@ Runner 侧：白板代理支持 `bot_ask` 的长轮询挂起；按 `purpose` 设
 - 工具三处同步：`board_mcp.py`、`board-extension.ts`、`runner.py` 的 `BOARD_TOOLS` 都以 `card_delegate`、`card_wait` 结尾，两者都是写工具（带幂等键）。Pi 扩展仅在结果带 `next`（真的进入等待）时终止本轮，Runner 解析工具结果的 JSON 文本做同样判断，记下 `board_outcome`，所以 Pi 没有最终文本也按正常结束处理；Claude / Codex 靠工具返回的“结束本次执行”提示自行收尾，Kernel 以 `outcome=waiting` 为准。
 - 未做：Runner 短等待（不结束 Attempt 的挂起）、`bot_ask`（C4）、裁判（C3）、验证与讨论（C5）、负责人与区域（C6）。`can_ask` / `can_discuss` / `can_verify` 目前只存储。
 - §16 第 2 条已按建议定案：委派默认不需要审批，但接收方 `requires_approval`、或接收方在 Windows 本机节点上时需要，发起方在接收方 `auto_approve_from` 内可跳过。
+
+**C3 实现备注**（2026-11-02，实现与本文的偏差与补充）：
+
+- 数据：`decision` 记录仍存 `memories`（`kind="decision"`，`ref_id` 为 `ans-<回答事件 ID>`，纠正记录的 `ref_id` 为裁决 ID），范围、原问题、回答、原则标记、`corrects` / `corrected_by` 放在新增的 `memories.meta`（JSON）里，没有新增列。理由：检索是“取最近 N 条后在内存里过滤和排序”，这些字段不参与 SQL 过滤，不需要索引，也避免给通用 Memory 表加一堆只有 decision 用的列；代价是不能在数据库层按范围查询。`judge_runs` 比 §11 的草案多了几个字段：`status`（PENDING / DONE / FAILED / DISCARDED，FAILED 表示“降级为 held”并带 `error`，DISCARDED 表示被用户先回答或卡片已离开 BLOCKED）、`attempts` 与 `lease_until`（Worker 崩溃后的租约恢复，超过 3 次尝试转 `held`）、`record_ids`（提供给模型的全部记录）与 `cited_ids`（模型引用的记录）。`question_event_id` 唯一，保证一个问题只建一条运行。
+- 记录写入：只在用户经 `POST /api/cards/{id}/answer` 回答 BLOCKED 卡片时写；`answer` 可带 `scope`（global / goal / bot），省略时有 Goal 为 `goal`，无 Goal 为 `global`。**不处理**用户对 @user 评论的回答（评论没有“问题—回答”的结构），§11.3 里的 Goal 内讨论、验证结论等来源也未做。`category=authorization` 的提问，其回答不写记录（授权只对当次有效，不能当先例）；裁判自己写的代答不写记录，避免自我强化。
+- 流程：`card_block(mention=user, category=decision)` 且裁判生效（全局开关开且 Goal 未显式关闭）时，`question` 事件的 `mentions` 为空（data 里 `judge:"pending"`），并建 PENDING 运行；卡片照常转 BLOCKED，卡片视图的 `judge` 字段让界面显示“裁判处理中”。Worker 的裁判循环只领取“卡片已 BLOCKED 且仍在等该问题”的运行（Attempt 还没收尾的先等）。`decided` / `returned` 写一条 `verdict` 事件（actor 为 `judge`）并按与用户回答相同的路径转回 READY 续接；`held` 写一条 actor 为 `judge`、`mentions=["user"]` 的 `question` 事件（正文含原问题与相近记录），此后才算“需要你”。`card_block` 对 `mention=kernel` 的路径不变，不经过裁判。
+- 检索：不做向量与关键词检索（项目的 `search_memories` 按空格分词，对中文无效），取最近 300 条 `decision` 记录，过滤出适用范围内的，按“纠正 > 原则 > 同 Goal > 同 Bot > 新近”排序，再按 `NIUCAI_JUDGE_CONTEXT_CHARS`（默认 12000）截断，整体交给模型判断哪条适用。记录多了以后，较旧的记录会进不了上下文，这是已知的限制。
+- 校验与降级：裁判输出必须是严格 JSON（允许外层代码块）。以下任一情况按 `held` 处理并记入 `error`：模型调用异常或超时（`NIUCAI_JUDGE_TIMEOUT_SECONDS`，默认 60）、不是合法 JSON、`verdict` 非法、`decided` 没有 `record_ids` 或引用了没有提供给模型的记录、落地时被引用的记录已不存在、引用了已被纠正的记录却没有同时引用纠正记录、`returned` 没有说明、重试用尽。同一张卡片上裁判已有 `NIUCAI_JUDGE_MAX_PER_CARD`（默认 3）次 `decided` / `returned` 后，下一次直接 `held`，防止裁判与 Bot 来回循环。裁判被关闭后已排队的运行也由循环收尾为 `held`，不会卡住提问。
+- 授权类：`card_block` 新增可选 `category`（`decision` 默认 / `authorization`）。`authorization` 直达 @user，不建运行；裁判提示词同样要求把权限档位、开工审批、预算增加、外部动作、凭据与账号、数据删除类提问判为 `held`。这依赖 Bot 如实填 `category`，所以提示词是第二道防线，不是强制边界。`board_mcp.py`、`board-extension.ts`、`runner.BOARD_TOOLS` 三处已同步，测试覆盖一致性。
+- 并发：裁决落地先取调度咨询锁，再锁卡片行，再锁运行行（与 `answer`、取消、领取的顺序一致）。用户先回答则作废这张卡片上所有 PENDING 运行；裁判完成时若问题已不是最新的 `question`、已有 `answer` / `verdict`、或卡片不再是 BLOCKED，结果直接丢弃，不重复续接。SQLite 测试验证了顺序与“模型调用期间用户抢先回答”；PostgreSQL 下的真实并发未做压力测试。
+- 来源标注：续接提示里 actor 为 `judge` 的事件标注“[裁判，不是用户的原话]”，`decided` 的正文固定以“裁判依据记录 X 代答（这是裁判给出的回答，不是用户的原话）”开头。
+- 纠正：`POST /api/judge/runs/{id}/correct` 把纠正写成新的 `decision` 记录（`corrects` 指向被引用的原记录，原记录的 `corrected_by` 指回它，原记录不删除），检索排序里纠正排在原记录之前；`decided` 若引用了被纠正的记录，必须同时引用纠正，否则降级。一条裁决只能纠正一次（再次纠正 409）；只有 `decided` / `returned` 可以纠正，`held` 的问题由用户亲自回答、回答已是记录，纠正返回 409（它引用的只是“相近但不适用”的记录，不能被标为已纠正），Desktop 上也不显示“判错了”。
+- 原则：`PATCH /api/judge/decisions/{id}` 可把记录标为 `principle`（检索权重高于普通记录）或修改范围。**合并多条记录为原则、由裁判提议合并，未做，留给后续阶段。**
+- 模型：裁判使用 Model Router 的 `planner` 角色，没有单独的 `judge` 角色；§16 第 7 条（裁判用哪个模型、`decided` 是否抽样复核）未定案，成本只记录在 `judge_runs.usage`，没有汇总统计。
+- 未做：§11.3 第三条（把 decision 记录主动注入 Bot 提示）、对 `decided` 的抽样复核、`held` 的超时催办、Desktop 对 decision 记录的独立管理页（目前只有裁决面板里的“判错了”；标记原则只有 API）。
+- Desktop：Goal 详情页里有裁判开关（跟随全局时标注）和裁决面板（代答 / 退回 / 转交用户计数、按类过滤、“判错了”）；白板卡片和详情显示“裁判处理中 / 裁判代答（依据记录 X）/ 已退回 / 裁判已转交给你”，只针对卡片最新的那个问题：之后又直达用户的授权类提问不显示旧裁决，转交用户的问题被回答后也不再显示。裁判处理中的 BLOCKED 卡片仍在“需要你”列里，只是带这行说明。
 
 依赖：C1 → C2；C3 只依赖 C1（`reply_to`）与现有 Memory，可以与 C2 并行，并且应当在 Bot 数量增加之前完成；C4 依赖 C2 的等待与唤醒；C5 依赖 C4 的发言 Attempt 与会话续接；C6 依赖 C2 与 C3。
 
