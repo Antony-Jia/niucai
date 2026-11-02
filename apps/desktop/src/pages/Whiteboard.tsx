@@ -362,33 +362,60 @@ export function CardDetailView({
   );
 }
 
+/** “A 问 B”：Bot 之间的提问卡；编排者提问显示 @kernel，用户私聊没有发起 Bot。 */
+export function askText(card: Card) {
+  if (card.kind !== "ask") return "";
+  const asker = card.initiator_name
+    ? `@${card.initiator_name}`
+    : card.created_by === "kernel"
+      ? "@kernel"
+      : "你";
+  return `${asker} 问 ${card.assignee_name ? `@${card.assignee_name}` : "Bot"}`;
+}
+
 function CardTile({
   card,
   siblings,
+  asks = [],
   onOpen,
+  onOpenAsk,
 }: {
   card: Card;
   siblings: Card[];
+  asks?: Card[];
   onOpen: () => void;
+  onOpenAsk?: (id: string) => void;
 }) {
   return (
-    <button className="kanban-card board-card" onClick={onOpen}>
-      <strong>{card.title}</strong>
-      <span className={`badge card-${card.status.toLowerCase()}`}>
-        {statusText[card.status]}
-      </span>
-      <small>
-        {card.assignee_name ? `@${card.assignee_name}` : "公共池"}
-        {card.required_tags.length > 0 &&
-          ` · #${card.required_tags.join(" #")}`}
-      </small>
-      {initiatorText(card) && <small>{initiatorText(card)}</small>}
-      {waitingText(card, siblings) && (
-        <small>{waitingText(card, siblings)}</small>
-      )}
-      {judgeText(card) && <small>{judgeText(card)}</small>}
-      {card.latest && <small className="muted">{card.latest.body}</small>}
-    </button>
+    <div className="board-card-group">
+      <button className="kanban-card board-card" onClick={onOpen}>
+        {card.kind === "ask" && <small>{askText(card)}</small>}
+        <strong>{card.title}</strong>
+        <span className={`badge card-${card.status.toLowerCase()}`}>
+          {statusText[card.status]}
+        </span>
+        <small>
+          {card.assignee_name ? `@${card.assignee_name}` : "公共池"}
+          {card.required_tags.length > 0 &&
+            ` · #${card.required_tags.join(" #")}`}
+        </small>
+        {initiatorText(card) && <small>{initiatorText(card)}</small>}
+        {waitingText(card, siblings) && (
+          <small>{waitingText(card, siblings)}</small>
+        )}
+        {judgeText(card) && <small>{judgeText(card)}</small>}
+        {card.latest && <small className="muted">{card.latest.body}</small>}
+      </button>
+      {asks.map((a) => (
+        <button
+          key={a.id}
+          className="board-ask"
+          onClick={() => onOpenAsk?.(a.id)}
+        >
+          {askText(a)} · {statusText[a.status]}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -403,7 +430,13 @@ export function BoardColumns({
   return (
     <div className="kanban-board">
       {boardColumns.map((column) => {
-        const items = cards.filter((c) => column.statuses.includes(c.status));
+        // 交谈卡（Bot 之间的提问）折叠在发起它的卡片下，不单独占位。
+        const ids = new Set(cards.map((c) => c.id));
+        const folded = (c: Card) =>
+          c.kind === "ask" && !!c.parent_card_id && ids.has(c.parent_card_id);
+        const items = cards.filter(
+          (c) => column.statuses.includes(c.status) && !folded(c),
+        );
         return (
           <section key={column.key} className="kanban-column">
             <h3>
@@ -415,7 +448,11 @@ export function BoardColumns({
                 key={c.id}
                 card={c}
                 siblings={cards}
+                asks={cards.filter(
+                  (a) => a.kind === "ask" && a.parent_card_id === c.id,
+                )}
                 onOpen={() => onOpen(c.id)}
+                onOpenAsk={onOpen}
               />
             ))}
           </section>

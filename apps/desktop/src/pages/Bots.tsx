@@ -1,6 +1,13 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot as BotIcon, Plus, Search, Pencil, Power } from "lucide-react";
+import {
+  Bot as BotIcon,
+  Plus,
+  Search,
+  Pencil,
+  Power,
+  MessageCircle,
+} from "lucide-react";
 import {
   Header,
   Empty,
@@ -10,6 +17,7 @@ import {
   Modal,
 } from "../components/ui";
 import { BotForm } from "../components/BotForm";
+import { BotChat } from "../components/BotChat";
 import {
   engineEfforts,
   engineModels,
@@ -29,6 +37,7 @@ export function Bots({
   const [search, setSearch] = useState("");
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<NodeBot | undefined>();
+  const [chatting, setChatting] = useState<NodeBot | null>(null);
   const [nodeId, setNodeId] = useState("");
   const [busy, setBusy] = useState(false);
   const enabled = connected && !demo;
@@ -198,6 +207,14 @@ export function Bots({
                       </span>
                       <div className="button-row">
                         <button
+                          aria-label={`私聊 ${bot.name}`}
+                          disabled={!ready || !bot.enabled}
+                          onClick={() => setChatting(bot)}
+                        >
+                          <MessageCircle size={14} />
+                          私聊
+                        </button>
+                        <button
                           aria-label={`编辑 ${bot.name}`}
                           disabled={!ready}
                           onClick={() => {
@@ -297,6 +314,9 @@ export function Bots({
                 )}
               </div>
             </Modal>
+          )}
+          {chatting && (
+            <BotChat bot={chatting} onClose={() => setChatting(null)} />
           )}
           {creating && node && (
             <BotForm

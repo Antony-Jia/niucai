@@ -125,6 +125,11 @@ export interface Card {
   }[];
   /** 委派出的卡片：发起委派的 Bot 名称；用户或编排创建的卡片没有。 */
   initiator_name?: string | null;
+  /** task 为普通任务；ask 为交谈卡（Bot 之间的提问，或用户与 Bot 的私聊线程）。 */
+  kind?: "task" | "ask";
+  /** 委派 / 提问时指向发起方的卡片。 */
+  parent_card_id?: string | null;
+  created_by?: string;
   /** 最近一次裁判（C3）：处理中 / 代答 / 退回 / 转交用户；没有裁判参与时为空。 */
   judge?: {
     id: string;
@@ -289,6 +294,14 @@ export const boardApi = {
       body,
       idempotency_key: crypto.randomUUID(),
     }),
+  chats: (botId: string) => request<Card[]>(`/api/bots/${botId}/chats`),
+  createChat: (botId: string, message: string, allowUnsafe = false) =>
+    request<Card>(`/api/bots/${botId}/chats`, "POST", {
+      message,
+      allow_unsafe_profile: allowUnsafe,
+    }),
+  sendChat: (cardId: string, message: string) =>
+    request<Card>(`/api/cards/${cardId}/messages`, "POST", { message }),
   jobEvents: (id: string, after = 0) =>
     request<JobEvent[]>(
       `/api/remote/jobs/${id}/events${after ? `?after=${after}` : ""}`,
