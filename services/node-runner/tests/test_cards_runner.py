@@ -470,3 +470,16 @@ def test_delegate_and_wait_tools_are_exposed_identically():
     muting = next(line for line in source.splitlines() if line.startswith("const MUTATING"))
     assert '"card_delegate"' in muting and '"card_wait"' in muting  # 必须保持单行
     assert '"card_delegate",\n' in source and '"card_wait",\n' in source
+
+
+def test_card_block_category_is_exposed_identically():
+    block = next(tool for tool in board_mcp.TOOLS if tool["name"] == "card_block")
+    category = block["inputSchema"]["properties"]["category"]
+    assert category["enum"] == ["decision", "authorization"] and block["inputSchema"]["required"] == ["question"]
+    assert "authorization" in block["description"]
+    source = (Path(__file__).parent.parent / "board-extension.ts").read_text(encoding="utf-8")
+    start = source.index('    "card_block",\n')
+    declaration = source[start : source.index("\n  ],", start)]
+    assert "category: Type.Optional" in declaration
+    assert '"decision"' in declaration and '"authorization"' in declaration
+    assert "card_block" in runner.BOARD_TOOLS

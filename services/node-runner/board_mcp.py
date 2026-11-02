@@ -68,12 +68,18 @@ TOOLS = [
     },
     {
         "name": "card_block",
-        "description": "需要用户或 kernel 回答才能继续时提问；随后结束本次执行，回答后会续接会话。",
+        "description": (
+            "需要用户或 kernel 回答才能继续时提问；随后结束本次执行，回答后会续接会话。"
+            "取舍类问题（decision，默认）会先经裁判：用户以前表过态的会代答，问错了的会退回说明，"
+            "没有先例才转给用户。权限档位、开工审批、预算追加、外部动作、凭据与账号、删除数据这类授权问题"
+            "必须写 category=authorization，直接转给用户。"
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "question": {"type": "string"},
                 "mention": {"type": "string", "enum": ["user", "kernel"]},
+                "category": {"type": "string", "enum": ["decision", "authorization"]},
             },
             "required": ["question"],
         },
